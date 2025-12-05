@@ -30,7 +30,7 @@ spec:
           operator: Exists
       containers:
         - name: s3-plugin
-          image: public.ecr.aws/mountpoint-s3-csi-driver/mountpoint-s3-csi-driver:v1.10.0
+          image: public.ecr.aws/mountpoint-s3-csi-driver/mountpoint-s3-csi-driver:v2.2.1
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --logtostderr
@@ -48,7 +48,7 @@ spec:
                 - SYS_ADMIN
             allowPrivilegeEscalation: true
         - name: csi-provisioner
-          image: public.ecr.aws/eks-distro/kubernetes-csi/external-provisioner:v5.0.1-eks-1-30-11
+          image: registry.k8s.io/sig-storage/csi-provisioner:v6.1.0
           args:
             - --csi-address=$(ADDRESS)
             - --v=2
@@ -62,7 +62,7 @@ spec:
             - name: socket-dir
               mountPath: /var/lib/csi/sockets/pluginproxy/
         - name: liveness-probe
-          image: public.ecr.aws/eks-distro/kubernetes-csi/livenessprobe:v2.13.1-eks-1-30-11
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.17.0
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9898
@@ -103,7 +103,7 @@ spec:
               add:
                 - SYS_ADMIN
             allowPrivilegeEscalation: true
-          image: public.ecr.aws/mountpoint-s3-csi-driver/mountpoint-s3-csi-driver:v1.10.0
+          image: public.ecr.aws/mountpoint-s3-csi-driver/mountpoint-s3-csi-driver:v2.2.1
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --logtostderr
@@ -134,7 +134,7 @@ spec:
             periodSeconds: 2
             failureThreshold: 5
         - name: csi-driver-registrar
-          image: public.ecr.aws/eks-distro/kubernetes-csi/node-driver-registrar:v2.11.1-eks-1-30-11
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.15.0
           args:
             - --csi-address=$(ADDRESS)
             - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
@@ -150,7 +150,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: liveness-probe
-          image: public.ecr.aws/eks-distro/kubernetes-csi/livenessprobe:v2.13.1-eks-1-30-11
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.17.0
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9898

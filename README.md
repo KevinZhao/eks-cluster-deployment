@@ -44,15 +44,15 @@
 ### 已集成组件
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| Kubernetes | 1.31 | 容器编排 |
+| Kubernetes | 1.34 | 容器编排 |
 | VPC CNI | v1.18.5 | Pod 网络 |
 | CoreDNS | v1.11.3 | DNS 解析 |
 | Kube-proxy | v1.31.2 | 网络代理 |
 | Pod Identity Agent | v1.3.4 | IAM 认证 |
 | EBS CSI Driver | v1.37.0 | 块存储 |
-| EFS CSI Driver | v2.1.0 | 文件存储 |
-| S3 CSI Driver | v1.11.0 | 对象存储 |
-| Cluster Autoscaler | v1.31.0 | 自动扩缩容 |
+| EFS CSI Driver | v2.1.15 | 文件存储 |
+| S3 CSI Driver | v2.2.1 | 对象存储 |
+| Cluster Autoscaler | v1.34.2 | 自动扩缩容 |
 | AWS LB Controller | v2.11.0 | 负载均衡 |
 
 ---
@@ -68,11 +68,8 @@ cd eks-cluster-deployment
 cp .env.example .env
 nano .env  # 填写必需的配置
 
-# 3. 运行自动修复脚本（修复版本和配置）
+# 3. 部署集群
 chmod +x scripts/*.sh
-./scripts/apply_critical_fixes.sh
-
-# 4. 部署集群
 ./scripts/install_eks_cluster.sh
 ```
 
@@ -258,42 +255,23 @@ aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_2A $PRIVATE_SUBNET_2B $PRI
 
 ## 🚀 部署步骤
 
-### Step 1: 运行自动修复脚本
+### Step 1: 配置环境变量
 
 ```bash
-./scripts/apply_critical_fixes.sh
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑配置文件，填写必需的参数
+nano .env
 ```
 
-**这个脚本会自动：**
-- ✅ 修复 Kubernetes 版本（确保使用 1.31）
-- ✅ 更新组件到最新稳定版本
-- ✅ 生成安全配置文件
-- ✅ 生成成本优化配置
-- ✅ 创建错误处理库
+**必填参数：**
+- `CLUSTER_NAME`: 集群名称
+- `VPC_ID`: VPC ID
+- `PRIVATE_SUBNET_2A/2B/2C`: 私有子网 ID
+- `PUBLIC_SUBNET_2A/2B/2C`: 公有子网 ID
 
-### Step 2: 手动更新配置（可选）
-
-根据 `apply_critical_fixes.sh` 的输出，手动更新以下文件：
-
-1. **合并 addon 版本锁定**
-   ```bash
-   # 将 manifests/cluster/addon-versions-patch.yaml
-   # 的内容合并到 eksctl_cluster_template.yaml
-   ```
-
-2. **更新 S3 IAM 策略**
-   ```bash
-   # 编辑 manifests/cluster/s3-csi-policy.json
-   # 替换 ${S3_BUCKET_PREFIX} 为实际值
-   ```
-
-3. **使用成本优化配置（推荐）**
-   ```bash
-   # 可选：使用 cost-optimized-nodes.yaml
-   # 替换 eksctl_cluster_template.yaml 中的节点组
-   ```
-
-### Step 3: 部署集群
+### Step 2: 部署集群
 
 ```bash
 ./scripts/install_eks_cluster.sh
@@ -307,7 +285,9 @@ aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_2A $PRIVATE_SUBNET_2B $PRI
 5. 迁移到 Pod Identity
 6. 部署测试应用
 
-### Step 4: 应用安全配置
+### Step 3: 应用安全配置（可选）
+
+部署完成后，可以应用额外的安全配置：
 
 ```bash
 # 应用资源配额
@@ -320,7 +300,7 @@ kubectl apply -f manifests/cluster/pod-security.yaml
 kubectl apply -f manifests/cluster/network-policies.yaml
 ```
 
-### Step 5: 验证部署
+### Step 4: 验证部署
 
 ```bash
 # 检查节点
@@ -344,9 +324,13 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 - **Kubernetes**: 1.34（EKS 最新版本，2024年12月发布）
 - **Cluster Autoscaler**: v1.34.2（匹配 K8s 版本）
 - **AWS Load Balancer Controller**: v2.11.0
-- **EBS CSI Driver**: v1.37.0
-- **EFS CSI Driver**: v2.1.0
-- **S3 CSI Driver**: v1.11.0
+- **EBS CSI Driver**: v1.37.0（EKS Addon 管理）
+- **EFS CSI Driver**: v2.1.15（2024年11月发布）
+- **S3 CSI Driver**: v2.2.1（2024年11月发布）
+- **CSI Sidecar 组件**:
+  - External-Provisioner: v6.1.0
+  - Node-Driver-Registrar: v2.15.0
+  - Livenessprobe: v2.17.0
 
 ### 版本兼容性
 
