@@ -74,7 +74,7 @@ iam:
 # 系统节点组，主要运行aws-load-balancer-controller coredns cluster-autoscaler等组件
 managedNodeGroups:
   - name: eks-utils
-    instanceType: m7i.large
+    instanceType: c8g.large
     amiFamily: AmazonLinux2023
     desiredCapacity: 2
     minSize: 2
@@ -88,12 +88,13 @@ managedNodeGroups:
       - ${PRIVATE_SUBNET_2C}
     labels:
       app: "eks-utils"
+      arch: "arm64"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
 
-  - name: test
-    instanceType: m7i.large
+  - name: app
+    instanceType: c8g.large
     amiFamily: AmazonLinux2023
     desiredCapacity: 2
     minSize: 2
@@ -106,7 +107,8 @@ managedNodeGroups:
       - ${PRIVATE_SUBNET_2B}
       - ${PRIVATE_SUBNET_2C}
     labels:
-      app: test
+      app: application
+      arch: "arm64"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
