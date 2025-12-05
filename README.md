@@ -1,395 +1,853 @@
 # EKS 集群自动化部署
 
-使用 eksctl 自动化部署 AWS EKS 集群，包含 Cluster Autoscaler（集群自动扩缩容）、EBS CSI Driver（持久化存储）和 AWS Load Balancer Controller（负载均衡器）。
+生产级 AWS EKS 集群自动化部署方案，包含完整的安全配置、成本优化和最佳实践。
 
-## 功能特性
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.31-326CE5?logo=kubernetes)](https://kubernetes.io/)
+[![AWS](https://img.shields.io/badge/AWS-EKS-FF9900?logo=amazon-aws)](https://aws.amazon.com/eks/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-- 🚀 **自动化 EKS 集群创建** - 使用 eksctl 一键部署
-- 📈 **集群自动扩缩容** - 根据负载自动调整节点数量
-- 💾 **EBS CSI Driver** - 支持持久化存储
-- 🔀 **AWS Load Balancer Controller** - 自动管理 ALB/NLB
-- 🔒 **安全配置** - 无硬编码凭证，配置与代码分离
-- ✅ **自动验证** - 部署前验证 AWS 资源
+---
 
-## 前置要求
+## 📋 目录
 
-### AWS 网络环境要求
+- [功能特性](#功能特性)
+- [快速开始](#快速开始)
+- [前置要求](#前置要求)
+- [项目结构](#项目结构)
+- [配置说明](#配置说明)
+- [部署步骤](#部署步骤)
+- [版本信息](#版本信息)
+- [安全配置](#安全配置)
+- [成本优化](#成本优化)
+- [测试验证](#测试验证)
+- [监控和日志](#监控和日志)
+- [故障排查](#故障排查)
+- [清理资源](#清理资源)
 
-在部署 EKS 集群前，需要准备以下 AWS 网络资源：
+---
 
-- ✅ **VPC** - 一个已存在的 VPC
-- ✅ **三个可用区（AZ）** - 分布在不同可用区以实现高可用
-- ✅ **私有子网** - 每个 AZ 一个私有子网（共3个）
-  - 用于部署 EKS 节点
-  - **必须通过 NAT Gateway 访问互联网**（用于拉取镜像、访问 AWS 服务等）
-- ✅ **公有子网** - 每个 AZ 一个公有子网（共3个）
-  - 用于部署负载均衡器
-  - 用于部署 NAT Gateway
-- ✅ **NAT Gateway** - 至少一个，建议每个 AZ 一个（高可用）
-- ✅ **Internet Gateway** - 附加到 VPC
-- ✅ **路由配置**：
-  - 私有子网路由表：`0.0.0.0/0` → NAT Gateway
-  - 公有子网路由表：`0.0.0.0/0` → Internet Gateway
+## 🚀 功能特性
 
-**重要安全配置：**
-- 🔒 **EKS API 端点配置为纯内网访问**（`privateAccess: true, publicAccess: false`）
-- 🔒 需要从 VPC 内部访问 API 端点（如通过 VPN、Direct Connect 或堡垒机）
-- 🔒 所有 EKS 节点部署在私有子网中，不直接暴露公网
+### 核心功能
+- ✅ **自动化部署** - 一键部署完整 EKS 集群
+- ✅ **多 AZ 高可用** - 跨 3 个可用区部署
+- ✅ **自动扩缩容** - Cluster Autoscaler 自动管理节点
+- ✅ **存储支持** - EBS/EFS/S3 CSI Driver
+- ✅ **负载均衡** - AWS Load Balancer Controller
+- ✅ **安全加固** - 纯内网 API、Pod Security、Network Policy
 
-**网络架构示意：**
-```
-VPC (10.0.0.0/16)
-├── AZ-A
-│   ├── Public Subnet (10.0.1.0/24) → IGW
-│   │   └── NAT Gateway
-│   └── Private Subnet (10.0.11.0/24) → NAT GW → IGW
-│       └── EKS Nodes
-├── AZ-B
-│   ├── Public Subnet (10.0.2.0/24) → IGW
-│   │   └── NAT Gateway
-│   └── Private Subnet (10.0.12.0/24) → NAT GW → IGW
-│       └── EKS Nodes
-└── AZ-C
-    ├── Public Subnet (10.0.3.0/24) → IGW
-    │   └── NAT Gateway
-    └── Private Subnet (10.0.13.0/24) → NAT GW → IGW
-        └── EKS Nodes
-```
+### 支持的存储类型
+- **EBS** (gp3) - 块存储，适合数据库
+- **EFS** - 共享文件系统，适合多 Pod 访问
+- **S3** (Mountpoint) - 对象存储，适合大数据
 
-### 工具要求
+### 已集成组件
+| 组件 | 版本 | 用途 |
+|------|------|------|
+| Kubernetes | 1.31 | 容器编排 |
+| VPC CNI | v1.18.5 | Pod 网络 |
+| CoreDNS | v1.11.3 | DNS 解析 |
+| Kube-proxy | v1.31.2 | 网络代理 |
+| Pod Identity Agent | v1.3.4 | IAM 认证 |
+| EBS CSI Driver | v1.37.0 | 块存储 |
+| EFS CSI Driver | v2.1.0 | 文件存储 |
+| S3 CSI Driver | v1.11.0 | 对象存储 |
+| Cluster Autoscaler | v1.31.0 | 自动扩缩容 |
+| AWS LB Controller | v2.11.0 | 负载均衡 |
 
-确保已安装以下工具：
+---
 
-- [AWS CLI](https://aws.amazon.com/cli/) v2.x
-- [eksctl](https://eksctl.io/) v0.150+
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) v1.34+
-- [helm](https://helm.sh/) v3.x
-- `envsubst` (通常包含在 `gettext` 包中)
-
-### 安装前置工具
+## ⚡ 快速开始
 
 ```bash
-# macOS
-brew install awscli eksctl kubectl helm gettext
+# 1. 克隆仓库
+git clone <repository-url>
+cd eks-cluster-deployment
 
-# Amazon Linux 2023
-sudo yum install -y aws-cli kubectl gettext
-curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-sudo mv /tmp/eksctl /usr/local/bin
-
-# 安装 Helm
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-```
-
-## 快速开始
-
-### 1. 配置 AWS 凭证
-
-```bash
-aws configure
-```
-
-### 2. 创建配置文件
-
-```bash
-# 复制配置模板
+# 2. 配置环境变量
 cp .env.example .env
+nano .env  # 填写必需的配置
 
-# 编辑配置文件
-nano .env
-```
-
-**`.env` 文件中需要填写的必需值：**
-
-```bash
-CLUSTER_NAME=your-cluster-name
-VPC_ID=vpc-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
-```
-
-详细配置选项请参考 [CONFIGURATION.md](CONFIGURATION.md)。
-
-### 3. 部署集群
-
-```bash
-# 添加执行权限
+# 3. 运行自动修复脚本（修复版本和配置）
 chmod +x scripts/*.sh
+./scripts/apply_critical_fixes.sh
 
-# 运行安装脚本
+# 4. 部署集群
 ./scripts/install_eks_cluster.sh
 ```
 
-脚本将自动完成以下步骤：
-1. 加载并验证配置
-2. 创建 EKS 集群和托管节点组
-3. 部署 Cluster Autoscaler
-4. 安装 EBS CSI Driver
-5. 安装 AWS Load Balancer Controller
-6. 迁移到 Pod Identity 以增强安全性
-7. 部署测试应用
+**部署时间:** 约 20-30 分钟
 
-## 项目结构
+---
+
+## 📦 前置要求
+
+### 1. AWS 网络环境
+
+必须预先创建以下资源：
+
+#### VPC 和子网
+- **1 个 VPC**
+- **3 个公有子网**（每个 AZ 一个）
+- **3 个私有子网**（每个 AZ 一个）
+- **NAT Gateway**（至少 1 个，建议 3 个）
+- **Internet Gateway**
+
+#### 路由配置
+```
+私有子网 → 0.0.0.0/0 → NAT Gateway → Internet Gateway
+公有子网 → 0.0.0.0/0 → Internet Gateway
+```
+
+#### 网络架构图
+```
+VPC (10.0.0.0/16)
+├── AZ-A (us-east-2a)
+│   ├── Public Subnet (10.0.1.0/24)  → IGW
+│   │   └── NAT Gateway
+│   └── Private Subnet (10.0.11.0/24) → NAT GW → IGW
+│       └── EKS 节点
+├── AZ-B (us-east-2b)
+│   ├── Public Subnet (10.0.2.0/24)  → IGW
+│   │   └── NAT Gateway
+│   └── Private Subnet (10.0.12.0/24) → NAT GW → IGW
+│       └── EKS 节点
+└── AZ-C (us-east-2c)
+    ├── Public Subnet (10.0.3.0/24)  → IGW
+    │   └── NAT Gateway
+    └── Private Subnet (10.0.13.0/24) → NAT GW → IGW
+        └── EKS 节点
+```
+
+### 2. 工具要求
+
+| 工具 | 最小版本 | 安装命令 |
+|------|---------|---------|
+| AWS CLI | v2.x | `brew install awscli` 或 [官方文档](https://aws.amazon.com/cli/) |
+| eksctl | v0.150+ | `brew install eksctl` 或 [官方文档](https://eksctl.io/) |
+| kubectl | v1.31+ | `brew install kubectl` 或 [官方文档](https://kubernetes.io/docs/tasks/tools/) |
+| helm | v3.x | `brew install helm` 或 [官方文档](https://helm.sh/) |
+| envsubst | - | `brew install gettext` |
+
+#### macOS 安装
+```bash
+brew install awscli eksctl kubectl helm gettext
+```
+
+#### Amazon Linux 2023 安装
+```bash
+sudo yum install -y aws-cli kubectl gettext
+
+# eksctl
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin
+
+# helm
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
+
+### 3. AWS 权限
+
+需要以下 IAM 权限：
+- EKS 完整权限
+- EC2 完整权限
+- IAM 创建角色和策略权限
+- CloudWatch Logs 写入权限
+- VPC 读取权限
+
+---
+
+## 📁 项目结构
 
 ```
 eks-cluster-deployment/
-├── README.md                       # 项目文档
-├── .env.example                    # 环境变量模板
-├── .gitignore                      # Git 忽略规则
+├── README.md                           # 本文档
+├── .env.example                        # 环境变量模板
+├── .gitignore                          # Git 忽略规则
 │
-├── scripts/                        # 脚本文件
-│   ├── setup_env.sh               # 环境配置和验证
-│   └── install_eks_cluster.sh     # 集群安装主脚本
+├── scripts/                            # 部署脚本
+│   ├── setup_env.sh                   # 环境变量加载和验证
+│   ├── install_eks_cluster.sh         # 主安装脚本
+│   ├── apply_critical_fixes.sh        # 自动修复脚本
+│   └── error_handling.sh              # 错误处理库（生成）
 │
-├── manifests/                      # Kubernetes 配置清单
-│   ├── cluster/                   # 集群配置
-│   │   └── eksctl_cluster_template.yaml  # EKS 集群模板
+├── manifests/                          # Kubernetes 清单
+│   ├── cluster/                       # 集群配置
+│   │   ├── eksctl_cluster_template.yaml      # EKS 集群模板
+│   │   ├── addon-versions-patch.yaml         # Addon 版本锁定（生成）
+│   │   ├── resource-controls.yaml            # 资源配额（生成）
+│   │   ├── pod-security.yaml                 # Pod 安全标准（生成）
+│   │   ├── network-policies.yaml             # 网络策略（生成）
+│   │   ├── cost-optimized-nodes.yaml         # 成本优化配置（生成）
+│   │   └── s3-csi-policy.json                # S3 限制策略（生成）
 │   │
-│   ├── addons/                    # 集群插件
-│   │   ├── cluster-autoscaler-rbac.yaml  # 自动扩缩容 RBAC
-│   │   └── cluster-autoscaler.yaml       # 自动扩缩容部署
+│   ├── addons/                        # 集群插件
+│   │   ├── cluster-autoscaler-rbac.yaml
+│   │   ├── cluster-autoscaler.yaml
+│   │   ├── efs-csi-driver.yaml
+│   │   └── s3-csi-driver.yaml
 │   │
-│   └── examples/                  # 示例应用
-│       ├── autoscaler.yaml        # 测试自动扩缩容
-│       └── ebs-app.yaml          # 测试 EBS 持久化存储
+│   └── examples/                      # 测试示例
+│       ├── autoscaler.yaml            # 测试自动扩缩容
+│       ├── ebs-app.yaml              # 测试 EBS 存储
+│       ├── efs-app.yaml              # 测试 EFS 存储
+│       └── s3-app.yaml               # 测试 S3 存储
 │
-├── eksctl_cluster_final.yaml      # 生成的最终集群配置（.gitignore）
-└── iam_policy.json                # 下载的 IAM 策略（.gitignore）
+└── eksctl_cluster_final.yaml          # 最终生成的配置（.gitignore）
 ```
 
-## 配置说明
+---
 
-### 使用配置文件（推荐）
+## ⚙️ 配置说明
 
-本项目使用 `.env` 文件进行配置，这种方式具有以下优点：
-- ✅ 敏感数据不会被提交到版本控制
-- ✅ 自动检测 AWS 账户信息
-- ✅ 部署前验证资源
-- ✅ 支持多环境配置
+### 环境变量配置
 
-完整文档请参考 [CONFIGURATION.md](CONFIGURATION.md)。
+1. **复制模板**
+   ```bash
+   cp .env.example .env
+   ```
 
-### 配置迁移助手
+2. **填写必需配置**
+   ```bash
+   # 集群基本信息
+   CLUSTER_NAME=my-eks-cluster
 
-如果你正在从旧版本（硬编码配置）升级：
+   # VPC 和子网 ID
+   VPC_ID=vpc-xxxxxxxxxxxxxxxxx
+   PRIVATE_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
+   PRIVATE_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
+   PRIVATE_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
+   PUBLIC_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
+   PUBLIC_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
+   PUBLIC_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
+   ```
+
+3. **可选配置**
+   ```bash
+   # AWS 配置（自动检测）
+   AWS_REGION=us-east-2
+   ACCOUNT_ID=123456789012
+
+   # Kubernetes 配置
+   K8S_VERSION=1.31
+   SERVICE_IPV4_CIDR=172.20.0.0/16  # 不能与 VPC CIDR 冲突
+
+   # 可用区（自动推导）
+   AZ_2A=us-east-2a
+   AZ_2B=us-east-2b
+   AZ_2C=us-east-2c
+   ```
+
+### 配置验证
 
 ```bash
-./migrate_config.sh
+# 验证配置
+source scripts/setup_env.sh
+
+# 检查 AWS 凭证
+aws sts get-caller-identity
+
+# 验证 VPC
+aws ec2 describe-vpcs --vpc-ids $VPC_ID
+
+# 验证子网
+aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_2A $PRIVATE_SUBNET_2B $PRIVATE_SUBNET_2C
 ```
 
-这个交互式脚本将帮助你创建 `.env` 配置文件。
+---
 
-## 架构说明
+## 🚀 部署步骤
 
-### 集群组件
-
-- **控制平面**：由 AWS EKS 托管
-- **节点组**：
-  - `eks-utils`：系统组件专用（2-4 节点，m5.large）
-  - `test`：应用工作负载（2-10 节点，m5.large）
-- **网络**：跨 3 个可用区的多 AZ 部署
-- **存储**：EBS CSI Driver 支持 gp3 卷
-- **自动扩缩容**：基于 Pod 资源请求的 Cluster Autoscaler
-- **负载均衡**：AWS Load Balancer Controller 管理 ALB/NLB
-
-### 插件列表
-
-| 插件 | 版本 | 用途 |
-|--------|---------|---------|
-| vpc-cni | latest | Pod 网络 |
-| coredns | latest | DNS 解析 |
-| kube-proxy | latest | 网络代理 |
-| eks-pod-identity-agent | latest | IAM 认证 |
-| aws-ebs-csi-driver | latest | 持久化存储 |
-| cluster-autoscaler | v1.34.0 | 节点自动扩缩容 |
-| aws-load-balancer-controller | v1.13.0 | Ingress/负载均衡 |
-
-## 集群配置详情
-
-### 节点组
-
-**eks-utils**（系统组件）：
-- 实例类型：m7i.large (2 vCPU, 8GB RAM)
-- 容量：2-4 节点
-- 标签：`app=eks-utils`
-- 用途：CoreDNS、Load Balancer Controller、Cluster Autoscaler
-
-**test**（应用工作负载）：
-- 实例类型：m7i.large (2 vCPU, 8GB RAM)
-- 容量：2-10 节点
-- 标签：`app=test`
-- 用途：应用 Pod
-
-### 安全特性
-
-- ✅ **EKS API 端点纯内网访问**（privateAccess: true, publicAccess: false）
-- ✅ 使用 Pod Identity 进行服务账户认证
-- ✅ 工作节点部署在私有子网
-- ✅ Cluster Autoscaler 的 RBAC 权限控制
-- ✅ 最小权限安全上下文
-- ✅ 只读根文件系统
-- ✅ 禁止权限提升
-- ✅ 启用控制平面日志（保留 90 天）
-
-## 测试
-
-### 测试集群自动扩缩容
+### Step 1: 运行自动修复脚本
 
 ```bash
-# 部署测试工作负载
+./scripts/apply_critical_fixes.sh
+```
+
+**这个脚本会自动：**
+- ✅ 修复 Kubernetes 版本（确保使用 1.31）
+- ✅ 更新组件到最新稳定版本
+- ✅ 生成安全配置文件
+- ✅ 生成成本优化配置
+- ✅ 创建错误处理库
+
+### Step 2: 手动更新配置（可选）
+
+根据 `apply_critical_fixes.sh` 的输出，手动更新以下文件：
+
+1. **合并 addon 版本锁定**
+   ```bash
+   # 将 manifests/cluster/addon-versions-patch.yaml
+   # 的内容合并到 eksctl_cluster_template.yaml
+   ```
+
+2. **更新 S3 IAM 策略**
+   ```bash
+   # 编辑 manifests/cluster/s3-csi-policy.json
+   # 替换 ${S3_BUCKET_PREFIX} 为实际值
+   ```
+
+3. **使用成本优化配置（推荐）**
+   ```bash
+   # 可选：使用 cost-optimized-nodes.yaml
+   # 替换 eksctl_cluster_template.yaml 中的节点组
+   ```
+
+### Step 3: 部署集群
+
+```bash
+./scripts/install_eks_cluster.sh
+```
+
+**部署流程：**
+1. 加载和验证环境变量
+2. 创建 EKS 集群（15-20分钟）
+3. 部署 Cluster Autoscaler
+4. 安装 AWS Load Balancer Controller
+5. 迁移到 Pod Identity
+6. 部署测试应用
+
+### Step 4: 应用安全配置
+
+```bash
+# 应用资源配额
+kubectl apply -f manifests/cluster/resource-controls.yaml
+
+# 应用 Pod 安全标准
+kubectl apply -f manifests/cluster/pod-security.yaml
+
+# 应用网络策略
+kubectl apply -f manifests/cluster/network-policies.yaml
+```
+
+### Step 5: 验证部署
+
+```bash
+# 检查节点
+kubectl get nodes
+
+# 检查所有 Pod
+kubectl get pods -A
+
+# 检查 Cluster Autoscaler
+kubectl logs -n kube-system -l app=cluster-autoscaler --tail=20
+
+# 检查 AWS LB Controller
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20
+```
+
+---
+
+## 📊 版本信息
+
+### 当前版本
+- **Kubernetes**: 1.31（EKS 最新稳定版）
+- **Cluster Autoscaler**: v1.31.0（匹配 K8s 版本）
+- **AWS Load Balancer Controller**: v2.11.0
+- **EBS CSI Driver**: v1.37.0
+- **EFS CSI Driver**: v2.1.0
+- **S3 CSI Driver**: v1.11.0
+
+### 版本兼容性
+
+| K8s 版本 | Cluster Autoscaler | AWS LB Controller | 状态 |
+|---------|-------------------|-------------------|------|
+| 1.31 | v1.31.x | v2.8.0+ | ✅ 推荐 |
+| 1.30 | v1.30.x | v2.8.0+ | ✅ 稳定 |
+| 1.29 | v1.29.x | v2.6.0+ | ⚠️ 即将弃用 |
+
+### 版本更新策略
+- **季度检查**：每 3 个月检查组件更新
+- **安全更新**：立即应用关键安全补丁
+- **主版本升级**：在非生产环境测试后再升级
+
+---
+
+## 🔒 安全配置
+
+### 网络安全
+- ✅ **EKS API 纯内网访问**（`privateAccess: true, publicAccess: false`）
+- ✅ **节点部署在私有子网**
+- ✅ **通过 NAT Gateway 访问互联网**
+- ✅ **Network Policy 隔离**
+
+### Pod 安全
+- ✅ **Pod Security Standards**（baseline/restricted）
+- ✅ **非 root 用户运行**
+- ✅ **只读根文件系统**
+- ✅ **禁止权限提升**
+- ✅ **最小化 Capabilities**
+
+### 访问控制
+- ✅ **Pod Identity for IRSA**
+- ✅ **最小权限 IAM 角色**
+- ✅ **RBAC 权限控制**
+
+### 日志和审计
+- ✅ **Control Plane 日志**（保留 30 天）
+- ✅ **CloudWatch Logs 集成**
+- ✅ **审计日志启用**
+
+### 安全检查清单
+
+部署后运行：
+```bash
+# 检查 Pod Security
+kubectl auth can-i create pod --as=system:serviceaccount:default:default
+
+# 检查 Network Policy
+kubectl get networkpolicies -A
+
+# 检查 ResourceQuota
+kubectl describe resourcequota -n default
+
+# 检查容器安全上下文
+kubectl get pods -A -o json | jq '.items[].spec.containers[].securityContext'
+
+# 检查运行为 root 的 Pod
+kubectl get pods -A -o json | jq -r '.items[] | select(.spec.containers[].securityContext.runAsUser==0) | .metadata.name'
+```
+
+---
+
+## 💰 成本优化
+
+### 当前成本估算（未优化）
+| 项目 | 配置 | 月度成本 (us-east-2) |
+|------|------|---------------------|
+| EKS 控制平面 | - | $72 |
+| eks-utils 节点 | 2x m7i.large | $175 |
+| app 节点 | 2x m7i.large | $175 |
+| EBS 卷 | 4x 30GB gp3 | $12 |
+| CloudWatch Logs | 90天保留 | $150-300 |
+| NAT Gateway | 3个 | $96 |
+| **总计** | | **$680-780** |
+
+### 优化后成本估算
+| 项目 | 配置 | 月度成本 | 节省 |
+|------|------|---------|------|
+| EKS 控制平面 | - | $72 | - |
+| eks-utils 节点 | 2x t4g.medium | $60 | **-66%** |
+| app 节点 | Spot 实例 | $44 | **-75%** |
+| EBS 卷 | 3x 20GB gp3 | $6 | **-50%** |
+| CloudWatch Logs | 30天保留 | $30 | **-80%** |
+| NAT Gateway | 3个 | $96 | - |
+| **总计** | | **$308** | **-55%** |
+
+**月度节省: $372-472（55-60%）**
+
+### 优化建议
+
+1. **使用 Spot 实例**
+   ```yaml
+   # manifests/cluster/cost-optimized-nodes.yaml 已包含
+   spot: true
+   instanceTypes: ["m7i.large", "m6i.large", "m5.large"]
+   ```
+
+2. **使用 ARM 架构（Graviton）**
+   ```yaml
+   # 系统节点使用 t4g.medium（ARM）
+   instanceType: t4g.medium  # 比 t3.medium 便宜 20%
+   ```
+
+3. **动态节点扩缩容**
+   ```yaml
+   desiredCapacity: 0  # 无负载时缩减到 0
+   minSize: 0
+   maxSize: 10
+   ```
+
+4. **减少日志保留期**
+   ```yaml
+   cloudWatch:
+     clusterLogging:
+       logRetentionInDays: 30  # 从 90 改为 30
+   ```
+
+5. **使用 Cluster Autoscaler**
+   - 自动移除空闲节点
+   - 优化资源利用率
+
+### 成本监控
+
+```bash
+# 使用 kubectl-cost 插件
+kubectl cost --window 7d
+
+# 查看节点利用率
+kubectl top nodes
+
+# 查看 Pod 资源使用
+kubectl top pods -A
+```
+
+---
+
+## 🧪 测试验证
+
+### 1. 测试 Cluster Autoscaler
+
+```bash
+# 部署测试负载
 kubectl apply -f manifests/examples/autoscaler.yaml
 
-# 扩容
+# 扩容到 10 个副本
 kubectl scale deployment autoscaler --replicas=10
 
 # 观察节点自动增加
 kubectl get nodes -w
 
-# 缩容
+# 缩容到 0
 kubectl scale deployment autoscaler --replicas=0
+
+# 观察节点自动减少（约 10 分钟后）
+kubectl get nodes -w
 ```
 
-### 测试 EBS CSI Driver
+### 2. 测试 EBS CSI Driver
 
 ```bash
-# 部署带持久化卷的测试应用
+# 部署 EBS 测试应用
 kubectl apply -f manifests/examples/ebs-app.yaml
 
-# 验证 PVC 已绑定
+# 验证 PVC 创建和绑定
 kubectl get pvc
+kubectl get pv
 
-# 验证 Pod 正在运行
+# 验证 Pod 运行
 kubectl get pods -l app=ebs-app
+
+# 验证数据持久化
+kubectl exec -it $(kubectl get pod -l app=ebs-app -o name) -- df -h /data
 ```
 
-### 测试 Load Balancer Controller
-
-安装脚本会自动部署 2048 游戏作为测试：
+### 3. 测试 EFS CSI Driver
 
 ```bash
-# 获取 Ingress URL
+# 先创建 EFS 文件系统
+EFS_ID=$(aws efs create-file-system \
+  --performance-mode generalPurpose \
+  --throughput-mode bursting \
+  --region ${AWS_REGION} \
+  --query 'FileSystemId' \
+  --output text)
+
+# 创建挂载目标（每个私有子网）
+for subnet in $PRIVATE_SUBNET_2A $PRIVATE_SUBNET_2B $PRIVATE_SUBNET_2C; do
+  aws efs create-mount-target \
+    --file-system-id $EFS_ID \
+    --subnet-id $subnet \
+    --security-groups <your-security-group-id>
+done
+
+# 部署 EFS CSI Driver
+kubectl apply -f manifests/addons/efs-csi-driver.yaml
+
+# 部署测试应用
+export EFS_ID=$EFS_ID
+envsubst < manifests/examples/efs-app.yaml | kubectl apply -f -
+
+# 验证多 Pod 共享访问
+kubectl scale deployment efs-app --replicas=3
+kubectl get pods -l app=efs-app
+```
+
+### 4. 测试 S3 CSI Driver
+
+```bash
+# 创建 S3 bucket
+S3_BUCKET_NAME="my-eks-test-bucket-$(date +%s)"
+aws s3 mb s3://${S3_BUCKET_NAME}
+
+# 部署 S3 CSI Driver
+kubectl apply -f manifests/addons/s3-csi-driver.yaml
+
+# 部署测试应用
+export S3_BUCKET_NAME=$S3_BUCKET_NAME
+envsubst < manifests/examples/s3-app.yaml | kubectl apply -f -
+
+# 验证挂载
+kubectl exec -it $(kubectl get pod -l app=s3-app -o name | head -1) -- ls -la /data
+```
+
+### 5. 测试 AWS Load Balancer Controller
+
+```bash
+# 部署 2048 游戏（自动创建 ALB）
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/examples/2048/2048_full.yaml
+
+# 获取 ALB 地址
 kubectl get ingress -n game-2048
 
-# 在浏览器中访问显示的 ADDRESS
+# 等待 ALB 创建（约 3-5 分钟）
+watch kubectl get ingress -n game-2048
+
+# 访问游戏
+# 复制 ADDRESS 到浏览器
 ```
 
-## 监控
+---
 
-### 查看 Cluster Autoscaler 日志
+## 📊 监控和日志
+
+### 查看组件日志
 
 ```bash
+# Cluster Autoscaler
 kubectl logs -n kube-system -l app=cluster-autoscaler --tail=50 -f
-```
 
-### 查看 Load Balancer Controller 日志
-
-```bash
+# AWS LB Controller
 kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50 -f
-```
 
-### 查看 EBS CSI Driver 日志
-
-```bash
+# EBS CSI Controller
 kubectl logs -n kube-system -l app=ebs-csi-controller --tail=50 -f
+
+# EFS CSI Controller
+kubectl logs -n kube-system -l app=efs-csi-controller --tail=50 -f
+
+# CoreDNS
+kubectl logs -n kube-system -l k8s-app=kube-dns --tail=50 -f
 ```
 
-## 清理资源
-
-删除集群和所有相关资源：
+### CloudWatch Logs
 
 ```bash
-# 先删除测试应用
-kubectl delete -f test-autoscaler.yaml
-kubectl delete -f test-ebs-app.yaml
-kubectl delete -f https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.11.0/docs/examples/2048/2048_full.yaml
+# 列出日志组
+aws logs describe-log-groups \
+  --log-group-name-prefix /aws/eks/${CLUSTER_NAME}
 
-# 删除集群
-eksctl delete cluster --name=${CLUSTER_NAME} --region=${AWS_REGION}
+# 查看 API Server 日志
+aws logs tail /aws/eks/${CLUSTER_NAME}/cluster/api --follow
 
-# 清理 IAM 策略（可选）
-aws iam delete-policy --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy-${CLUSTER_NAME}
+# 查看审计日志
+aws logs tail /aws/eks/${CLUSTER_NAME}/cluster/audit --follow
 ```
 
-## 故障排查
-
-### 配置问题
-
-如果遇到配置错误：
+### 资源监控
 
 ```bash
-# 验证配置
-./setup_env.sh
+# 节点资源使用
+kubectl top nodes
 
-# 检查 AWS 凭证
-aws sts get-caller-identity
+# Pod 资源使用
+kubectl top pods -A --sort-by=memory
 
-# 验证 VPC 和子网
-aws ec2 describe-vpcs --vpc-ids $VPC_ID
-aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_2A
+# 按命名空间统计
+kubectl top pods -A | awk '{if(NR>1) arr[$1]+=$3} END {for (i in arr) print i, arr[i]}'
 ```
 
-### 部署问题
+### 事件监控
 
 ```bash
-# 检查集群状态
-eksctl get cluster --name=${CLUSTER_NAME}
+# 查看最近事件
+kubectl get events -A --sort-by='.lastTimestamp' | tail -20
 
-# 检查节点状态
-kubectl get nodes
+# 监控事件
+kubectl get events -A -w
 
-# 检查 Pod 状态
-kubectl get pods -A
-
-# 查看事件
-kubectl get events -A --sort-by='.lastTimestamp'
+# 查看告警事件
+kubectl get events -A --field-selector type!=Normal
 ```
+
+---
+
+## 🔧 故障排查
 
 ### 常见问题
 
-详细解决方案请参考 [CONFIGURATION.md](CONFIGURATION.md) 的故障排查部分。
+#### 1. 集群创建失败
 
-## 成本估算
+**问题：** `eksctl create cluster` 失败
 
-AWS 费用估算（us-east-2 区域）：
+**排查步骤：**
+```bash
+# 检查 AWS 凭证
+aws sts get-caller-identity
 
-| 组件 | 每小时 | 每月 |
-|-----------|-----------|------------|
-| EKS 控制平面 | $0.10 | ~$73 |
-| 4个 m5.large 节点 | $0.384 | ~$280 |
-| EBS gp3 卷 (120GB) | - | ~$10 |
-| 数据传输 | 变动 | ~$10-50 |
-| **总计** | **~$0.50** | **~$373-413** |
+# 检查 VPC 和子网
+aws ec2 describe-vpcs --vpc-ids $VPC_ID
+aws ec2 describe-subnets --subnet-ids $PRIVATE_SUBNET_2A $PRIVATE_SUBNET_2B $PRIVATE_SUBNET_2C
 
-> 注意：费用因使用量、区域和数据传输而异。使用 [AWS 定价计算器](https://calculator.aws/)获取精确估算。
+# 检查 IAM 权限
+aws iam get-user
 
-## 安全最佳实践
+# 查看 CloudFormation 错误
+aws cloudformation describe-stack-events \
+  --stack-name eksctl-${CLUSTER_NAME}-cluster \
+  --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`]'
+```
 
-- ✅ 安全存储 `.env` 文件，永远不要提交到 git
-- ✅ 尽可能使用 IAM 角色而不是访问密钥
-- ✅ 启用 CloudTrail 进行审计日志记录
-- ✅ 定期更新 EKS 版本和插件
-- ✅ 实施网络策略
-- ✅ 使用 AWS Secrets Manager 管理应用密钥
-- ✅ 启用 GuardDuty 进行威胁检测
+#### 2. Pod 无法调度
 
-## 文档
+**问题：** Pod 一直处于 Pending 状态
 
-- [CONFIGURATION.md](CONFIGURATION.md) - 详细配置指南
-- [.env.example](.env.example) - 配置模板
-- [AWS EKS 文档](https://docs.aws.amazon.com/eks/)
-- [eksctl 文档](https://eksctl.io/)
+**排查步骤：**
+```bash
+# 查看 Pod 事件
+kubectl describe pod <pod-name>
 
-## 支持
+# 检查节点资源
+kubectl top nodes
+kubectl describe nodes
 
-如有问题：
-1. 查看 [CONFIGURATION.md](CONFIGURATION.md) 获取配置帮助
-2. 查看 CloudWatch 日志排查部署问题
-3. 检查 eksctl 和 kubectl 日志
+# 检查 Cluster Autoscaler 日志
+kubectl logs -n kube-system -l app=cluster-autoscaler --tail=50
+```
 
-## 许可证
+#### 3. 无法访问 API Server
 
-本项目按原样提供，用于教育和部署目的。
+**问题：** `kubectl` 命令超时
+
+**原因：** API Server 配置为纯内网访问
+
+**解决方案：**
+- 从 VPC 内部访问（EC2、VPN、Direct Connect）
+- 临时启用公网访问：
+  ```bash
+  eksctl utils update-cluster-endpoints \
+    --cluster=${CLUSTER_NAME} \
+    --private-access=true \
+    --public-access=true \
+    --region=${AWS_REGION}
+  ```
+
+#### 4. LoadBalancer 创建失败
+
+**问题：** Ingress 没有分配 ADDRESS
+
+**排查步骤：**
+```bash
+# 检查 AWS LB Controller 日志
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=100
+
+# 检查 Ingress 事件
+kubectl describe ingress <ingress-name> -n <namespace>
+
+# 检查子网标签
+aws ec2 describe-subnets --subnet-ids $PUBLIC_SUBNET_2A --query 'Subnets[].Tags'
+```
+
+**解决方案：** 确保公有子网有标签：
+```
+kubernetes.io/role/elb = 1
+kubernetes.io/cluster/${CLUSTER_NAME} = shared
+```
+
+#### 5. EBS 卷无法挂载
+
+**问题：** PVC 一直 Pending
+
+**排查步骤：**
+```bash
+# 检查 StorageClass
+kubectl get sc
+
+# 检查 EBS CSI Driver
+kubectl get pods -n kube-system -l app=ebs-csi-controller
+
+# 检查 PVC 事件
+kubectl describe pvc <pvc-name>
+
+# 检查 EBS CSI Controller 日志
+kubectl logs -n kube-system -l app=ebs-csi-controller --tail=50
+```
+
+---
+
+## 🗑️ 清理资源
+
+### 完整清理
+
+```bash
+# 1. 删除测试应用
+kubectl delete -f manifests/examples/autoscaler.yaml
+kubectl delete -f manifests/examples/ebs-app.yaml
+kubectl delete -f manifests/examples/efs-app.yaml
+kubectl delete -f manifests/examples/s3-app.yaml
+kubectl delete namespace game-2048
+
+# 2. 删除 Load Balancer（防止阻止集群删除）
+kubectl delete ingress --all -A
+
+# 3. 删除 PVC（释放 EBS 卷）
+kubectl delete pvc --all -A
+
+# 4. 等待 LoadBalancer 和 EBS 卷释放
+sleep 60
+
+# 5. 删除集群
+eksctl delete cluster --name=${CLUSTER_NAME} --region=${AWS_REGION} --wait
+
+# 6. 清理 IAM 策略（可选）
+aws iam delete-policy \
+  --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy-${CLUSTER_NAME}
+
+# 7. 删除 EFS 文件系统（如果创建了）
+aws efs delete-file-system --file-system-id ${EFS_ID}
+
+# 8. 删除 S3 bucket（如果创建了）
+aws s3 rb s3://${S3_BUCKET_NAME} --force
+```
+
+### 部分清理
+
+```bash
+# 只删除测试应用
+kubectl delete -f manifests/examples/
+
+# 只删除特定节点组
+eksctl delete nodegroup --cluster=${CLUSTER_NAME} --name=test --region=${AWS_REGION}
+
+# 只卸载 Helm releases
+helm uninstall aws-load-balancer-controller -n kube-system
+```
+
+---
+
+## 📚 参考资源
+
+### 官方文档
+- [AWS EKS Documentation](https://docs.aws.amazon.com/eks/)
+- [eksctl Documentation](https://eksctl.io/)
+- [Kubernetes Documentation](https://kubernetes.io/docs/)
+- [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
+
+### 最佳实践
+- [EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/)
+- [Kubernetes Production Best Practices](https://learnk8s.io/production-best-practices)
+- [Cost Optimization Guide](https://www.kubecost.com/kubernetes-cost-optimization/)
+
+### 组件版本
+- [Kubernetes Releases](https://kubernetes.io/releases/)
+- [Cluster Autoscaler Releases](https://github.com/kubernetes/autoscaler/releases)
+- [EBS CSI Driver Releases](https://github.com/kubernetes-sigs/aws-ebs-csi-driver/releases)
+- [EFS CSI Driver Releases](https://github.com/kubernetes-sigs/aws-efs-csi-driver/releases)
+- [S3 CSI Driver Releases](https://github.com/awslabs/mountpoint-s3-csi-driver/releases)
+
+---
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+---
+
+## 📄 许可证
+
+MIT License - 详见 [LICENSE](LICENSE) 文件
+
+---
+
+## ✨ 致谢
+
+本项目使用了以下开源项目：
+- [eksctl](https://eksctl.io/)
+- [Kubernetes](https://kubernetes.io/)
+- [AWS Controllers for Kubernetes](https://aws-controllers-k8s.github.io/community/)
+
+---
+
+**维护者:** Platform Team
+**最后更新:** 2025-12-05
+**文档版本:** v2.0

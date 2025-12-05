@@ -1,0 +1,26 @@
+# AWS Region - Singapore
+aws_region = "ap-southeast-1"
+
+# Project Configuration
+project_name = "eks-cluster"
+cluster_name = "eks-cluster"
+
+# VPC CIDR Block
+vpc_cidr = "10.0.0.0/16"
+
+# NAT Gateway Configuration
+# Set to false for high availability (one NAT Gateway per AZ - higher cost)
+# Set to true for cost savings (single NAT Gateway - lower availability)
+single_nat_gateway = false
+
+# VPC Flow Logs
+enable_flow_logs         = true
+flow_logs_retention_days = 7
+
+# Common Tags
+common_tags = {
+  Environment = "production"
+  ManagedBy   = "terraform"
+  Project     = "eks-cluster"
+  Region      = "ap-southeast-1"
+}
