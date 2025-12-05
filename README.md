@@ -31,7 +31,8 @@
 ### 核心功能
 - ✅ **自动化部署** - 一键部署完整 EKS 集群
 - ✅ **多 AZ 高可用** - 跨 3 个可用区部署
-- ✅ **Graviton 架构** - 使用 AWS Graviton3 (c8g.large) 节省 31% 成本
+- ✅ **混合架构** - 系统节点 Intel，应用节点 Graviton，兼顾兼容性和成本
+- ✅ **工作负载隔离** - 系统组件和应用完全隔离，使用 Taint/Toleration
 - ✅ **自动扩缩容** - Cluster Autoscaler 自动管理节点
 - ✅ **存储支持** - EBS/EFS/S3 CSI Driver
 - ✅ **负载均衡** - AWS Load Balancer Controller
@@ -77,13 +78,13 @@ chmod +x scripts/*.sh
 **部署时间:** 约 20-30 分钟
 
 **架构说明:**
-- 默认使用 AWS Graviton3 (c8g.large) ARM64 架构
-- 相比 Intel 实例节省 31% 成本，性能相当或更好
-- 所有容器镜像均支持 ARM64 架构（multi-arch）
+- **混合架构设计**：系统节点使用 Intel (amd64)，应用节点使用 Graviton (arm64)
+- 系统组件使用 Intel 确保最大兼容性
+- 应用工作负载使用 Graviton 节省成本（相比 Intel 节省 31%）
 
 **节点组划分:**
-- **eks-utils (3节点)**: 系统组件专用，运行 CoreDNS、Cluster Autoscaler、AWS LB Controller 等
-- **app (3节点)**: 应用工作负载专用，带 taint 防止系统组件调度
+- **eks-utils (3节点, Intel m7i.large)**: 系统组件专用，运行 CoreDNS、Cluster Autoscaler、AWS LB Controller 等
+- **app (3节点, Graviton c8g.large)**: 应用工作负载专用，带 taint 防止系统组件调度
 
 ---
 
@@ -169,20 +170,22 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 ### 节点组架构
 
 ```
-EKS Cluster (Kubernetes 1.34)
-├── eks-utils 节点组 (3x c8g.large)
-│   ├── 标签: app=eks-utils, arch=arm64
+EKS Cluster (Kubernetes 1.34) - 混合架构设计
+├── eks-utils 节点组 (3x m7i.large, Intel)
+│   ├── 标签: app=eks-utils, arch=amd64
 │   ├── 无 Taint (接受所有系统组件)
+│   ├── 架构: x86_64 (Intel/AMD)
 │   └── 运行组件:
 │       ├── CoreDNS
 │       ├── Cluster Autoscaler
 │       ├── AWS Load Balancer Controller
 │       ├── EBS/EFS/S3 CSI Controllers
-│       └── kube-proxy, vpc-cni
+│       └── kube-proxy, vpc-cni, Pod Identity Agent
 │
-└── app 节点组 (3x c8g.large)
+└── app 节点组 (3x c8g.large, Graviton)
     ├── 标签: app=application, arch=arm64, workload=user-apps
     ├── Taint: workload=user-apps:NoSchedule
+    ├── 架构: ARM64 (AWS Graviton3)
     └── 运行组件:
         └── 用户应用 Pod（需要容忍 taint）
 ```
@@ -448,36 +451,39 @@ kubectl get pods -A -o json | jq -r '.items[] | select(.spec.containers[].securi
 | NAT Gateway | 3个 | $96 |
 | **总计** | | **$862-1012** |
 
-### 优化后成本估算（当前配置 - Graviton）
+### 优化后成本估算（当前配置 - 混合架构）
 | 项目 | 配置 | 月度成本 | 节省 |
 |------|------|---------|------|
 | EKS 控制平面 | - | $72 | - |
-| eks-utils 节点 | 3x c8g.large (ARM) | $180 | **-31%** |
-| app 节点 | 3x c8g.large (ARM) | $180 | **-31%** |
+| eks-utils 节点 | 3x m7i.large (Intel) | $263 | - |
+| app 节点 | 3x c8g.large (Graviton) | $180 | **-31%** |
 | EBS 卷 | 6x 30GB gp3 | $18 | - |
 | CloudWatch Logs | 30天保留 | $30 | **-80%** |
 | NAT Gateway | 3个 | $96 | - |
-| **总计** | | **$576** | **-33% 到 -43%** |
+| **总计** | | **$659** | **-24% 到 -35%** |
 
-### 进一步优化（Graviton + Spot）
+### 进一步优化（混合架构 + Spot）
 | 项目 | 配置 | 月度成本 | 节省 |
 |------|------|---------|------|
 | EKS 控制平面 | - | $72 | - |
-| eks-utils 节点 | 3x c8g.large (ARM) | $180 | **-31%** |
-| app 节点 | 3x Spot c8g.large (ARM) | $54 | **-79%** |
+| eks-utils 节点 | 3x m7i.large (Intel) | $263 | - |
+| app 节点 | 3x Spot c8g.large (Graviton) | $54 | **-79%** |
 | EBS 卷 | 5x 20GB gp3 | $10 | **-44%** |
 | CloudWatch Logs | 30天保留 | $30 | **-80%** |
 | NAT Gateway | 3个 | $96 | - |
-| **总计** | | **$442** | **-49% 到 -56%** |
+| **总计** | | **$525** | **-39% 到 -48%** |
 
-**月度节省: $286-436（33-43%）到 $420-570（49-56% with Spot）**
+**月度节省: $203-353（24-35%）到 $337-487（39-48% with Spot）**
 
 ### 优化建议
 
-1. **✅ 已应用：使用 Graviton (ARM) 架构**
+1. **✅ 已应用：混合架构设计**
    ```yaml
-   # 当前配置使用 c8g.large (AWS Graviton3)
-   instanceType: c8g.large
+   # 系统节点组 (eks-utils) - Intel 确保兼容性
+   instanceType: m7i.large  # x86_64 架构
+
+   # 应用节点组 (app) - Graviton 节省成本
+   instanceType: c8g.large  # ARM64 架构
    # 相比 Intel m7i.large 节省 31%
    # 性能相当或更好，能耗更低
    ```
