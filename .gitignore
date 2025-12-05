@@ -4,12 +4,21 @@
 # Editor
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # Credentials and secrets
 *.pem
 *.key
 credentials.json
 .env
+.env.local
+.env.*.local
+
+# Generated files
+eksctl_cluster_final.yaml
+iam_policy.json
 
 # Terraform
 *.tfstate
@@ -19,3 +28,15 @@ credentials.json
 
 # AWS
 .aws/
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Logs
+*.log
+logs/
+
+# Backup files
+*.bak
+*.backup
