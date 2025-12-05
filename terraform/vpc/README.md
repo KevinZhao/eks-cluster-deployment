@@ -32,7 +32,6 @@ VPC (10.0.0.0/16)
 - **Private Subnets** - For EKS worker nodes (10.0.10.0/24, 10.0.11.0/24, 10.0.12.0/24)
 - **NAT Gateways** - One per AZ for high availability (configurable)
 - **Internet Gateway** - For public subnet internet access
-- **VPC Flow Logs** - Network traffic monitoring (optional)
 - **Kubernetes Tags** - Automatic subnet tagging for EKS integration
 
 ## Prerequisites
@@ -152,19 +151,6 @@ single_nat_gateway = true
 - Lower cost (~$0.045/hour = $32/month)
 - Single point of failure - if AZ fails, all private subnets lose internet
 
-### VPC Flow Logs
-
-Enable network traffic monitoring:
-```hcl
-enable_flow_logs         = true
-flow_logs_retention_days = 7
-```
-
-Disable to reduce costs:
-```hcl
-enable_flow_logs = false
-```
-
 ### Custom CIDR Blocks
 
 Modify the VPC and subnet CIDR blocks:
@@ -187,7 +173,6 @@ The configuration automatically creates:
 | NAT Gateways | 1-3 | Private subnet internet access |
 | Elastic IPs | 1-3 | NAT Gateway public IPs |
 | Route Tables | 4 | Network routing (1 public, 3 private) |
-| VPC Flow Logs | 0-1 | Network monitoring (optional) |
 
 ## Cost Estimation
 
@@ -198,18 +183,16 @@ The configuration automatically creates:
 |----------|--------------|
 | NAT Gateways (3) | ~$97 |
 | Data Processing (500GB) | ~$45 |
-| VPC Flow Logs | ~$5 |
-| **Total** | **~$147** |
+| **Total** | **~$142** |
 
 ### Cost Optimized Configuration (1 NAT Gateway)
 | Resource | Monthly Cost |
 |----------|--------------|
 | NAT Gateway (1) | ~$32 |
 | Data Processing (500GB) | ~$45 |
-| VPC Flow Logs | ~$5 |
-| **Total** | **~$82** |
+| **Total** | **~$77** |
 
-Note: Data transfer costs vary based on usage.
+**Note:** Data transfer costs vary based on usage.
 
 ## Outputs
 

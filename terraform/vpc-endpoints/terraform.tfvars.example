@@ -1,0 +1,20 @@
+# VPC Endpoints Configuration Example
+# Copy this file to terraform.tfvars and fill in your values
+
+vpc_id     = "vpc-xxxxxxxxxxxxxxxxx"
+cluster_name = "my-eks-cluster"
+region     = "us-east-2"
+
+# Private subnet IDs where interface endpoints will be created
+private_subnet_ids = [
+  "subnet-xxxxxxxxxxxxxxxxx",  # us-east-2a
+  "subnet-xxxxxxxxxxxxxxxxx",  # us-east-2b
+  "subnet-xxxxxxxxxxxxxxxxx"   # us-east-2c
+]
+
+# Private route table IDs for S3 gateway endpoint
+private_route_table_ids = [
+  "rtb-xxxxxxxxxxxxxxxxx",
+  "rtb-xxxxxxxxxxxxxxxxx",
+  "rtb-xxxxxxxxxxxxxxxxx"
+]

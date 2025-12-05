@@ -39,19 +39,6 @@ variable "single_nat_gateway" {
   default     = false
 }
 
-# VPC Flow Logs
-variable "enable_flow_logs" {
-  description = "Enable VPC Flow Logs for network traffic monitoring"
-  type        = bool
-  default     = true
-}
-
-variable "flow_logs_retention_days" {
-  description = "Number of days to retain VPC Flow Logs"
-  type        = number
-  default     = 7
-}
-
 # Common Tags
 variable "common_tags" {
   description = "Common tags to be applied to all resources"

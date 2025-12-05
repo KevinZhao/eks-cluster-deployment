@@ -30,8 +30,6 @@
                 "ec2:GetCoipPoolUsage",
                 "ec2:DescribeCoipPools",
                 "ec2:GetSecurityGroupsForVpc",
-                "ec2:DescribeIpamPools",
-                "ec2:DescribeRouteTables",
                 "elasticloadbalancing:DescribeLoadBalancers",
                 "elasticloadbalancing:DescribeLoadBalancerAttributes",
                 "elasticloadbalancing:DescribeListeners",
@@ -195,8 +193,7 @@
                 "elasticloadbalancing:ModifyTargetGroupAttributes",
                 "elasticloadbalancing:DeleteTargetGroup",
                 "elasticloadbalancing:ModifyListenerAttributes",
-                "elasticloadbalancing:ModifyCapacityReservation",
-                "elasticloadbalancing:ModifyIpPools"
+                "elasticloadbalancing:ModifyCapacityReservation"
             ],
             "Resource": "*",
             "Condition": {
@@ -242,8 +239,7 @@
                 "elasticloadbalancing:ModifyListener",
                 "elasticloadbalancing:AddListenerCertificates",
                 "elasticloadbalancing:RemoveListenerCertificates",
-                "elasticloadbalancing:ModifyRule",
-                "elasticloadbalancing:SetRulePriorities"
+                "elasticloadbalancing:ModifyRule"
             ],
             "Resource": "*"
         }

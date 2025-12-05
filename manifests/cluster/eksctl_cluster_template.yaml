@@ -63,12 +63,15 @@ iam:
         efsCSIController: true
       roleName: ${CLUSTER_NAME}-efs-csi-driver-role
     # S3 CSI driver service account
-    - metadata:
-        name: s3-csi-driver-sa
-        namespace: kube-system
-      attachPolicyARNs:
-        - arn:${AWS_PARTITION}:iam::aws:policy/AmazonS3FullAccess
-      roleName: ${CLUSTER_NAME}-s3-csi-driver-role
+    # WARNING: AmazonS3FullAccess grants s3:* on all buckets (security risk)
+    # RECOMMENDED: Create custom policy with least privilege (see scripts/5_create_s3_csi_policy.sh)
+    # Uncomment below if S3 mounting is needed with proper custom policy:
+    # - metadata:
+    #     name: s3-csi-driver-sa
+    #     namespace: kube-system
+    #   attachPolicyARNs:
+    #     - arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:policy/${CLUSTER_NAME}-S3CSIDriverPolicy
+    #   roleName: ${CLUSTER_NAME}-s3-csi-driver-role
 
 # 节点组配置
 # 系统节点组，主要运行aws-load-balancer-controller coredns cluster-autoscaler等组件

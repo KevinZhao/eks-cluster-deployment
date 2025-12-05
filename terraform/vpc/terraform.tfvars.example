@@ -13,10 +13,6 @@ vpc_cidr = "10.0.0.0/16"
 # Set to true for cost savings (single NAT Gateway - lower availability)
 single_nat_gateway = false
 
-# VPC Flow Logs
-enable_flow_logs         = true
-flow_logs_retention_days = 7
-
 # Common Tags
 common_tags = {
   Environment = "production"

@@ -9,7 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 echo "=== EKS Cluster Installation with Cluster Autoscaler and EBS CSI Driver ==="
 
 # 1. 设置环境变量
-source "${SCRIPT_DIR}/setup_env.sh"
+source "${SCRIPT_DIR}/0_setup_env.sh"
 
 # 2. 创建EKS集群
 echo "Creating EKS cluster..."
