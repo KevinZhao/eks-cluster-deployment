@@ -81,6 +81,10 @@ chmod +x scripts/*.sh
 - 相比 Intel 实例节省 31% 成本，性能相当或更好
 - 所有容器镜像均支持 ARM64 架构（multi-arch）
 
+**节点组划分:**
+- **eks-utils (3节点)**: 系统组件专用，运行 CoreDNS、Cluster Autoscaler、AWS LB Controller 等
+- **app (3节点)**: 应用工作负载专用，带 taint 防止系统组件调度
+
 ---
 
 ## 📦 前置要求
@@ -161,6 +165,29 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 ---
 
 ## 📁 项目结构
+
+### 节点组架构
+
+```
+EKS Cluster (Kubernetes 1.34)
+├── eks-utils 节点组 (3x c8g.large)
+│   ├── 标签: app=eks-utils, arch=arm64
+│   ├── 无 Taint (接受所有系统组件)
+│   └── 运行组件:
+│       ├── CoreDNS
+│       ├── Cluster Autoscaler
+│       ├── AWS Load Balancer Controller
+│       ├── EBS/EFS/S3 CSI Controllers
+│       └── kube-proxy, vpc-cni
+│
+└── app 节点组 (3x c8g.large)
+    ├── 标签: app=application, arch=arm64, workload=user-apps
+    ├── Taint: workload=user-apps:NoSchedule
+    └── 运行组件:
+        └── 用户应用 Pod（需要容忍 taint）
+```
+
+### 目录结构
 
 ```
 eks-cluster-deployment/
@@ -309,11 +336,17 @@ kubectl apply -f manifests/cluster/network-policies.yaml
 ### Step 4: 验证部署
 
 ```bash
-# 检查节点
-kubectl get nodes
+# 检查节点和标签
+kubectl get nodes --show-labels
 
-# 检查所有 Pod
-kubectl get pods -A
+# 检查节点 Taints
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+
+# 检查所有 Pod 及其调度位置
+kubectl get pods -A -o wide
+
+# 验证系统组件在 eks-utils 节点上
+kubectl get pods -n kube-system -o wide | grep -E "coredns|cluster-autoscaler|aws-load-balancer"
 
 # 检查 Cluster Autoscaler
 kubectl logs -n kube-system -l app=cluster-autoscaler --tail=20
@@ -408,36 +441,36 @@ kubectl get pods -A -o json | jq -r '.items[] | select(.spec.containers[].securi
 | 项目 | 配置 | 月度成本 (us-east-2) |
 |------|------|---------------------|
 | EKS 控制平面 | - | $72 |
-| eks-utils 节点 | 2x m7i.large | $175 |
-| app 节点 | 2x m7i.large | $175 |
-| EBS 卷 | 4x 30GB gp3 | $12 |
+| eks-utils 节点 | 3x m7i.large | $263 |
+| app 节点 | 3x m7i.large | $263 |
+| EBS 卷 | 6x 30GB gp3 | $18 |
 | CloudWatch Logs | 90天保留 | $150-300 |
 | NAT Gateway | 3个 | $96 |
-| **总计** | | **$680-780** |
+| **总计** | | **$862-1012** |
 
 ### 优化后成本估算（当前配置 - Graviton）
 | 项目 | 配置 | 月度成本 | 节省 |
 |------|------|---------|------|
 | EKS 控制平面 | - | $72 | - |
-| eks-utils 节点 | 2x c8g.large (ARM) | $120 | **-31%** |
-| app 节点 | 2x c8g.large (ARM) | $120 | **-31%** |
-| EBS 卷 | 4x 30GB gp3 | $12 | - |
+| eks-utils 节点 | 3x c8g.large (ARM) | $180 | **-31%** |
+| app 节点 | 3x c8g.large (ARM) | $180 | **-31%** |
+| EBS 卷 | 6x 30GB gp3 | $18 | - |
 | CloudWatch Logs | 30天保留 | $30 | **-80%** |
 | NAT Gateway | 3个 | $96 | - |
-| **总计** | | **$450** | **-34%** |
+| **总计** | | **$576** | **-33% 到 -43%** |
 
 ### 进一步优化（Graviton + Spot）
 | 项目 | 配置 | 月度成本 | 节省 |
 |------|------|---------|------|
 | EKS 控制平面 | - | $72 | - |
-| eks-utils 节点 | 2x c8g.large (ARM) | $120 | **-31%** |
-| app 节点 | Spot c8g.large (ARM) | $36 | **-79%** |
-| EBS 卷 | 3x 20GB gp3 | $6 | **-50%** |
+| eks-utils 节点 | 3x c8g.large (ARM) | $180 | **-31%** |
+| app 节点 | 3x Spot c8g.large (ARM) | $54 | **-79%** |
+| EBS 卷 | 5x 20GB gp3 | $10 | **-44%** |
 | CloudWatch Logs | 30天保留 | $30 | **-80%** |
 | NAT Gateway | 3个 | $96 | - |
-| **总计** | | **$360** | **-54%** |
+| **总计** | | **$442** | **-49% 到 -56%** |
 
-**月度节省: $230-320（34%）到 $320-420（54% with Spot）**
+**月度节省: $286-436（33-43%）到 $420-570（49-56% with Spot）**
 
 ### 优化建议
 
@@ -495,21 +528,28 @@ kubectl top pods -A
 ### 1. 测试 Cluster Autoscaler
 
 ```bash
-# 部署测试负载
+# 部署测试负载（会调度到 app 节点组）
 kubectl apply -f manifests/examples/autoscaler.yaml
 
-# 扩容到 10 个副本
-kubectl scale deployment autoscaler --replicas=10
+# 扩容到 10 个副本，触发节点自动扩容
+kubectl scale deployment autoscaler-test --replicas=10
 
-# 观察节点自动增加
+# 观察节点自动增加（app 节点组）
 kubectl get nodes -w
 
+# 检查 Pod 调度情况（应该都在 app 节点上）
+kubectl get pods -o wide
+
 # 缩容到 0
-kubectl scale deployment autoscaler --replicas=0
+kubectl scale deployment autoscaler-test --replicas=0
 
 # 观察节点自动减少（约 10 分钟后）
 kubectl get nodes -w
 ```
+
+**注意**:
+- 测试应用包含 `tolerations` 和 `nodeSelector`，确保调度到 app 节点组
+- 系统组件始终在 eks-utils 节点组运行，不受测试影响
 
 ### 2. 测试 EBS CSI Driver
 

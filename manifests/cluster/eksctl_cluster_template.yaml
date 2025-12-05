@@ -76,9 +76,9 @@ managedNodeGroups:
   - name: eks-utils
     instanceType: c8g.large
     amiFamily: AmazonLinux2023
-    desiredCapacity: 2
-    minSize: 2
-    maxSize: 4
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 6
     volumeSize: 30
     volumeType: gp3
     privateNetworking: true
@@ -96,9 +96,9 @@ managedNodeGroups:
   - name: app
     instanceType: c8g.large
     amiFamily: AmazonLinux2023
-    desiredCapacity: 2
-    minSize: 2
-    maxSize: 10
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 12
     volumeSize: 30
     volumeType: gp3
     privateNetworking: true
@@ -109,6 +109,11 @@ managedNodeGroups:
     labels:
       app: application
       arch: "arm64"
+      workload: "user-apps"
+    taints:
+      - key: "workload"
+        value: "user-apps"
+        effect: "NoSchedule"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"

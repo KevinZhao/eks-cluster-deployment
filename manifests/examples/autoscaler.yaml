@@ -1,19 +1,26 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: autoscaler
+  name: autoscaler-test
 spec:
   replicas: 0
   selector:
     matchLabels:
-      app: autoscaler
+      app: autoscaler-test
   template:
     metadata:
       labels:
-        app: autoscaler
+        app: autoscaler-test
     spec:
+      # 调度到 app 节点组
       nodeSelector:
-        app: test
+        app: application
+      # 容忍 app 节点组的 taint
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "user-apps"
+        effect: "NoSchedule"
       containers:
       - name: app
         image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
