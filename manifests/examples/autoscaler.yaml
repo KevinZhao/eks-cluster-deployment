@@ -1,19 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: test-autoscaler
+  name: autoscaler
 spec:
   replicas: 0
   selector:
     matchLabels:
-      app: test-autoscaler
+      app: autoscaler
   template:
     metadata:
       labels:
-        app: test-autoscaler
+        app: autoscaler
     spec:
+      nodeSelector:
+        app: test
       containers:
-      - name: test
+      - name: app
         image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
         resources:
           requests:

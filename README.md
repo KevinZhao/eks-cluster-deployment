@@ -13,11 +13,56 @@
 
 ## 前置要求
 
+### AWS 网络环境要求
+
+在部署 EKS 集群前，需要准备以下 AWS 网络资源：
+
+- ✅ **VPC** - 一个已存在的 VPC
+- ✅ **三个可用区（AZ）** - 分布在不同可用区以实现高可用
+- ✅ **私有子网** - 每个 AZ 一个私有子网（共3个）
+  - 用于部署 EKS 节点
+  - **必须通过 NAT Gateway 访问互联网**（用于拉取镜像、访问 AWS 服务等）
+- ✅ **公有子网** - 每个 AZ 一个公有子网（共3个）
+  - 用于部署负载均衡器
+  - 用于部署 NAT Gateway
+- ✅ **NAT Gateway** - 至少一个，建议每个 AZ 一个（高可用）
+- ✅ **Internet Gateway** - 附加到 VPC
+- ✅ **路由配置**：
+  - 私有子网路由表：`0.0.0.0/0` → NAT Gateway
+  - 公有子网路由表：`0.0.0.0/0` → Internet Gateway
+
+**重要安全配置：**
+- 🔒 **EKS API 端点配置为纯内网访问**（`privateAccess: true, publicAccess: false`）
+- 🔒 需要从 VPC 内部访问 API 端点（如通过 VPN、Direct Connect 或堡垒机）
+- 🔒 所有 EKS 节点部署在私有子网中，不直接暴露公网
+
+**网络架构示意：**
+```
+VPC (10.0.0.0/16)
+├── AZ-A
+│   ├── Public Subnet (10.0.1.0/24) → IGW
+│   │   └── NAT Gateway
+│   └── Private Subnet (10.0.11.0/24) → NAT GW → IGW
+│       └── EKS Nodes
+├── AZ-B
+│   ├── Public Subnet (10.0.2.0/24) → IGW
+│   │   └── NAT Gateway
+│   └── Private Subnet (10.0.12.0/24) → NAT GW → IGW
+│       └── EKS Nodes
+└── AZ-C
+    ├── Public Subnet (10.0.3.0/24) → IGW
+    │   └── NAT Gateway
+    └── Private Subnet (10.0.13.0/24) → NAT GW → IGW
+        └── EKS Nodes
+```
+
+### 工具要求
+
 确保已安装以下工具：
 
 - [AWS CLI](https://aws.amazon.com/cli/) v2.x
 - [eksctl](https://eksctl.io/) v0.150+
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) v1.30+
+- [kubectl](https://kubernetes.io/docs/tasks/tools/) v1.34+
 - [helm](https://helm.sh/) v3.x
 - `envsubst` (通常包含在 `gettext` 包中)
 
@@ -73,10 +118,10 @@ PUBLIC_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
 
 ```bash
 # 添加执行权限
-chmod +x *.sh
+chmod +x scripts/*.sh
 
 # 运行安装脚本
-./install_eks_cluster.sh
+./scripts/install_eks_cluster.sh
 ```
 
 脚本将自动完成以下步骤：
@@ -87,6 +132,34 @@ chmod +x *.sh
 5. 安装 AWS Load Balancer Controller
 6. 迁移到 Pod Identity 以增强安全性
 7. 部署测试应用
+
+## 项目结构
+
+```
+eks-cluster-deployment/
+├── README.md                       # 项目文档
+├── .env.example                    # 环境变量模板
+├── .gitignore                      # Git 忽略规则
+│
+├── scripts/                        # 脚本文件
+│   ├── setup_env.sh               # 环境配置和验证
+│   └── install_eks_cluster.sh     # 集群安装主脚本
+│
+├── manifests/                      # Kubernetes 配置清单
+│   ├── cluster/                   # 集群配置
+│   │   └── eksctl_cluster_template.yaml  # EKS 集群模板
+│   │
+│   ├── addons/                    # 集群插件
+│   │   ├── cluster-autoscaler-rbac.yaml  # 自动扩缩容 RBAC
+│   │   └── cluster-autoscaler.yaml       # 自动扩缩容部署
+│   │
+│   └── examples/                  # 示例应用
+│       ├── autoscaler.yaml        # 测试自动扩缩容
+│       └── ebs-app.yaml          # 测试 EBS 持久化存储
+│
+├── eksctl_cluster_final.yaml      # 生成的最终集群配置（.gitignore）
+└── iam_policy.json                # 下载的 IAM 策略（.gitignore）
+```
 
 ## 配置说明
 
@@ -132,7 +205,7 @@ chmod +x *.sh
 | kube-proxy | latest | 网络代理 |
 | eks-pod-identity-agent | latest | IAM 认证 |
 | aws-ebs-csi-driver | latest | 持久化存储 |
-| cluster-autoscaler | v1.30.0 | 节点自动扩缩容 |
+| cluster-autoscaler | v1.34.0 | 节点自动扩缩容 |
 | aws-load-balancer-controller | v1.13.0 | Ingress/负载均衡 |
 
 ## 集群配置详情
@@ -140,19 +213,20 @@ chmod +x *.sh
 ### 节点组
 
 **eks-utils**（系统组件）：
-- 实例类型：m5.large (2 vCPU, 8GB RAM)
+- 实例类型：m7i.large (2 vCPU, 8GB RAM)
 - 容量：2-4 节点
 - 标签：`app=eks-utils`
 - 用途：CoreDNS、Load Balancer Controller、Cluster Autoscaler
 
 **test**（应用工作负载）：
-- 实例类型：m5.large (2 vCPU, 8GB RAM)
+- 实例类型：m7i.large (2 vCPU, 8GB RAM)
 - 容量：2-10 节点
 - 标签：`app=test`
 - 用途：应用 Pod
 
 ### 安全特性
 
+- ✅ **EKS API 端点纯内网访问**（privateAccess: true, publicAccess: false）
 - ✅ 使用 Pod Identity 进行服务账户认证
 - ✅ 工作节点部署在私有子网
 - ✅ Cluster Autoscaler 的 RBAC 权限控制
@@ -167,29 +241,29 @@ chmod +x *.sh
 
 ```bash
 # 部署测试工作负载
-kubectl apply -f test-autoscaler.yaml
+kubectl apply -f manifests/examples/autoscaler.yaml
 
 # 扩容
-kubectl scale deployment test-autoscaler --replicas=10
+kubectl scale deployment autoscaler --replicas=10
 
 # 观察节点自动增加
 kubectl get nodes -w
 
 # 缩容
-kubectl scale deployment test-autoscaler --replicas=0
+kubectl scale deployment autoscaler --replicas=0
 ```
 
 ### 测试 EBS CSI Driver
 
 ```bash
 # 部署带持久化卷的测试应用
-kubectl apply -f test-ebs-app.yaml
+kubectl apply -f manifests/examples/ebs-app.yaml
 
 # 验证 PVC 已绑定
 kubectl get pvc
 
 # 验证 Pod 正在运行
-kubectl get pods
+kubectl get pods -l app=ebs-app
 ```
 
 ### 测试 Load Balancer Controller

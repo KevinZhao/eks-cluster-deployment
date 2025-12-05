@@ -1,0 +1,61 @@
+---
+# S3 StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: s3-sc
+provisioner: s3.csi.aws.com
+parameters:
+  bucketName: ${S3_BUCKET_NAME}
+volumeBindingMode: Immediate
+---
+# PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-claim
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: s3-sc
+  resources:
+    requests:
+      storage: 1200Gi
+---
+# Deployment using S3
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: s3-app
+  template:
+    metadata:
+      labels:
+        app: s3-app
+    spec:
+      nodeSelector:
+        app: test
+      serviceAccountName: s3-csi-driver-sa
+      containers:
+      - name: app
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        command: ["/bin/sh"]
+        args: ["-c", "echo 'Testing S3 CSI Driver' > /data/test.txt && tail -f /dev/null"]
+        volumeMounts:
+        - name: s3-storage
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      volumes:
+      - name: s3-storage
+        persistentVolumeClaim:
+          claimName: s3-claim

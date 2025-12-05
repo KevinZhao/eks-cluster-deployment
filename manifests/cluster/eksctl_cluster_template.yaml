@@ -8,6 +8,10 @@ metadata:
   tags:
     cluster-autoscaler: enabled
 
+# Kubernetes 网络配置
+kubernetesNetworkConfig:
+  serviceIPv4CIDR: "${SERVICE_IPV4_CIDR}"
+
 # 使用已经存在的vpc
 vpc:
   id: "${VPC_ID}"
@@ -26,6 +30,9 @@ vpc:
         id: "${PUBLIC_SUBNET_2B}"
       ${AZ_2C}:
         id: "${PUBLIC_SUBNET_2C}"
+  clusterEndpoints:
+    privateAccess: true
+    publicAccess: false
 
 accessConfig:
   authenticationMode: API_AND_CONFIG_MAP
@@ -48,12 +55,26 @@ iam:
       wellKnownPolicies:
         ebsCSIController: true
       roleName: ${CLUSTER_NAME}-ebs-csi-driver-role
+    # EFS CSI driver service account
+    - metadata:
+        name: efs-csi-controller-sa
+        namespace: kube-system
+      wellKnownPolicies:
+        efsCSIController: true
+      roleName: ${CLUSTER_NAME}-efs-csi-driver-role
+    # S3 CSI driver service account
+    - metadata:
+        name: s3-csi-driver-sa
+        namespace: kube-system
+      attachPolicyARNs:
+        - arn:${AWS_PARTITION}:iam::aws:policy/AmazonS3FullAccess
+      roleName: ${CLUSTER_NAME}-s3-csi-driver-role
 
 # 节点组配置
 # 系统节点组，主要运行aws-load-balancer-controller coredns cluster-autoscaler等组件
 managedNodeGroups:
   - name: eks-utils
-    instanceType: m5.large
+    instanceType: m7i.large
     amiFamily: AmazonLinux2023
     desiredCapacity: 2
     minSize: 2
@@ -72,7 +93,7 @@ managedNodeGroups:
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
 
   - name: test
-    instanceType: m5.large
+    instanceType: m7i.large
     amiFamily: AmazonLinux2023
     desiredCapacity: 2
     minSize: 2

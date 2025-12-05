@@ -59,7 +59,8 @@ if [ ${#MISSING_VARS[@]} -gt 0 ]; then
 fi
 
 # 6. 设置默认值
-export K8S_VERSION="${K8S_VERSION:-1.30}"
+export K8S_VERSION="${K8S_VERSION:-1.34}"
+export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 
 # 7. 自动推导 AZ（基于子网 ID 模式）
 if [ -z "$AZ_2A" ] || [ -z "$AZ_2B" ] || [ -z "$AZ_2C" ]; then

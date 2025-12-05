@@ -25,17 +25,19 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: test-ebs-app
+  name: ebs-app
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: test-ebs-app
+      app: ebs-app
   template:
     metadata:
       labels:
-        app: test-ebs-app
+        app: ebs-app
     spec:
+      nodeSelector:
+        app: test
       containers:
       - name: app
         image: nginx:latest
