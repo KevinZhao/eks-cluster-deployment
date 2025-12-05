@@ -30,10 +30,22 @@ if [ -z "$AWS_REGION" ]; then
     log "AWS_REGION not set, using: $AWS_REGION"
 fi
 export AWS_REGION
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+
+# 自动设置 AWS_DEFAULT_REGION（如果 .env 中没有设置）
+if [ -z "$AWS_DEFAULT_REGION" ]; then
+    log "AWS_DEFAULT_REGION not set, auto-setting to: $AWS_REGION"
+    export AWS_DEFAULT_REGION="$AWS_REGION"
+else
+    export AWS_DEFAULT_REGION
+fi
 
 # 4. 设置 AWS Partition（默认为 aws，除非在 GovCloud 或 China）
-export AWS_PARTITION="${AWS_PARTITION:-aws}"
+if [ -z "$AWS_PARTITION" ]; then
+    log "AWS_PARTITION not set, using default: aws"
+    export AWS_PARTITION="aws"
+else
+    export AWS_PARTITION
+fi
 
 # 5. 验证必需的环境变量
 REQUIRED_VARS=(
