@@ -341,8 +341,8 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 ## 📊 版本信息
 
 ### 当前版本
-- **Kubernetes**: 1.31（EKS 最新稳定版）
-- **Cluster Autoscaler**: v1.31.0（匹配 K8s 版本）
+- **Kubernetes**: 1.34（EKS 最新版本，2024年12月发布）
+- **Cluster Autoscaler**: v1.34.2（匹配 K8s 版本）
 - **AWS Load Balancer Controller**: v2.11.0
 - **EBS CSI Driver**: v1.37.0
 - **EFS CSI Driver**: v2.1.0
@@ -352,9 +352,11 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 
 | K8s 版本 | Cluster Autoscaler | AWS LB Controller | 状态 |
 |---------|-------------------|-------------------|------|
-| 1.31 | v1.31.x | v2.8.0+ | ✅ 推荐 |
-| 1.30 | v1.30.x | v2.8.0+ | ✅ 稳定 |
-| 1.29 | v1.29.x | v2.6.0+ | ⚠️ 即将弃用 |
+| 1.34 | v1.34.x | v2.8.0+ | ✅ **最新** |
+| 1.33 | v1.33.x | v2.8.0+ | ✅ 稳定 |
+| 1.32 | v1.32.x | v2.8.0+ | ✅ 稳定 |
+| 1.31 | v1.31.x | v2.8.0+ | ✅ 稳定 |
+| 1.30 | v1.30.x | v2.8.0+ | ⚠️ 扩展支持 |
 
 ### 版本更新策略
 - **季度检查**：每 3 个月检查组件更新
@@ -427,14 +429,14 @@ kubectl get pods -A -o json | jq -r '.items[] | select(.spec.containers[].securi
 | 项目 | 配置 | 月度成本 | 节省 |
 |------|------|---------|------|
 | EKS 控制平面 | - | $72 | - |
-| eks-utils 节点 | 2x t4g.medium | $60 | **-66%** |
+| eks-utils 节点 | 2x m7i.large | $175 | - |
 | app 节点 | Spot 实例 | $44 | **-75%** |
 | EBS 卷 | 3x 20GB gp3 | $6 | **-50%** |
 | CloudWatch Logs | 30天保留 | $30 | **-80%** |
 | NAT Gateway | 3个 | $96 | - |
-| **总计** | | **$308** | **-55%** |
+| **总计** | | **$423** | **-38%** |
 
-**月度节省: $372-472（55-60%）**
+**月度节省: $257-357（38-46%）**
 
 ### 优化建议
 
@@ -445,10 +447,11 @@ kubectl get pods -A -o json | jq -r '.items[] | select(.spec.containers[].securi
    instanceTypes: ["m7i.large", "m6i.large", "m5.large"]
    ```
 
-2. **使用 ARM 架构（Graviton）**
+2. **减少日志保留期**
    ```yaml
-   # 系统节点使用 t4g.medium（ARM）
-   instanceType: t4g.medium  # 比 t3.medium 便宜 20%
+   cloudWatch:
+     clusterLogging:
+       logRetentionInDays: 30  # 从 90 改为 30
    ```
 
 3. **动态节点扩缩容**
@@ -458,14 +461,7 @@ kubectl get pods -A -o json | jq -r '.items[] | select(.spec.containers[].securi
    maxSize: 10
    ```
 
-4. **减少日志保留期**
-   ```yaml
-   cloudWatch:
-     clusterLogging:
-       logRetentionInDays: 30  # 从 90 改为 30
-   ```
-
-5. **使用 Cluster Autoscaler**
+4. **使用 Cluster Autoscaler**
    - 自动移除空闲节点
    - 优化资源利用率
 

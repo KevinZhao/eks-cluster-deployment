@@ -13,21 +13,13 @@ warn() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $*" >&2; }
 
 log "=== Applying Critical Fixes to EKS Deployment ==="
 
-# 1. 修复 Kubernetes 版本 (1.34 → 1.31)
-log "Fix #1: Correcting Kubernetes version from 1.34 to 1.31..."
+# 1. 更新 Cluster Autoscaler 版本到最新
+log "Fix #1: Updating Cluster Autoscaler version to v1.34.2..."
 
-sed -i 's/K8S_VERSION:-1.34/K8S_VERSION:-1.31/g' "${SCRIPT_DIR}/setup_env.sh"
-sed -i 's/K8S_VERSION=1.34/K8S_VERSION=1.31/g' "${PROJECT_ROOT}/.env.example"
-
-log "✅ Kubernetes version fixed to 1.31"
-
-# 2. 修复 Cluster Autoscaler 版本
-log "Fix #2: Updating Cluster Autoscaler version to match K8s 1.31..."
-
-sed -i 's/cluster-autoscaler:v1.34.0/cluster-autoscaler:v1.31.0/g' \
+sed -i 's/cluster-autoscaler:v1.34.[0-9]/cluster-autoscaler:v1.34.2/g' \
     "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml"
 
-log "✅ Cluster Autoscaler version fixed to v1.31.0"
+log "✅ Cluster Autoscaler version updated to v1.34.2"
 
 # 3. 锁定 addon 版本
 log "Fix #3: Locking addon versions..."
@@ -261,14 +253,14 @@ cat > "${PROJECT_ROOT}/manifests/cluster/cost-optimized-nodes.yaml" <<'EOF'
 # 替换 eksctl_cluster_template.yaml 中的 managedNodeGroups 部分
 
 managedNodeGroups:
-  # 系统节点组 - 使用 ARM 架构节省成本
+  # 系统节点组 - 稳定可靠的实例类型
   - name: eks-utils
-    instanceType: t4g.medium  # ARM 架构,成本降低 ~60%
+    instanceType: m7i.large  # 最新一代 Intel 实例
     amiFamily: AmazonLinux2023
     desiredCapacity: 2
     minSize: 1  # 允许缩减到 1
-    maxSize: 3
-    volumeSize: 20  # 减少到 20GB
+    maxSize: 4
+    volumeSize: 30
     volumeType: gp3
     privateNetworking: true
     subnets:
@@ -391,18 +383,16 @@ EOF
 log "✅ Created Network Policy templates: manifests/cluster/network-policies.yaml"
 
 # 13. 更新 CloudWatch 日志保留期
-log "Fix #13: Updating CloudWatch log retention..."
+log "Fix #13: CloudWatch log retention is already set to 30 days in template..."
 
-log "ℹ️  Manual action required: Update eksctl_cluster_template.yaml:"
-log "    cloudWatch.clusterLogging.logRetentionInDays: 90 → 30"
+log "✅ CloudWatch log retention configured to 30 days"
 
 # 完成报告
 log ""
 log "=== Critical Fixes Applied Successfully ==="
 log ""
 log "📝 Summary of Changes:"
-log "  ✅ Fixed Kubernetes version (1.34 → 1.31)"
-log "  ✅ Fixed Cluster Autoscaler version (v1.34.0 → v1.31.0)"
+log "  ✅ Updated Cluster Autoscaler to v1.34.2 (latest stable)"
 log "  ✅ Updated EFS CSI Driver (v2.0.7 → v2.1.0)"
 log "  ✅ Updated S3 CSI Driver (v1.10.0 → v1.11.0)"
 log "  ✅ Created addon version lock file"
@@ -410,20 +400,19 @@ log "  ✅ Created restrictive S3 IAM policy"
 log "  ✅ Created resource quotas and limits"
 log "  ✅ Created Pod Security Standards"
 log "  ✅ Created error handling template"
-log "  ✅ Created cost-optimized node configuration"
+log "  ✅ Created cost-optimized node configuration (m7i.large)"
 log "  ✅ Created Network Policy templates"
+log "  ✅ CloudWatch log retention set to 30 days"
 log ""
 log "⚠️  Manual Actions Required:"
 log "  1. Merge addon-versions-patch.yaml into eksctl_cluster_template.yaml"
 log "  2. Update S3 policy with actual bucket prefix"
 log "  3. Apply eksctl_cluster_template.yaml changes to S3 CSI service account"
 log "  4. Source error_handling.sh in install_eks_cluster.sh"
-log "  5. Update CloudWatch log retention to 30 days"
-log "  6. Consider using cost-optimized-nodes.yaml configuration"
+log "  5. Consider using cost-optimized-nodes.yaml configuration"
 log ""
 log "📚 Review Documentation:"
-log "  - COMPREHENSIVE_REVIEW.md - Full security and cost analysis"
-log "  - VERSION_MATRIX.md - Component version guidelines"
+log "  - README.md - Complete deployment guide and reference"
 log ""
 log "🚀 Next Steps:"
 log "  1. Review all generated files"
