@@ -1,88 +1,115 @@
 # 协作指南
 
-本项目使用 GitHub 协作者（Collaborators）方式进行团队协作。
+本项目使用 **Fork + Pull Request** 工作流进行协作。
 
-## 🔐 添加协作者（项目维护者操作）
+## 🍴 Fork + Pull Request 工作流
 
-### 步骤：
+### 为什么使用 PR 工作流？
 
-1. 访问项目设置页面：
-   https://github.com/KevinZhao/eks-cluster-deployment/settings/access
-
-2. 点击 **"Collaborators"** → **"Add people"**
-
-3. 输入协作者的 GitHub 用户名或邮箱
-
-4. 选择权限级别：
-   - **Write** (推荐) - 可以推送代码，管理 issues
-   - **Maintain** - 可以管理项目设置（不常用）
-   - **Admin** - 完全控制（慎用）
-
-5. 点击 **"Add to this repository"**
-
-6. 协作者会收到邮件邀请
+- ✅ **代码审查** - 所有更改都经过审查
+- ✅ **保护主分支** - 防止错误直接进入 master
+- ✅ **保留历史** - 完整的讨论和修改记录
+- ✅ **适合团队** - 任意规模团队都适用
 
 ---
 
 ## 👥 协作者入门指南
 
-### 1. 接受邀请
+### 1. Fork 项目
 
-- 查看 GitHub 邮箱收到的邀请链接
-- 点击 "Accept invitation"
-- 现在你可以直接访问项目
+1. 访问项目主页: https://github.com/KevinZhao/eks-cluster-deployment
+2. 点击右上角的 **"Fork"** 按钮
+3. 项目会被复制到你的 GitHub 账号下
 
-### 2. 克隆仓库
+### 2. 克隆你的 Fork
 
 ```bash
-git clone https://github.com/KevinZhao/eks-cluster-deployment.git
+# 克隆你自己的 fork（不是原仓库）
+git clone https://github.com/你的用户名/eks-cluster-deployment.git
 cd eks-cluster-deployment
 ```
 
-### 3. 配置 Git 身份
+### 3. 配置 Git
 
 ```bash
+# 配置身份
 git config user.name "你的名字"
 git config user.email "你的邮箱"
+
+# 添加原仓库为 upstream（用于同步）
+git remote add upstream https://github.com/KevinZhao/eks-cluster-deployment.git
+
+# 验证 remotes
+git remote -v
+# 应该看到:
+# origin    你的fork地址 (fetch)
+# origin    你的fork地址 (push)
+# upstream  原仓库地址 (fetch)
+# upstream  原仓库地址 (push)
 ```
 
 ### 4. 开始工作
 
-#### 方式 A: 直接在 master 分支工作（小改动）
+#### 步骤 1: 同步最新代码
 
 ```bash
-# 拉取最新代码
-git pull origin master
+# 切换到 master 分支
+git checkout master
 
-# 进行修改
-vim scripts/some_script.sh
+# 从 upstream 拉取最新代码
+git fetch upstream
+git merge upstream/master
 
-# 提交
-git add .
-git commit -m "fix: 修复某个问题"
-
-# 推送
+# 推送到你的 fork
 git push origin master
 ```
 
-#### 方式 B: 使用功能分支（推荐用于大改动）
+#### 步骤 2: 创建功能分支
 
 ```bash
 # 创建新分支
 git checkout -b feature/add-monitoring
 
-# 进行修改
-vim scripts/monitoring.sh
-
-# 提交
-git add .
-git commit -m "feat: 添加监控功能"
-
-# 推送到远程
-git push origin feature/add-monitoring
-
-# 在 GitHub 上创建 Pull Request 合并到 master
+# 或者修复 bug
+git checkout -b fix/resolve-timeout-issue
 ```
+
+#### 步骤 3: 进行修改
+
+```bash
+# 修改文件
+vim scripts/4_install_eks_cluster.sh
+
+# 查看修改
+git status
+git diff
+```
+
+#### 步骤 4: 提交修改
+
+```bash
+# 添加文件
+git add scripts/4_install_eks_cluster.sh
+
+# 提交（遵循提交规范）
+git commit -m "feat: add custom node labels support"
+```
+
+#### 步骤 5: 推送到你的 Fork
+
+```bash
+# 推送到你的 fork（不是原仓库）
+git push origin feature/add-monitoring
+```
+
+#### 步骤 6: 创建 Pull Request
+
+1. 访问你的 fork: `https://github.com/你的用户名/eks-cluster-deployment`
+2. 看到黄色提示条 "Compare & pull request"，点击
+3. 填写 PR 信息（会自动加载模板）
+4. 点击 "Create pull request"
+
+✅ 完成！现在等待维护者审查你的 PR。
 
 ---
 
