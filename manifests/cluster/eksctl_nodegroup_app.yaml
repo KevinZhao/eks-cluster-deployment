@@ -1,0 +1,33 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_DEFAULT_REGION}
+
+managedNodeGroups:
+  - name: app
+    amiFamily: AmazonLinux2023
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 12
+    privateNetworking: true
+    subnets:
+      - ${PRIVATE_SUBNET_A}
+      - ${PRIVATE_SUBNET_B}
+      - ${PRIVATE_SUBNET_C}
+    labels:
+      app: application
+      arch: "arm64"
+      workload: "user-apps"
+    taints:
+      - key: "workload"
+        value: "user-apps"
+        effect: "NoSchedule"
+    tags:
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
+    # Use custom Launch Template
+    launchTemplate:
+      id: ${LAUNCH_TEMPLATE_ID}
+      version: "${LAUNCH_TEMPLATE_VERSION}"

@@ -24,9 +24,9 @@ echo ""
 # Validate required variables
 required_vars=(
     "VPC_ID"
-    "PRIVATE_SUBNET_2A"
-    "PRIVATE_SUBNET_2B"
-    "PRIVATE_SUBNET_2C"
+    "PRIVATE_SUBNET_A"
+    "PRIVATE_SUBNET_B"
+    "PRIVATE_SUBNET_C"
     "AWS_REGION"
     "CLUSTER_NAME"
 )
@@ -84,13 +84,13 @@ echo -e "${GREEN}✓ Security group created${NC}"
 echo ""
 
 # Define subnet IDs
-SUBNET_IDS="${PRIVATE_SUBNET_2A} ${PRIVATE_SUBNET_2B} ${PRIVATE_SUBNET_2C}"
+SUBNET_IDS="${PRIVATE_SUBNET_A} ${PRIVATE_SUBNET_B} ${PRIVATE_SUBNET_C}"
 
 # Define interface endpoints
 declare -a INTERFACE_ENDPOINTS=(
     "eks:EKS API"
     "eks-auth:EKS Auth (Pod Identity)"
-    "sts:STS (IRSA)"
+    "sts:STS (Pod Identity)"
     "ecr.api:ECR API"
     "ecr.dkr:ECR Docker"
     "logs:CloudWatch Logs"
@@ -145,7 +145,7 @@ echo ""
 echo -e "${YELLOW}Getting private route table IDs...${NC}"
 ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
-              "Name=association.subnet-id,Values=${PRIVATE_SUBNET_2A},${PRIVATE_SUBNET_2B},${PRIVATE_SUBNET_2C}" \
+              "Name=association.subnet-id,Values=${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C}" \
     --query 'RouteTables[*].RouteTableId' \
     --output text)
 

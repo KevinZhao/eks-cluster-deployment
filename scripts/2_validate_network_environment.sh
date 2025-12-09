@@ -87,12 +87,12 @@ print_section "1. Validating Environment Variables"
 
 required_vars=(
     "VPC_ID"
-    "PRIVATE_SUBNET_2A"
-    "PRIVATE_SUBNET_2B"
-    "PRIVATE_SUBNET_2C"
-    "PUBLIC_SUBNET_2A"
-    "PUBLIC_SUBNET_2B"
-    "PUBLIC_SUBNET_2C"
+    "PRIVATE_SUBNET_A"
+    "PRIVATE_SUBNET_B"
+    "PRIVATE_SUBNET_C"
+    "PUBLIC_SUBNET_A"
+    "PUBLIC_SUBNET_B"
+    "PUBLIC_SUBNET_C"
     "AWS_REGION"
     "CLUSTER_NAME"
 )
@@ -139,8 +139,8 @@ fi
 print_section "3. Validating Subnets"
 
 # Private subnets
-PRIVATE_SUBNETS=("${PRIVATE_SUBNET_2A}" "${PRIVATE_SUBNET_2B}" "${PRIVATE_SUBNET_2C}")
-AZS=("${AZ_2A}" "${AZ_2B}" "${AZ_2C}")
+PRIVATE_SUBNETS=("${PRIVATE_SUBNET_A}" "${PRIVATE_SUBNET_B}" "${PRIVATE_SUBNET_C}")
+AZS=("${AZ_A}" "${AZ_B}" "${AZ_C}")
 
 echo -e "${BLUE}Private Subnets:${NC}"
 for i in "${!PRIVATE_SUBNETS[@]}"; do
@@ -171,7 +171,7 @@ done
 
 echo ""
 echo -e "${BLUE}Public Subnets:${NC}"
-PUBLIC_SUBNETS=("${PUBLIC_SUBNET_2A}" "${PUBLIC_SUBNET_2B}" "${PUBLIC_SUBNET_2C}")
+PUBLIC_SUBNETS=("${PUBLIC_SUBNET_A}" "${PUBLIC_SUBNET_B}" "${PUBLIC_SUBNET_C}")
 
 for i in "${!PUBLIC_SUBNETS[@]}"; do
     SUBNET_ID="${PUBLIC_SUBNETS[$i]}"
@@ -277,7 +277,7 @@ print_section "5. Validating VPC Endpoints"
 declare -A REQUIRED_ENDPOINTS=(
     ["eks"]="EKS API"
     ["eks-auth"]="EKS Auth (Pod Identity)"
-    ["sts"]="STS (IRSA)"
+    ["sts"]="STS (Pod Identity)"
     ["ecr.api"]="ECR API"
     ["ecr.dkr"]="ECR Docker"
     ["logs"]="CloudWatch Logs"

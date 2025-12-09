@@ -37,17 +37,17 @@ output "public_subnet_azs" {
 }
 
 # Individual Public Subnet IDs (useful for .env file)
-output "public_subnet_1a" {
+output "public_subnet_a" {
   description = "Public subnet in first AZ"
   value       = aws_subnet.public[0].id
 }
 
-output "public_subnet_1b" {
+output "public_subnet_b" {
   description = "Public subnet in second AZ"
   value       = aws_subnet.public[1].id
 }
 
-output "public_subnet_1c" {
+output "public_subnet_c" {
   description = "Public subnet in third AZ"
   value       = aws_subnet.public[2].id
 }
@@ -69,17 +69,17 @@ output "private_subnet_azs" {
 }
 
 # Individual Private Subnet IDs (useful for .env file)
-output "private_subnet_1a" {
+output "private_subnet_a" {
   description = "Private subnet in first AZ"
   value       = aws_subnet.private[0].id
 }
 
-output "private_subnet_1b" {
+output "private_subnet_b" {
   description = "Private subnet in second AZ"
   value       = aws_subnet.private[1].id
 }
 
-output "private_subnet_1c" {
+output "private_subnet_c" {
   description = "Private subnet in third AZ"
   value       = aws_subnet.private[2].id
 }

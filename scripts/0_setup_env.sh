@@ -47,16 +47,36 @@ else
     export AWS_PARTITION
 fi
 
-# 5. 验证必需的环境变量
+# 5. 环境变量兼容性映射（支持 _A 和 _2A 两种命名方式）
+# 如果使用 _2A 格式，自动映射到 _A 格式
+if [ -n "$PRIVATE_SUBNET_2A" ]; then
+    export PRIVATE_SUBNET_A="${PRIVATE_SUBNET_A:-$PRIVATE_SUBNET_2A}"
+    export PRIVATE_SUBNET_B="${PRIVATE_SUBNET_B:-$PRIVATE_SUBNET_2B}"
+    export PRIVATE_SUBNET_C="${PRIVATE_SUBNET_C:-$PRIVATE_SUBNET_2C}"
+fi
+
+if [ -n "$PUBLIC_SUBNET_2A" ]; then
+    export PUBLIC_SUBNET_A="${PUBLIC_SUBNET_A:-$PUBLIC_SUBNET_2A}"
+    export PUBLIC_SUBNET_B="${PUBLIC_SUBNET_B:-$PUBLIC_SUBNET_2B}"
+    export PUBLIC_SUBNET_C="${PUBLIC_SUBNET_C:-$PUBLIC_SUBNET_2C}"
+fi
+
+if [ -n "$AZ_2A" ]; then
+    export AZ_A="${AZ_A:-$AZ_2A}"
+    export AZ_B="${AZ_B:-$AZ_2B}"
+    export AZ_C="${AZ_C:-$AZ_2C}"
+fi
+
+# 6. 验证必需的环境变量
 REQUIRED_VARS=(
     "CLUSTER_NAME"
     "VPC_ID"
-    "PRIVATE_SUBNET_2A"
-    "PRIVATE_SUBNET_2B"
-    "PRIVATE_SUBNET_2C"
-    "PUBLIC_SUBNET_2A"
-    "PUBLIC_SUBNET_2B"
-    "PUBLIC_SUBNET_2C"
+    "PRIVATE_SUBNET_A"
+    "PRIVATE_SUBNET_B"
+    "PRIVATE_SUBNET_C"
+    "PUBLIC_SUBNET_A"
+    "PUBLIC_SUBNET_B"
+    "PUBLIC_SUBNET_C"
 )
 
 MISSING_VARS=()
@@ -70,36 +90,28 @@ if [ ${#MISSING_VARS[@]} -gt 0 ]; then
     error "Missing required environment variables: ${MISSING_VARS[*]}\nPlease create a .env file or set these variables. See .env.example for reference."
 fi
 
-# 6. 设置默认值
+# 7. 设置默认值
 export K8S_VERSION="${K8S_VERSION:-1.34}"
 export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 
-# 7. 自动推导 AZ（基于子网 ID 模式）
-if [ -z "$AZ_2A" ] || [ -z "$AZ_2B" ] || [ -z "$AZ_2C" ]; then
+# 8. 自动推导 AZ（基于子网 ID 模式）
+if [ -z "$AZ_A" ] || [ -z "$AZ_B" ] || [ -z "$AZ_C" ]; then
     log "Availability zones not set, deriving from region..."
-    export AZ_2A="${AWS_REGION}a"
-    export AZ_2B="${AWS_REGION}b"
-    export AZ_2C="${AWS_REGION}c"
+    export AZ_A="${AWS_REGION}a"
+    export AZ_B="${AWS_REGION}b"
+    export AZ_C="${AWS_REGION}c"
 fi
 
-# 8. 验证配置
+# 9. 验证配置
 log "Validating configuration..."
 
 # 验证 AWS 凭证
 aws sts get-caller-identity >/dev/null 2>&1 || \
     error "AWS credentials not configured. Please run 'aws configure' or set AWS credentials."
 
-# 验证 VPC 存在
-aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" >/dev/null 2>&1 || \
-    error "VPC $VPC_ID not found in region $AWS_REGION"
-
-# 验证子网存在（仅验证一个作为示例）
-aws ec2 describe-subnets --subnet-ids "$PRIVATE_SUBNET_2A" --region "$AWS_REGION" >/dev/null 2>&1 || \
-    error "Subnet $PRIVATE_SUBNET_2A not found in region $AWS_REGION"
-
 log "Configuration validation completed successfully!"
 
-# 9. 显示配置摘要
+# 10. 显示配置摘要
 log "=== Configuration Summary ==="
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 echo "AWS_REGION: $AWS_REGION"
@@ -107,7 +119,7 @@ echo "CLUSTER_NAME: $CLUSTER_NAME"
 echo "K8S_VERSION: $K8S_VERSION"
 echo "AWS_PARTITION: $AWS_PARTITION"
 echo "VPC_ID: $VPC_ID"
-echo "AZ: $AZ_2A, $AZ_2B, $AZ_2C"
-echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_2A, $PRIVATE_SUBNET_2B, $PRIVATE_SUBNET_2C"
-echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_2A, $PUBLIC_SUBNET_2B, $PUBLIC_SUBNET_2C"
+echo "AZ: $AZ_A, $AZ_B, $AZ_C"
+echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"
+echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
 log "============================"
