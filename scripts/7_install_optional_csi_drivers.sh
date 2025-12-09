@@ -12,6 +12,11 @@ echo ""
 
 # 加载环境变量和 helper 函数
 source "${SCRIPT_DIR}/0_setup_env.sh"
+
+# 设置 KUBECONFIG 环境变量
+export KUBECONFIG="${HOME}/.kube/config"
+echo "KUBECONFIG set to: ${KUBECONFIG}"
+
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
 
 echo "This script installs optional CSI drivers for your EKS cluster."

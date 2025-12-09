@@ -133,13 +133,13 @@ output "env_file_format" {
     VPC_ID=${aws_vpc.main.id}
 
     # Public Subnets
-    PUBLIC_SUBNET_2A=${aws_subnet.public[0].id}
-    PUBLIC_SUBNET_2B=${aws_subnet.public[1].id}
-    PUBLIC_SUBNET_2C=${aws_subnet.public[2].id}
+    PUBLIC_SUBNET_A=${aws_subnet.public[0].id}
+    PUBLIC_SUBNET_B=${aws_subnet.public[1].id}
+    PUBLIC_SUBNET_C=${aws_subnet.public[2].id}
 
     # Private Subnets
-    PRIVATE_SUBNET_2A=${aws_subnet.private[0].id}
-    PRIVATE_SUBNET_2B=${aws_subnet.private[1].id}
-    PRIVATE_SUBNET_2C=${aws_subnet.private[2].id}
+    PRIVATE_SUBNET_A=${aws_subnet.private[0].id}
+    PRIVATE_SUBNET_B=${aws_subnet.private[1].id}
+    PRIVATE_SUBNET_C=${aws_subnet.private[2].id}
   EOT
 }

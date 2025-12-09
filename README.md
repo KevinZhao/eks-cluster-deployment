@@ -20,6 +20,7 @@
 - [成本优化](#成本优化)
 - [验证和测试](#验证和测试)
 - [故障排查](#故障排查)
+  - [如何从 VPC 外部署集群](#如何从-vpc-外部署集群)
 - [清理资源](#清理资源)
 
 ---
@@ -70,6 +71,8 @@ chmod +x scripts/*.sh
 ```
 
 **部署时间:** 约 20-25 分钟
+
+> ⚠️ **重要提示**：本项目集群配置为私有 API 访问（`publicAccess: false`），部署脚本需要从 **VPC 内部** 执行。如果您在 VPC 外部（如 CloudShell、本地机器），请参考 [如何从 VPC 外部署集群](#如何从-vpc-外部署集群) 章节。
 
 ---
 
@@ -219,12 +222,12 @@ nano .env
 ```bash
 CLUSTER_NAME=eks-demo-1
 VPC_ID=vpc-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
+PRIVATE_SUBNET_A=subnet-xxxxxxxxxxxxxxxxx
+PRIVATE_SUBNET_B=subnet-xxxxxxxxxxxxxxxxx
+PRIVATE_SUBNET_C=subnet-xxxxxxxxxxxxxxxxx
+PUBLIC_SUBNET_A=subnet-xxxxxxxxxxxxxxxxx
+PUBLIC_SUBNET_B=subnet-xxxxxxxxxxxxxxxxx
+PUBLIC_SUBNET_C=subnet-xxxxxxxxxxxxxxxxx
 AWS_REGION=ap-southeast-1
 AWS_DEFAULT_REGION=ap-southeast-1
 ```
@@ -384,12 +387,12 @@ ssh -i spider.pem ec2-user@$NODE_IP
 ```bash
 CLUSTER_NAME=eks-demo-1
 VPC_ID=vpc-xxx
-PRIVATE_SUBNET_2A=subnet-xxx
-PRIVATE_SUBNET_2B=subnet-xxx
-PRIVATE_SUBNET_2C=subnet-xxx
-PUBLIC_SUBNET_2A=subnet-xxx
-PUBLIC_SUBNET_2B=subnet-xxx
-PUBLIC_SUBNET_2C=subnet-xxx
+PRIVATE_SUBNET_A=subnet-xxx
+PRIVATE_SUBNET_B=subnet-xxx
+PRIVATE_SUBNET_C=subnet-xxx
+PUBLIC_SUBNET_A=subnet-xxx
+PUBLIC_SUBNET_B=subnet-xxx
+PUBLIC_SUBNET_C=subnet-xxx
 AWS_REGION=ap-southeast-1
 AWS_DEFAULT_REGION=ap-southeast-1
 ```
@@ -398,9 +401,9 @@ AWS_DEFAULT_REGION=ap-southeast-1
 ```bash
 K8S_VERSION=1.34
 SERVICE_IPV4_CIDR=172.20.0.0/16
-AZ_2A=ap-southeast-1a
-AZ_2B=ap-southeast-1b
-AZ_2C=ap-southeast-1c
+AZ_A=ap-southeast-1a
+AZ_B=ap-southeast-1b
+AZ_C=ap-southeast-1c
 ```
 
 ### Launch Template 配置
@@ -617,6 +620,689 @@ aws ec2 describe-vpcs --vpc-ids $VPC_ID
 # publicAccess: false → publicAccess: true
 ```
 
+详细解决方案请参考下方的 [如何从 VPC 外部署集群](#如何从-vpc-外部署集群) 章节。
+
+---
+
+## 如何从 VPC 外部署集群
+
+### 背景说明
+
+本项目的 EKS 集群采用 **私有 API 访问架构**（`publicAccess: false`），这意味着：
+
+- ✅ **安全性高**：API Server 仅在 VPC 内部可访问，不暴露到公网
+- ❌ **部署限制**：所有 kubectl 命令必须从 VPC 内部执行
+- ❌ **CloudShell 不可用**：CloudShell 运行在 AWS 管理环境中，不在您的 VPC 内
+- ❌ **本地机器不可用**：除非通过 VPN 连接到 VPC
+
+**部署流程对比**：
+
+```
+✅ VPC 内部署（推荐）:
+  EC2 (VPC内) → EKS API (私有10.0.x.x) → 集群部署成功
+
+❌ VPC 外部署（会失败）:
+  CloudShell/本地 → [无法访问] → EKS API (私有10.0.x.x) → 失败: dial tcp timeout
+
+⚠️ 临时公网访问:
+  CloudShell/本地 → Internet → EKS API (公网临时) → 集群部署成功 → 禁用公网
+```
+
+**哪些操作受影响**：
+
+| 脚本/操作 | VPC 外可执行 | 说明 |
+|----------|------------|------|
+| `0_setup_env.sh` | ✅ 可以 | 仅设置环境变量 |
+| `1_enable_vpc_dns.sh` | ✅ 可以 | AWS API 操作 |
+| `2_validate_network_environment.sh` | ✅ 可以 | AWS API 验证 |
+| `3_create_vpc_endpoints.sh` | ✅ 可以 | AWS API 操作 |
+| `eksctl create cluster` | ✅ 可以 | AWS 托管操作 |
+| `kubectl get nodes` | ❌ 不可以 | 需要访问私有 API |
+| `kubectl apply/helm install` | ❌ 不可以 | 需要访问私有 API |
+| 所有组件部署 | ❌ 不可以 | 需要访问私有 API |
+
+---
+
+### 推荐方案：使用临时跳板机部署
+
+#### 方案优势
+
+- ✅ **安全**：API Server 始终保持私有，不暴露到公网
+- ✅ **符合最佳实践**：生产环境推荐配置
+- ✅ **成本极低**：t3.micro 运行 30 分钟 < $0.01
+- ✅ **无需 SSH 密钥**：使用 AWS Systems Manager Session Manager
+
+> ⚠️ **前置要求**：如果您计划将 EC2 实例创建在**私有子网**中，必须先运行 `./scripts/3_create_vpc_endpoints.sh` 创建 VPC 端点（包括 SSM 相关的 3 个端点：`ssm`、`ssmmessages`、`ec2messages`）。否则 Session Manager 将无法连接。
+
+---
+
+#### 步骤 0：创建 VPC 端点（如果尚未创建）
+
+如果您尚未创建 VPC 端点，请先运行：
+
+```bash
+# 启用 VPC DNS（必需）
+./scripts/1_enable_vpc_dns.sh
+
+# 创建 VPC 端点（包含 SSM 端点）
+./scripts/3_create_vpc_endpoints.sh
+```
+
+这将创建 13 个 VPC 端点，包括：
+- **EKS 相关**：eks、eks-auth、sts
+- **容器镜像**：ecr.api、ecr.dkr
+- **日志和存储**：logs、s3
+- **EKS 组件**：ec2、autoscaling、elasticloadbalancing、elasticfilesystem
+- **Session Manager（关键）**：ssm、ssmmessages、ec2messages
+
+等待 2-3 分钟让端点变为可用状态。
+
+---
+
+#### 步骤 1：创建临时 EC2 实例
+
+> 💡 **简化方式**：使用项目提供的自动化脚本一键创建跳板机：
+> ```bash
+> ./scripts/create_bastion.sh
+> ```
+> 该脚本会自动完成以下所有步骤（1.1-1.5），跳到步骤 2 连接实例即可。
+
+**手动创建步骤**（如果不使用自动化脚本）：
+
+**1.1 准备配置**
+
+首先确认您的环境变量（来自 `.env` 文件）：
+
+```bash
+# 加载环境变量
+source scripts/0_setup_env.sh
+
+# 确认变量
+echo "VPC ID: $VPC_ID"
+echo "Private Subnet: $PRIVATE_SUBNET_A"
+```
+
+**1.2 获取最新的 Amazon Linux 2023 AMI**
+
+```bash
+# 获取最新 AMI ID
+AMI_ID=$(aws ec2 describe-images \
+  --owners amazon \
+  --filters "Name=name,Values=al2023-ami-2023.*-x86_64" \
+            "Name=state,Values=available" \
+  --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+  --output text \
+  --region ${AWS_DEFAULT_REGION})
+
+echo "将使用 AMI: $AMI_ID"
+```
+
+**1.3 创建或确认 IAM 角色**
+
+EC2 实例需要以下权限：
+
+```bash
+# 检查角色是否存在
+aws iam get-role --role-name EKS-Deploy-Role 2>/dev/null
+
+# 如果不存在，创建角色
+if [ $? -ne 0 ]; then
+  echo "创建 IAM 角色..."
+
+  # 创建信任策略
+  cat > /tmp/trust-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+  # 创建角色
+  aws iam create-role \
+    --role-name EKS-Deploy-Role \
+    --assume-role-policy-document file:///tmp/trust-policy.json
+
+  # 附加必要权限（根据您的需求调整）
+  aws iam attach-role-policy \
+    --role-name EKS-Deploy-Role \
+    --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  aws iam attach-role-policy \
+    --role-name EKS-Deploy-Role \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess  # 仅用于部署，部署后可删除
+
+  # 创建实例配置文件
+  aws iam create-instance-profile --instance-profile-name EKS-Deploy-Profile
+  aws iam add-role-to-instance-profile \
+    --instance-profile-name EKS-Deploy-Profile \
+    --role-name EKS-Deploy-Role
+
+  # 等待角色生效
+  echo "等待 IAM 角色生效..."
+  sleep 10
+fi
+```
+
+**1.4 创建安全组（如果不存在）**
+
+```bash
+# 创建安全组（仅允许出站流量，Session Manager 不需要入站）
+SG_ID=$(aws ec2 create-security-group \
+  --group-name eks-deploy-temp-sg \
+  --description "Temporary SG for EKS deployment" \
+  --vpc-id ${VPC_ID} \
+  --output text \
+  --region ${AWS_DEFAULT_REGION})
+
+echo "创建的安全组 ID: $SG_ID"
+
+# 添加标签
+aws ec2 create-tags \
+  --resources $SG_ID \
+  --tags Key=Name,Value=eks-deploy-temp-sg \
+  --region ${AWS_DEFAULT_REGION}
+```
+
+**1.5 启动 EC2 实例**
+
+```bash
+# 创建 EC2 实例
+INSTANCE_ID=$(aws ec2 run-instances \
+  --image-id ${AMI_ID} \
+  --instance-type t3.micro \
+  --subnet-id ${PUBLIC_SUBNET_A} \
+  --security-group-ids ${SG_ID} \
+  --iam-instance-profile Name=EKS-Deploy-Profile \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=EKS-Deploy-Temp},{Key=Purpose,Value=EKS-Deployment},{Key=AutoDelete,Value=true}]' \
+  --region ${AWS_DEFAULT_REGION} \
+  --query 'Instances[0].InstanceId' \
+  --output text)
+
+echo "实例 ID: $INSTANCE_ID"
+
+# 等待实例运行
+echo "等待实例启动..."
+aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${AWS_DEFAULT_REGION}
+
+# 等待 SSM Agent 就绪（大约 1-2 分钟）
+echo "等待 Systems Manager Agent 就绪..."
+for i in {1..30}; do
+  STATUS=$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+    --query 'InstanceInformationList[0].PingStatus' \
+    --output text \
+    --region ${AWS_DEFAULT_REGION} 2>/dev/null)
+
+  if [ "$STATUS" = "Online" ]; then
+    echo "✅ 实例已就绪！"
+    break
+  fi
+
+  echo "等待中... ($i/30)"
+  sleep 10
+done
+```
+
+**成本说明**：t3.micro 按需实例约 $0.0104/小时（us-east-1），部署耗时 20-30 分钟，总成本不到 $0.01。
+
+---
+
+#### 步骤 2：连接到实例
+
+**使用 AWS Systems Manager Session Manager（推荐）**：
+
+```bash
+# 如果使用自动化脚本创建，实例 ID 已保存
+INSTANCE_ID=$(cat /tmp/eks-bastion-instance-id.txt)
+
+# 方式 1：通过 AWS CLI 连接
+aws ssm start-session \
+  --target $INSTANCE_ID \
+  --region ${AWS_DEFAULT_REGION}
+
+# 方式 2：通过 AWS 控制台连接
+# 访问 EC2 控制台 → 选择实例 → 点击"连接" → 选择"Session Manager"标签页 → 点击"连接"
+```
+
+**优势**：
+- ✅ 无需 SSH 密钥
+- ✅ 无需开放 22 端口
+- ✅ 所有会话记录在 CloudTrail
+- ✅ 可通过 IAM 精细控制访问权限
+
+连接成功后，您将看到类似的提示符：
+
+```
+sh-5.2$
+```
+
+---
+
+#### 步骤 3：在实例上安装必要工具
+
+> 💡 **简化方式**：使用项目提供的自动化脚本一键安装所有工具：
+> ```bash
+> # 从 GitHub 下载安装脚本
+> curl -O https://raw.githubusercontent.com/your-username/eks-cluster-deployment/main/scripts/install_tools.sh
+> bash install_tools.sh
+> ```
+>
+> 或者如果已经克隆了项目：
+> ```bash
+> cd eks-cluster-deployment
+> ./scripts/install_tools.sh
+> ```
+
+**手动安装步骤**（如果不使用自动化脚本）：
+
+连接到实例后，执行以下命令安装所有必要工具：
+
+```bash
+#!/bin/bash
+# 一键安装所有部署工具
+
+echo "=== 安装 EKS 部署工具 ==="
+
+# 更新系统
+sudo yum update -y
+
+# 安装基础工具
+sudo yum install -y git unzip tar gzip jq
+
+# 1. 安装 kubectl
+echo "安装 kubectl..."
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+rm kubectl
+
+# 2. 安装 eksctl
+echo "安装 eksctl..."
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin
+chmod +x /usr/local/bin/eksctl
+
+# 3. 安装 helm
+echo "安装 helm..."
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# 4. 验证安装
+echo ""
+echo "=== 验证工具版本 ==="
+kubectl version --client
+eksctl version
+helm version
+aws --version
+
+echo ""
+echo "✅ 所有工具安装完成！"
+```
+
+**预期输出**：
+
+```
+Client Version: v1.31.x
+eksctl version: 0.x.x
+version.BuildInfo{Version:"v3.x.x"...}
+aws-cli/2.x.x Python/3.x.x Linux/6.x.x
+```
+
+---
+
+#### 步骤 4：克隆项目并运行安装脚本
+
+**4.1 克隆项目代码**
+
+如果项目在 Git 仓库中：
+
+```bash
+# 克隆项目
+cd ~
+git clone <your-repository-url> eks-cluster-deployment
+cd eks-cluster-deployment
+
+# 或者，如果需要认证
+git clone https://github.com/your-username/eks-cluster-deployment.git
+```
+
+如果项目不在 Git 仓库，可以从本地上传：
+
+```bash
+# 在本地机器上打包
+tar czf eks-project.tar.gz eks-cluster-deployment/
+
+# 上传到 S3
+aws s3 cp eks-project.tar.gz s3://your-bucket/
+
+# 在 EC2 实例上下载
+aws s3 cp s3://your-bucket/eks-project.tar.gz .
+tar xzf eks-project.tar.gz
+cd eks-cluster-deployment
+```
+
+**4.2 配置环境变量**
+
+```bash
+# 复制并编辑配置文件
+cp .env.example .env
+nano .env  # 或使用 vi
+
+# 确保填写正确的值：
+# - CLUSTER_NAME
+# - VPC_ID
+# - 所有子网 ID
+# - AWS_REGION
+```
+
+**4.3 运行安装脚本**
+
+```bash
+# 给脚本执行权限
+chmod +x scripts/*.sh
+
+# 运行完整安装
+./scripts/4_install_eks_cluster.sh
+
+# 或者分步执行
+./scripts/1_enable_vpc_dns.sh
+./scripts/2_validate_network_environment.sh
+./scripts/3_create_vpc_endpoints.sh
+./scripts/4_install_eks_cluster.sh
+```
+
+**部署时间**：约 20-25 分钟
+
+**监控部署进度**：
+
+```bash
+# 查看集群创建状态
+eksctl get cluster --name ${CLUSTER_NAME} --region ${AWS_DEFAULT_REGION}
+
+# 查看节点状态
+kubectl get nodes
+
+# 查看所有 Pod
+kubectl get pods -A
+```
+
+---
+
+#### 步骤 5：清理临时资源
+
+部署完成并验证集群正常后，清理临时 EC2 实例：
+
+> 💡 **简化方式**：使用项目提供的自动化脚本删除跳板机：
+> ```bash
+> ./scripts/delete_bastion.sh
+> ```
+> 该脚本会自动查找并删除跳板机实例。
+
+**手动清理步骤**（如果不使用自动化脚本）：
+
+**5.1 退出 Session Manager**
+
+```bash
+# 在 EC2 实例的 shell 中执行
+exit
+```
+
+**5.2 终止 EC2 实例**
+
+```bash
+# 在本地或 CloudShell 中执行
+
+# 获取实例 ID（如果使用自动化脚本创建）
+INSTANCE_ID=$(cat /tmp/eks-bastion-instance-id.txt)
+
+# 或手动查找
+# INSTANCE_ID=$(aws ec2 describe-instances \
+#   --filters "Name=tag:Name,Values=EKS-Deploy-Bastion-${CLUSTER_NAME}" \
+#   --query 'Reservations[0].Instances[0].InstanceId' \
+#   --output text)
+
+# 终止实例
+aws ec2 terminate-instances \
+  --instance-ids $INSTANCE_ID \
+  --region ${AWS_DEFAULT_REGION}
+
+# 验证实例已终止
+aws ec2 describe-instances \
+  --instance-ids $INSTANCE_ID \
+  --query 'Reservations[0].Instances[0].State.Name' \
+  --output text \
+  --region ${AWS_DEFAULT_REGION}
+```
+
+**5.3 清理安全组和 IAM 资源（可选）**
+
+```bash
+# 等待实例完全终止后，删除安全组
+aws ec2 delete-security-group \
+  --group-id $SG_ID \
+  --region ${AWS_DEFAULT_REGION}
+
+# 如果不再需要，删除 IAM 角色
+aws iam remove-role-from-instance-profile \
+  --instance-profile-name EKS-Deploy-Profile \
+  --role-name EKS-Deploy-Role
+
+aws iam delete-instance-profile \
+  --instance-profile-name EKS-Deploy-Profile
+
+aws iam detach-role-policy \
+  --role-name EKS-Deploy-Role \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+aws iam detach-role-policy \
+  --role-name EKS-Deploy-Role \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+
+aws iam delete-role --role-name EKS-Deploy-Role
+```
+
+---
+
+### 备选方案：临时启用公网访问
+
+如果您更倾向于从 CloudShell 或本地机器直接部署（适用于开发/测试环境），可以临时启用公网访问。
+
+#### 方案优势
+
+- ✅ **简单快捷**：无需创建额外资源
+- ✅ **零成本**：使用 CloudShell 完全免费
+- ⚠️ **安全性较低**：临时暴露 API Server 到公网
+
+#### 实施步骤
+
+**步骤 1：修改集群配置**
+
+编辑 `manifests/cluster/eksctl_cluster_base.yaml`:
+
+```yaml
+clusterEndpoints:
+  privateAccess: true
+  publicAccess: true        # 修改为 true
+  publicAccessCIDRs:        # 可选：限制访问 IP
+    - "YOUR_IP/32"          # 替换为您的公网 IP
+```
+
+**获取您的公网 IP**：
+
+```bash
+curl ifconfig.me
+# 或
+curl checkip.amazonaws.com
+```
+
+**步骤 2：在 CloudShell 中运行部署**
+
+```bash
+# 克隆项目
+git clone <your-repo> eks-cluster-deployment
+cd eks-cluster-deployment
+
+# 配置环境
+cp .env.example .env
+nano .env
+
+# 运行安装
+./scripts/4_install_eks_cluster.sh
+```
+
+**步骤 3：部署完成后禁用公网访问**
+
+选项 A：使用 AWS CLI（从任何地方）
+
+```bash
+aws eks update-cluster-config \
+  --name ${CLUSTER_NAME} \
+  --resources-vpc-config endpointPublicAccess=false,endpointPrivateAccess=true \
+  --region ${AWS_DEFAULT_REGION}
+
+# 等待更新完成（约 5 分钟）
+aws eks wait cluster-active \
+  --name ${CLUSTER_NAME} \
+  --region ${AWS_DEFAULT_REGION}
+```
+
+选项 B：使用项目提供的脚本（需要从 VPC 内或公网访问仍然启用时）
+
+```bash
+./scripts/disable_public_access.sh
+```
+
+---
+
+### 故障排查
+
+#### 问题 1：Session Manager 无法连接
+
+**症状**：`aws ssm start-session` 返回错误或超时
+
+**排查步骤**：
+
+```bash
+# 1. 确认实例状态
+aws ec2 describe-instance-status --instance-ids $INSTANCE_ID
+
+# 2. 确认 SSM Agent 状态
+aws ssm describe-instance-information \
+  --filters "Key=InstanceIds,Values=$INSTANCE_ID"
+
+# 3. 检查 IAM 角色是否正确附加
+aws ec2 describe-instances \
+  --instance-ids $INSTANCE_ID \
+  --query 'Reservations[0].Instances[0].IamInstanceProfile'
+
+# 4. 检查 VPC 端点（如果使用私有子网）
+aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$VPC_ID"
+```
+
+**解决方案**：
+- 等待 2-3 分钟让 SSM Agent 完全初始化
+- 确认 IAM 角色包含 `AmazonSSMManagedInstanceCore` 策略
+- **如果使用私有子网，必须确保 VPC 有以下 3 个端点**：
+  - `com.amazonaws.<region>.ssm` - Systems Manager 端点
+  - `com.amazonaws.<region>.ssmmessages` - Session Manager 消息端点
+  - `com.amazonaws.<region>.ec2messages` - EC2 消息端点（用于 SSM Agent）
+
+**重要提示**：本项目的 `scripts/3_create_vpc_endpoints.sh` 脚本已经包含了这 3 个 SSM 端点。如果您的 VPC 端点是手动创建的或使用旧版本脚本，请运行以下命令补充创建：
+
+```bash
+# 重新运行 VPC 端点创建脚本（会跳过已存在的端点）
+./scripts/3_create_vpc_endpoints.sh
+
+# 或手动创建缺失的 SSM 端点
+source scripts/0_setup_env.sh
+
+# 创建 ssmmessages 端点
+aws ec2 create-vpc-endpoint \
+  --vpc-id ${VPC_ID} \
+  --service-name com.amazonaws.${AWS_REGION}.ssmmessages \
+  --vpc-endpoint-type Interface \
+  --subnet-ids ${PRIVATE_SUBNET_A} ${PRIVATE_SUBNET_B} ${PRIVATE_SUBNET_C} \
+  --security-group-ids <your-vpc-endpoints-sg-id> \
+  --private-dns-enabled
+
+# 创建 ec2messages 端点
+aws ec2 create-vpc-endpoint \
+  --vpc-id ${VPC_ID} \
+  --service-name com.amazonaws.${AWS_REGION}.ec2messages \
+  --vpc-endpoint-type Interface \
+  --subnet-ids ${PRIVATE_SUBNET_A} ${PRIVATE_SUBNET_B} ${PRIVATE_SUBNET_C} \
+  --security-group-ids <your-vpc-endpoints-sg-id> \
+  --private-dns-enabled
+```
+
+#### 问题 2：kubectl 提示权限不足
+
+**症状**：`error: You must be logged in to the server (Unauthorized)`
+
+**解决方案**：
+
+```bash
+# 更新 kubeconfig
+aws eks update-kubeconfig \
+  --name ${CLUSTER_NAME} \
+  --region ${AWS_DEFAULT_REGION}
+
+# 验证配置
+kubectl config current-context
+kubectl get nodes
+```
+
+#### 问题 3：工具安装失败
+
+**症状**：kubectl/eksctl/helm 安装错误
+
+**解决方案**：
+
+```bash
+# 检查网络连接
+ping -c 3 google.com
+
+# 如果在私有子网，检查 NAT Gateway
+aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID"
+
+# 检查路由表
+aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID"
+```
+
+---
+
+### 最佳实践建议
+
+1. **生产环境**：
+   - ✅ 使用临时跳板机方案
+   - ✅ 保持 API Server 私有访问
+   - ✅ 使用 Session Manager 而非 SSH
+   - ✅ 部署完成立即删除跳板机
+
+2. **开发/测试环境**：
+   - ✅ 可以临时启用公网访问
+   - ✅ 使用 IP 白名单限制访问
+   - ✅ 部署完成后禁用公网访问
+
+3. **长期维护**：
+   - 考虑设置永久跳板机（使用自动关机策略降低成本）
+   - 或配置 AWS Client VPN
+   - 或使用 AWS Direct Connect / Site-to-Site VPN
+
+4. **安全建议**：
+   - ❌ 不要长期启用 API Server 公网访问
+   - ✅ 使用 IAM 角色而非长期密钥
+   - ✅ 定期审计 CloudTrail 日志
+   - ✅ 使用 Security Groups 和 Network ACLs 加固网络
+
+---
+
 ### 问题 3: Pod 无法调度到 app 节点
 
 **原因:** 缺少 Toleration
@@ -831,3 +1517,44 @@ eksctl upgrade nodegroup --cluster=${CLUSTER_NAME} --name=app --region=${AWS_REG
 **维护者:** Platform Team
 **最后更新:** 2025-12-09
 **文档版本:** v2.0
+
+---
+
+## 🚨 部署执行记录
+
+### 新加坡集群部署 (2025-12-09)
+
+**集群信息**:
+- 名称: eks-singapore
+- 区域: ap-southeast-1
+- 状态: ✅ ACTIVE
+- 节点: 6个 (3x m7i.large + 3x c8g.large)
+- 部署时间: 约13分钟
+
+**堡垒机**:
+- 实例ID: i-0b3bc4cfb8b84e34c
+- 子网: subnet-0b3ff3647c930a34e
+- 用途: VPC内部部署集群
+
+### kubectl 配置重要提示
+
+**问题**: kubectl 尝试连接 localhost:8080
+
+**原因**: `KUBECONFIG` 环境变量未设置
+
+**解决方案**:
+```bash
+# 在任何使用kubectl的脚本中,添加:
+export KUBECONFIG="${HOME}/.kube/config"
+
+# 或在命令中指定:
+kubectl --kubeconfig=/root/.kube/config get nodes
+```
+
+**最佳实践**: 
+- 始终在脚本开头显式设置 `KUBECONFIG`
+- 对私有集群,使用 `timeout` 避免长时间等待
+- 提供 AWS CLI 备用验证方案
+
+详细说明见部署脚本: [scripts/working_deploy_eks.sh](scripts/working_deploy_eks.sh)
+

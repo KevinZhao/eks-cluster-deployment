@@ -18,11 +18,17 @@ credentials.json
 
 # Generated files
 eksctl_cluster_final.yaml
-iam_policy.json
+eksctl_cluster_base_final.yaml
+eksctl_nodegroup_*.yaml
+manifests/iam/alb-controller-iam-policy.json
 
 # Terraform
 *.tfstate
 *.tfstate.*
+*.tfplan
+*.tfplan.*
+terraform.tfvars
+terraform.tfvars.*
 .terraform/
 .terraform.lock.hcl
 
@@ -40,3 +46,15 @@ logs/
 # Backup files
 *.bak
 *.backup
+
+# Temporary files
+/tmp/
+*.tmp
+*-instance-id.txt
+
+# Cache and build artifacts
+node_modules/
+__pycache__/
+*.pyc
+dist/
+build/

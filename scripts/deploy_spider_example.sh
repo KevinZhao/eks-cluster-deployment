@@ -19,16 +19,16 @@ echo ""
 
 # 1. 检查 spider key 是否存在
 echo "Step 0: Checking prerequisites..."
-if ! aws ec2 describe-key-pairs --key-names spider --region ap-southeast-1 >/dev/null 2>&1; then
+if ! aws ec2 describe-key-pairs --key-names spider --region ${AWS_REGION} >/dev/null 2>&1; then
     echo ""
     echo "❌ ERROR: SSH key 'spider' not found in AWS!"
     echo ""
     echo "Please create the key pair first:"
     echo "  Option 1 - Import existing key:"
-    echo "    aws ec2 import-key-pair --key-name spider --public-key-material fileb://~/.ssh/spider.pem.pub --region ap-southeast-1"
+    echo "    aws ec2 import-key-pair --key-name spider --public-key-material fileb://~/.ssh/spider.pem.pub --region ${AWS_REGION}"
     echo ""
     echo "  Option 2 - Create new key:"
-    echo "    aws ec2 create-key-pair --key-name spider --region ap-southeast-1 --query 'KeyMaterial' --output text > spider.pem"
+    echo "    aws ec2 create-key-pair --key-name spider --region ${AWS_REGION} --query 'KeyMaterial' --output text > spider.pem"
     echo "    chmod 400 spider.pem"
     echo ""
     exit 1
@@ -38,6 +38,10 @@ fi
 
 # 2. 设置环境变量
 source "${SCRIPT_DIR}/0_setup_env.sh"
+
+# 2.1 设置 KUBECONFIG 环境变量
+export KUBECONFIG="${HOME}/.kube/config"
+echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 # 2.5. 导入 Pod Identity helper 函数
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
@@ -153,9 +157,6 @@ echo ""
 
 export LAUNCH_TEMPLATE_ID
 export LAUNCH_TEMPLATE_VERSION
-
-# 注意：环境变量映射已在 0_setup_env.sh 中自动处理
-# PRIVATE_SUBNET_2A 已自动映射为 PRIVATE_SUBNET_A
 
 envsubst < "${PROJECT_ROOT}/manifests/cluster/eksctl_nodegroup_app.yaml" > "${PROJECT_ROOT}/eksctl_nodegroup_spider_final.yaml"
 

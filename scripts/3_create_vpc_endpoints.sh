@@ -98,7 +98,9 @@ declare -a INTERFACE_ENDPOINTS=(
     "autoscaling:Cluster Autoscaler"
     "elasticloadbalancing:AWS LB Controller"
     "elasticfilesystem:EFS CSI Driver"
-    "ssm:Systems Manager"
+    "ssm:Systems Manager Session Manager"
+    "ssmmessages:Session Manager Messages"
+    "ec2messages:EC2 Messages for SSM"
 )
 
 # Create interface endpoints
@@ -196,4 +198,4 @@ aws ec2 describe-vpc-endpoints \
 
 echo ""
 echo -e "${YELLOW}Note: It may take a few minutes for endpoints to become available.${NC}"
-echo -e "${YELLOW}Monthly cost estimate: ~\$80-85 for 11 interface endpoints${NC}"
+echo -e "${YELLOW}Monthly cost estimate: ~\$93-97 for 13 interface endpoints (includes SSM endpoints for Session Manager)${NC}"

@@ -11,6 +11,10 @@ echo "=== EKS Cluster Installation with Custom Launch Template for App Nodegroup
 # 1. 设置环境变量
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
+# 1.1 设置 KUBECONFIG 环境变量
+export KUBECONFIG="${HOME}/.kube/config"
+echo "KUBECONFIG set to: ${KUBECONFIG}"
+
 # 1.5. 导入 Pod Identity helper 函数
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
 
@@ -117,9 +121,6 @@ echo "Step 4: Creating app nodegroup with custom Launch Template..."
 export LAUNCH_TEMPLATE_ID
 export LAUNCH_TEMPLATE_VERSION
 
-# 注意：环境变量映射已在 0_setup_env.sh 中自动处理
-# PRIVATE_SUBNET_2A 已自动映射为 PRIVATE_SUBNET_A
-
 envsubst < "${PROJECT_ROOT}/manifests/cluster/eksctl_nodegroup_app.yaml" > "${PROJECT_ROOT}/eksctl_nodegroup_app_final.yaml"
 eksctl create nodegroup -f "${PROJECT_ROOT}/eksctl_nodegroup_app_final.yaml"
 
@@ -154,7 +155,7 @@ helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
     --set clusterName=${CLUSTER_NAME} \
     --set serviceAccount.create=false \
     --set vpcId=${VPC_ID} \
-    --set region=${AWS_DEFAULT_REGION} \
+    --set region=${AWS_REGION} \
     --set serviceAccount.name=aws-load-balancer-controller \
     --set nodeSelector.app=eks-utils \
     --version 1.13.0
@@ -179,7 +180,7 @@ echo "=== Installation Complete ==="
 echo ""
 echo "Cluster Information:"
 echo "  Cluster Name: ${CLUSTER_NAME}"
-echo "  Region: ${AWS_DEFAULT_REGION}"
+echo "  Region: ${AWS_REGION}"
 echo "  Kubernetes Version: ${K8S_VERSION}"
 echo ""
 echo "Nodegroups:"
@@ -204,5 +205,5 @@ echo "To update Launch Template:"
 echo "  1. cd terraform/launch-template"
 echo "  2. Edit terraform.tfvars"
 echo "  3. terraform apply"
-echo "  4. Update nodegroup: eksctl upgrade nodegroup --cluster=${CLUSTER_NAME} --name=app --region=${AWS_DEFAULT_REGION}"
+echo "  4. Update nodegroup: eksctl upgrade nodegroup --cluster=${CLUSTER_NAME} --name=app --region=${AWS_REGION}"
 echo ""

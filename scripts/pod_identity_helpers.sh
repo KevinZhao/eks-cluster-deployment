@@ -119,7 +119,7 @@ attach_custom_policy() {
     log "Creating and attaching custom policy ${policy_name}"
 
     # 检查策略是否已存在
-    local policy_arn="arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:policy/${policy_name}"
+    local policy_arn="arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}"
 
     if ! aws iam get-policy --policy-arn "${policy_arn}" &>/dev/null; then
         # 创建策略
@@ -150,7 +150,7 @@ create_pod_identity_association() {
         error "Namespace, service account, and role name are required"
     fi
 
-    local role_arn="arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:role/${role_name}"
+    local role_arn="arn:aws:iam::${ACCOUNT_ID}:role/${role_name}"
 
     log "Creating Pod Identity Association for ${namespace}/${service_account}"
 
@@ -255,7 +255,7 @@ setup_cluster_autoscaler_pod_identity() {
     create_pod_identity_role "${role_name}"
 
     # 2. 附加 AWS 托管策略
-    local policy_arn="arn:${AWS_PARTITION}:iam::aws:policy/AmazonEKSClusterAutoscalerPolicy"
+    local policy_arn="arn:aws:iam::aws:policy/AmazonEKSClusterAutoscalerPolicy"
 
     # 检查策略是否存在（某些 partition 可能没有这个策略）
     if ! aws iam get-policy --policy-arn "${policy_arn}" &>/dev/null; then
@@ -322,7 +322,7 @@ setup_ebs_csi_pod_identity() {
     create_pod_identity_role "${role_name}"
 
     # 2. 附加 AWS 托管策略
-    local policy_arn="arn:${AWS_PARTITION}:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+    local policy_arn="arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
     attach_managed_policy "${role_name}" "${policy_arn}"
 
     # 3. ServiceAccount 由 EBS CSI addon 自动创建，无需手动创建
@@ -345,11 +345,12 @@ setup_alb_controller_pod_identity() {
     local service_account="aws-load-balancer-controller"
 
     # 1. 下载 IAM policy（如果不存在）
-    local policy_file="${PROJECT_ROOT}/iam_policy.json"
+    local policy_file="${PROJECT_ROOT}/manifests/iam/alb-controller-iam-policy.json"
     if [ ! -f "${policy_file}" ]; then
         log "Downloading AWS Load Balancer Controller IAM policy..."
+        mkdir -p "${PROJECT_ROOT}/manifests/iam"
         curl -sS -o "${policy_file}" https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.13.0/docs/install/iam_policy.json
-        log "✓ Policy downloaded"
+        log "✓ Policy downloaded to ${policy_file}"
     else
         log "Policy file already exists, using existing file"
     fi
@@ -383,7 +384,7 @@ setup_efs_csi_pod_identity() {
     create_pod_identity_role "${role_name}"
 
     # 2. 附加 AWS 托管策略
-    local policy_arn="arn:${AWS_PARTITION}:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+    local policy_arn="arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
     attach_managed_policy "${role_name}" "${policy_arn}"
 
     # 3. 创建 ServiceAccount
@@ -607,6 +608,6 @@ Example:
 Requirements:
   - AWS CLI configured with appropriate permissions
   - kubectl configured for the cluster
-  - Environment variables: CLUSTER_NAME, ACCOUNT_ID, AWS_PARTITION
+  - Environment variables: CLUSTER_NAME, ACCOUNT_ID
 EOF
 fi

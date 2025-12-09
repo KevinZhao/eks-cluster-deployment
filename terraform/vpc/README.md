@@ -123,12 +123,12 @@ terraform output -raw env_file_format >> ../../.env
 Or manually copy from terraform output:
 ```bash
 VPC_ID=vpc-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
-PUBLIC_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2A=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2B=subnet-xxxxxxxxxxxxxxxxx
-PRIVATE_SUBNET_2C=subnet-xxxxxxxxxxxxxxxxx
+PUBLIC_SUBNET_A=subnet-xxxxxxxxxxxxxxxxx
+PUBLIC_SUBNET_B=subnet-xxxxxxxxxxxxxxxxx
+PUBLIC_SUBNET_C=subnet-xxxxxxxxxxxxxxxxx
+PRIVATE_SUBNET_A=subnet-xxxxxxxxxxxxxxxxx
+PRIVATE_SUBNET_B=subnet-xxxxxxxxxxxxxxxxx
+PRIVATE_SUBNET_C=subnet-xxxxxxxxxxxxxxxxx
 ```
 
 ## Configuration Options

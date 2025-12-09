@@ -39,35 +39,7 @@ else
     export AWS_DEFAULT_REGION
 fi
 
-# 4. 设置 AWS Partition（默认为 aws，除非在 GovCloud 或 China）
-if [ -z "$AWS_PARTITION" ]; then
-    log "AWS_PARTITION not set, using default: aws"
-    export AWS_PARTITION="aws"
-else
-    export AWS_PARTITION
-fi
-
-# 5. 环境变量兼容性映射（支持 _A 和 _2A 两种命名方式）
-# 如果使用 _2A 格式，自动映射到 _A 格式
-if [ -n "$PRIVATE_SUBNET_2A" ]; then
-    export PRIVATE_SUBNET_A="${PRIVATE_SUBNET_A:-$PRIVATE_SUBNET_2A}"
-    export PRIVATE_SUBNET_B="${PRIVATE_SUBNET_B:-$PRIVATE_SUBNET_2B}"
-    export PRIVATE_SUBNET_C="${PRIVATE_SUBNET_C:-$PRIVATE_SUBNET_2C}"
-fi
-
-if [ -n "$PUBLIC_SUBNET_2A" ]; then
-    export PUBLIC_SUBNET_A="${PUBLIC_SUBNET_A:-$PUBLIC_SUBNET_2A}"
-    export PUBLIC_SUBNET_B="${PUBLIC_SUBNET_B:-$PUBLIC_SUBNET_2B}"
-    export PUBLIC_SUBNET_C="${PUBLIC_SUBNET_C:-$PUBLIC_SUBNET_2C}"
-fi
-
-if [ -n "$AZ_2A" ]; then
-    export AZ_A="${AZ_A:-$AZ_2A}"
-    export AZ_B="${AZ_B:-$AZ_2B}"
-    export AZ_C="${AZ_C:-$AZ_2C}"
-fi
-
-# 6. 验证必需的环境变量
+# 4. 验证必需的环境变量
 REQUIRED_VARS=(
     "CLUSTER_NAME"
     "VPC_ID"
@@ -90,11 +62,11 @@ if [ ${#MISSING_VARS[@]} -gt 0 ]; then
     error "Missing required environment variables: ${MISSING_VARS[*]}\nPlease create a .env file or set these variables. See .env.example for reference."
 fi
 
-# 7. 设置默认值
+# 5. 设置默认值
 export K8S_VERSION="${K8S_VERSION:-1.34}"
 export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 
-# 8. 自动推导 AZ（基于子网 ID 模式）
+# 6. 自动推导 AZ（基于子网 ID 模式）
 if [ -z "$AZ_A" ] || [ -z "$AZ_B" ] || [ -z "$AZ_C" ]; then
     log "Availability zones not set, deriving from region..."
     export AZ_A="${AWS_REGION}a"
@@ -102,7 +74,7 @@ if [ -z "$AZ_A" ] || [ -z "$AZ_B" ] || [ -z "$AZ_C" ]; then
     export AZ_C="${AWS_REGION}c"
 fi
 
-# 9. 验证配置
+# 7. 验证配置
 log "Validating configuration..."
 
 # 验证 AWS 凭证
@@ -111,13 +83,12 @@ aws sts get-caller-identity >/dev/null 2>&1 || \
 
 log "Configuration validation completed successfully!"
 
-# 10. 显示配置摘要
+# 8. 显示配置摘要
 log "=== Configuration Summary ==="
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 echo "AWS_REGION: $AWS_REGION"
 echo "CLUSTER_NAME: $CLUSTER_NAME"
 echo "K8S_VERSION: $K8S_VERSION"
-echo "AWS_PARTITION: $AWS_PARTITION"
 echo "VPC_ID: $VPC_ID"
 echo "AZ: $AZ_A, $AZ_B, $AZ_C"
 echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"

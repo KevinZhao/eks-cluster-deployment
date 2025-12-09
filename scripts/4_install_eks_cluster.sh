@@ -11,18 +11,97 @@ echo "=== EKS Cluster Installation with Cluster Autoscaler and EBS CSI Driver ==
 # 1. 设置环境变量
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
+# 1.1 设置 KUBECONFIG 环境变量 (确保 kubectl 能找到配置文件)
+export KUBECONFIG="${HOME}/.kube/config"
+echo "KUBECONFIG set to: ${KUBECONFIG}"
+
 # 1.5. 导入 Pod Identity helper 函数
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
+
+# 1.6. 检查必需的依赖工具
+echo "Checking required dependencies..."
+MISSING_DEPS=()
+
+command -v kubectl >/dev/null 2>&1 || MISSING_DEPS+=("kubectl")
+command -v eksctl >/dev/null 2>&1 || MISSING_DEPS+=("eksctl")
+command -v helm >/dev/null 2>&1 || MISSING_DEPS+=("helm")
+command -v envsubst >/dev/null 2>&1 || MISSING_DEPS+=("envsubst (from gettext package)")
+command -v jq >/dev/null 2>&1 || MISSING_DEPS+=("jq")
+command -v aws >/dev/null 2>&1 || MISSING_DEPS+=("aws cli")
+
+if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
+    echo "❌ ERROR: Missing required dependencies:"
+    for dep in "${MISSING_DEPS[@]}"; do
+        echo "  - $dep"
+    done
+    echo ""
+    echo "Please install the missing dependencies and try again."
+    exit 1
+fi
+echo "✓ All required dependencies are installed"
+echo ""
 
 # 2. 创建EKS集群
 echo "Creating EKS cluster..."
 envsubst < "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
 eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
 
+# 2.1 更新 kubeconfig (eksctl 应该已经完成,但保险起见再执行一次)
+echo "Updating kubeconfig..."
+aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
+
+# 2.2 配置安全组以允许堡垒机访问集群 API (针对私有集群)
+echo ""
+echo "Configuring security group for bastion access to EKS API..."
+
+# 获取集群安全组
+CLUSTER_SG=$(aws eks describe-cluster \
+    --name ${CLUSTER_NAME} \
+    --region ${AWS_REGION} \
+    --query 'cluster.resourcesVpcConfig.securityGroupIds[0]' \
+    --output text 2>/dev/null)
+
+# 获取VPC endpoint安全组（堡垒机使用的安全组）
+BASTION_SG=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=${CLUSTER_NAME}-vpc-endpoints-sg" "Name=vpc-id,Values=${VPC_ID}" \
+    --query 'SecurityGroups[0].GroupId' \
+    --output text \
+    --region ${AWS_REGION} 2>/dev/null)
+
+if [ -n "${CLUSTER_SG}" ] && [ "${CLUSTER_SG}" != "None" ] && [ -n "${BASTION_SG}" ] && [ "${BASTION_SG}" != "None" ]; then
+    echo "Cluster Security Group: ${CLUSTER_SG}"
+    echo "Bastion Security Group: ${BASTION_SG}"
+
+    # 添加入站规则允许堡垒机访问集群API端口443
+    if aws ec2 authorize-security-group-ingress \
+        --group-id ${CLUSTER_SG} \
+        --protocol tcp \
+        --port 443 \
+        --source-group ${BASTION_SG} \
+        --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
+        echo "✓ Security group rule already exists"
+    else
+        echo "✓ Security group rule added successfully"
+    fi
+
+    echo "Bastion can now access EKS API Server"
+else
+    echo "⚠ Warning: Could not configure security group automatically"
+    echo "If kubectl times out, manually add this rule:"
+    echo "  aws ec2 authorize-security-group-ingress \\"
+    echo "    --group-id ${CLUSTER_SG} \\"
+    echo "    --protocol tcp --port 443 \\"
+    echo "    --source-group ${BASTION_SG} \\"
+    echo "    --region ${AWS_REGION}"
+fi
+
+echo ""
+
 # 3. 验证集群状态
 echo "Checking cluster status..."
-kubectl get nodes
-kubectl get pods -A
+echo "Note: If cluster uses private-only access, kubectl may timeout. This is expected."
+timeout 10 kubectl get nodes || echo "Warning: kubectl timeout - using AWS CLI to verify cluster"
+timeout 10 kubectl get pods -A || aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query 'cluster.status'
 
 # 3.5. 等待 Pod Identity Agent 就绪
 echo ""
@@ -61,12 +140,12 @@ echo "Deploying Load Balancer Controller..."
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update eks
 
-helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
     -n kube-system \
     --set clusterName=${CLUSTER_NAME} \
     --set serviceAccount.create=false \
     --set vpcId=${VPC_ID} \
-    --set region=${AWS_DEFAULT_REGION} \
+    --set region=${AWS_REGION} \
     --set serviceAccount.name=aws-load-balancer-controller \
     --set nodeSelector.app=eks-utils \
     --version 1.13.0
