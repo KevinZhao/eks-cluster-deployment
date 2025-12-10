@@ -18,9 +18,9 @@ data "aws_eks_cluster" "cluster" {
   name = var.cluster_name
 }
 
-# Data: Get the latest EKS optimized AMI for ARM64 (Graviton)
+# Data: Get the latest EKS optimized AMI for ARM64 (Graviton) - AL2023
 data "aws_ssm_parameter" "eks_ami_arm64" {
-  name = "/aws/service/eks/optimized-ami/${var.k8s_version}/amazon-linux-2023/arm64/recommended/image_id"
+  name = "/aws/service/eks/optimized-ami/${var.k8s_version}/amazon-linux-2023/arm64/standard/recommended/image_id"
 }
 
 # Security Group for app nodegroup

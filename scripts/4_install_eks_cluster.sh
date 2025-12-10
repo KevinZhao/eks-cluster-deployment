@@ -61,40 +61,57 @@ CLUSTER_SG=$(aws eks describe-cluster \
     --query 'cluster.resourcesVpcConfig.securityGroupIds[0]' \
     --output text 2>/dev/null)
 
-# 获取VPC endpoint安全组（堡垒机使用的安全组）
-BASTION_SG=$(aws ec2 describe-security-groups \
-    --filters "Name=group-name,Values=${CLUSTER_NAME}-vpc-endpoints-sg" "Name=vpc-id,Values=${VPC_ID}" \
-    --query 'SecurityGroups[0].GroupId' \
+if [ -z "${CLUSTER_SG}" ] || [ "${CLUSTER_SG}" = "None" ]; then
+    echo "❌ ERROR: Could not get cluster security group"
+    exit 1
+fi
+
+echo "Cluster Security Group: ${CLUSTER_SG}"
+
+# 获取当前堡垒机的安全组（脚本必须在堡垒机内运行）
+echo "Detecting current bastion security group..."
+INSTANCE_ID=$(curl -s --max-time 2 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
+
+if [ -z "${INSTANCE_ID}" ]; then
+    echo "❌ ERROR: This script must be run from inside the bastion EC2 instance"
+    echo ""
+    echo "Expected deployment order:"
+    echo "  1. Create VPC (Terraform)"
+    echo "  2. Create bastion instance (scripts/create_bastion.sh)"
+    echo "  3. SSH into bastion via AWS SSM"
+    echo "  4. Run this script from bastion"
+    echo ""
+    exit 1
+fi
+
+BASTION_SG=$(aws ec2 describe-instances \
+    --instance-ids ${INSTANCE_ID} \
+    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
     --output text \
     --region ${AWS_REGION} 2>/dev/null)
 
-if [ -n "${CLUSTER_SG}" ] && [ "${CLUSTER_SG}" != "None" ] && [ -n "${BASTION_SG}" ] && [ "${BASTION_SG}" != "None" ]; then
-    echo "Cluster Security Group: ${CLUSTER_SG}"
-    echo "Bastion Security Group: ${BASTION_SG}"
-
-    # 添加入站规则允许堡垒机访问集群API端口443
-    if aws ec2 authorize-security-group-ingress \
-        --group-id ${CLUSTER_SG} \
-        --protocol tcp \
-        --port 443 \
-        --source-group ${BASTION_SG} \
-        --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
-        echo "✓ Security group rule already exists"
-    else
-        echo "✓ Security group rule added successfully"
-    fi
-
-    echo "Bastion can now access EKS API Server"
-else
-    echo "⚠ Warning: Could not configure security group automatically"
-    echo "If kubectl times out, manually add this rule:"
-    echo "  aws ec2 authorize-security-group-ingress \\"
-    echo "    --group-id ${CLUSTER_SG} \\"
-    echo "    --protocol tcp --port 443 \\"
-    echo "    --source-group ${BASTION_SG} \\"
-    echo "    --region ${AWS_REGION}"
+if [ -z "${BASTION_SG}" ] || [ "${BASTION_SG}" = "None" ]; then
+    echo "❌ ERROR: Could not detect bastion security group"
+    exit 1
 fi
 
+echo "Bastion Instance ID: ${INSTANCE_ID}"
+echo "Bastion Security Group: ${BASTION_SG}"
+
+# 添加入站规则允许堡垒机访问集群API端口443
+echo "Adding security group rule..."
+if aws ec2 authorize-security-group-ingress \
+    --group-id ${CLUSTER_SG} \
+    --protocol tcp \
+    --port 443 \
+    --source-group ${BASTION_SG} \
+    --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
+    echo "✓ Security group rule already exists"
+else
+    echo "✓ Security group rule added successfully"
+fi
+
+echo "✓ Bastion can now access EKS API Server"
 echo ""
 
 # 3. 验证集群状态
@@ -160,9 +177,59 @@ echo ""
 echo "Step 6: Setting up EBS CSI Driver with Pod Identity..."
 setup_ebs_csi_pod_identity
 
-# 6.1 验证 EBS CSI Driver
-echo "Checking EBS CSI Driver status..."
-kubectl get pods -n kube-system -l app=ebs-csi-controller
+# 6.1 安装 EBS CSI Driver Addon
+echo "Installing EBS CSI Driver addon..."
+EBS_CSI_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${CLUSTER_NAME}-ebs-csi-driver-role"
+
+# 检查 addon 是否已存在
+if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name aws-ebs-csi-driver --region ${AWS_REGION} &>/dev/null; then
+    echo "EBS CSI Driver addon already exists, updating..."
+    aws eks update-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name aws-ebs-csi-driver \
+        --service-account-role-arn ${EBS_CSI_ROLE_ARN} \
+        --region ${AWS_REGION} \
+        --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
+else
+    echo "Creating EBS CSI Driver addon..."
+    aws eks create-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name aws-ebs-csi-driver \
+        --service-account-role-arn ${EBS_CSI_ROLE_ARN} \
+        --region ${AWS_REGION} \
+        --resolve-conflicts OVERWRITE
+fi
+
+# 6.2 等待 addon 就绪
+echo "Waiting for EBS CSI Driver addon to be active..."
+for i in {1..60}; do
+    ADDON_STATUS=$(aws eks describe-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name aws-ebs-csi-driver \
+        --region ${AWS_REGION} \
+        --query 'addon.status' \
+        --output text 2>/dev/null)
+
+    if [ "$ADDON_STATUS" = "ACTIVE" ]; then
+        echo "✓ EBS CSI Driver addon is ACTIVE"
+        break
+    elif [ "$ADDON_STATUS" = "CREATE_FAILED" ] || [ "$ADDON_STATUS" = "UPDATE_FAILED" ]; then
+        echo "❌ EBS CSI Driver addon failed with status: $ADDON_STATUS"
+        aws eks describe-addon \
+            --cluster-name ${CLUSTER_NAME} \
+            --addon-name aws-ebs-csi-driver \
+            --region ${AWS_REGION} \
+            --query 'addon.health' || true
+        break
+    else
+        echo "Waiting... (Status: $ADDON_STATUS, attempt $i/60)"
+        sleep 5
+    fi
+done
+
+# 6.3 验证 EBS CSI Driver
+echo "Checking EBS CSI Driver pods..."
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
 
 # 7. 最终验证
 echo ""
