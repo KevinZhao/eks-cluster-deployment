@@ -30,7 +30,7 @@ spec:
           operator: Exists
       containers:
         - name: s3-plugin
-          image: public.ecr.aws/mountpoint-s3-csi-driver/mountpoint-s3-csi-driver:v2.2.1
+          image: public.ecr.aws/mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver:v2.2.1
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --logtostderr
@@ -103,7 +103,7 @@ spec:
               add:
                 - SYS_ADMIN
             allowPrivilegeEscalation: true
-          image: public.ecr.aws/mountpoint-s3-csi-driver/mountpoint-s3-csi-driver:v2.2.1
+          image: public.ecr.aws/mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver:v2.2.1
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --logtostderr
