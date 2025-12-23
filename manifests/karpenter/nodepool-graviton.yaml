@@ -1,0 +1,54 @@
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: graviton
+spec:
+  template:
+    metadata:
+      labels:
+        karpenter.sh/capacity-type: on-demand
+        node-type: graviton
+        arch: arm64
+    spec:
+      nodeClassRef:
+        name: graviton
+
+      requirements:
+        # 仅 Graviton 实例 (c6g, c7g, m6g, m7g, r6g, r7g等)
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["5"]
+
+        # 仅 ARM64 架构
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+
+        # On-demand 实例
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+        # 可用区
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["${AWS_REGION}a", "${AWS_REGION}b", "${AWS_REGION}c"]
+
+      # Taints - 确保只有指定的工作负载运行在 Graviton 节点上
+      taints:
+        - key: arch
+          value: arm64
+          effect: NoSchedule
+
+  limits:
+    cpu: "1000"
+    memory: 1000Gi
+
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    expireAfter: 720h
+
+  weight: 20

@@ -52,6 +52,33 @@ managedNodeGroups:
     maxSize: 6
     volumeSize: 30
     volumeType: gp3
+    # Additional data disk for containerd
+    additionalVolumes:
+      - volumeName: "/dev/sdz"
+        volumeSize: 100
+        volumeType: gp3
+    # Mount data disk to /var/lib/containerd before EKS bootstrap
+    preBootstrapCommands:
+      - |
+        set -euxo pipefail
+        systemctl stop containerd || true
+
+        # Auto-detect EBS data disk (exclude instance store)
+        DEVICE=$(nvme list 2>/dev/null | grep 'Amazon Elastic Block Store' | tail -n 1 | awk '{print $1}')
+        if [ -z "$DEVICE" ]; then
+          DEVICE=$(lsblk -dpno NAME,MOUNTPOINT | awk '$2==""{print $1}' | grep nvme | tail -n 1)
+        fi
+
+        if [ -n "$DEVICE" ]; then
+          blkid "$DEVICE" || mkfs -t ext4 "$DEVICE"
+          mkdir -p /var/lib/containerd
+          rm -rf /var/lib/containerd/*
+          mount "$DEVICE" /var/lib/containerd
+          grep -q "/var/lib/containerd" /etc/fstab || \
+            echo "$DEVICE /var/lib/containerd ext4 defaults,nofail 0 2" >> /etc/fstab
+        fi
+
+        systemctl start containerd
     privateNetworking: true
     subnets:
       - ${PRIVATE_SUBNET_A}
@@ -72,6 +99,33 @@ managedNodeGroups:
     maxSize: 12
     volumeSize: 30
     volumeType: gp3
+    # Additional data disk for containerd
+    additionalVolumes:
+      - volumeName: "/dev/sdz"
+        volumeSize: 100
+        volumeType: gp3
+    # Mount data disk to /var/lib/containerd before EKS bootstrap
+    preBootstrapCommands:
+      - |
+        set -euxo pipefail
+        systemctl stop containerd || true
+
+        # Auto-detect EBS data disk (exclude instance store)
+        DEVICE=$(nvme list 2>/dev/null | grep 'Amazon Elastic Block Store' | tail -n 1 | awk '{print $1}')
+        if [ -z "$DEVICE" ]; then
+          DEVICE=$(lsblk -dpno NAME,MOUNTPOINT | awk '$2==""{print $1}' | grep nvme | tail -n 1)
+        fi
+
+        if [ -n "$DEVICE" ]; then
+          blkid "$DEVICE" || mkfs -t ext4 "$DEVICE"
+          mkdir -p /var/lib/containerd
+          rm -rf /var/lib/containerd/*
+          mount "$DEVICE" /var/lib/containerd
+          grep -q "/var/lib/containerd" /etc/fstab || \
+            echo "$DEVICE /var/lib/containerd ext4 defaults,nofail 0 2" >> /etc/fstab
+        fi
+
+        systemctl start containerd
     privateNetworking: true
     subnets:
       - ${PRIVATE_SUBNET_A}

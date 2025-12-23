@@ -1,0 +1,104 @@
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # AMI 选择器 - 使用 EKS 优化的 AL2023 AMI
+  amiFamily: AL2023
+
+  # IAM 角色
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"
+
+  # 子网选择器 - 使用私有子网
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  # 安全组选择器
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  # 块设备映射 - 添加数据盘
+  blockDeviceMappings:
+    # Root volume (系统盘)
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 30Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
+
+    # Data volume (数据盘用于 containerd)
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
+
+  # User Data - 挂载数据盘到 /var/lib/containerd
+  userData: |
+    MIME-Version: 1.0
+    Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+
+    --==BOUNDARY==
+    Content-Type: text/cloud-boothook; charset="us-ascii"
+
+    #!/bin/bash
+    # Mount data disk to /var/lib/containerd before containerd starts
+    set -euxo pipefail
+
+    # Stop containerd first
+    systemctl stop containerd || true
+
+    # Auto-detect EBS data disk (exclude instance store)
+    # Method 1: Use nvme-cli to identify EBS volumes
+    DEVICE=$(nvme list 2>/dev/null | grep 'Amazon Elastic Block Store' | tail -n 1 | awk '{print $1}')
+
+    # Method 2: Fallback to lsblk if nvme command unavailable
+    if [ -z "$DEVICE" ]; then
+      DEVICE=$(lsblk -dpno NAME,MOUNTPOINT | awk '$2==""{print $1}' | grep nvme | tail -n 1)
+    fi
+
+    # Only proceed if a data disk is found
+    if [ -n "$DEVICE" ]; then
+      # Format only if not already formatted
+      if ! blkid "$DEVICE" >/dev/null 2>&1; then
+        mkfs -t ext4 "$DEVICE"
+      fi
+
+      # Prepare mount point
+      mkdir -p /var/lib/containerd
+      rm -rf /var/lib/containerd/*
+
+      # Mount the data disk
+      mount "$DEVICE" /var/lib/containerd
+
+      # Persist mount in fstab
+      if ! grep -q "/var/lib/containerd" /etc/fstab; then
+        echo "$DEVICE /var/lib/containerd ext4 defaults,nofail 0 2" >> /etc/fstab
+      fi
+    fi
+
+    # Start containerd with data disk mounted
+    systemctl start containerd
+
+    --==BOUNDARY==--
+
+  # Metadata 选项
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+
+  # 标签
+  tags:
+    Environment: production
+    ManagedBy: karpenter
+    karpenter.sh/discovery: "${CLUSTER_NAME}"

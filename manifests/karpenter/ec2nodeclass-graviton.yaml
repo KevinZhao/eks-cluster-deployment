@@ -1,0 +1,86 @@
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: graviton
+spec:
+  # AMI 选择器 - 使用 EKS 优化的 AL2023 ARM64 AMI
+  amiFamily: AL2023
+
+  # IAM 角色
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"
+
+  # 子网选择器
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  # 安全组选择器
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  # 块设备映射
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 30Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
+
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
+
+  # User Data - 挂载数据盘到 /var/lib/containerd
+  userData: |
+    MIME-Version: 1.0
+    Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+
+    --==BOUNDARY==
+    Content-Type: text/cloud-boothook; charset="us-ascii"
+
+    #!/bin/bash
+    # Mount data disk to /var/lib/containerd before containerd starts
+    set -euxo pipefail
+
+    # Stop containerd first
+    systemctl stop containerd || true
+
+    # Auto-detect EBS data disk (exclude instance store)
+    DEVICE=$(nvme list 2>/dev/null | grep 'Amazon Elastic Block Store' | tail -n 1 | awk '{print $1}')
+    if [ -z "$DEVICE" ]; then
+      DEVICE=$(lsblk -dpno NAME,MOUNTPOINT | awk '$2==""{print $1}' | grep nvme | tail -n 1)
+    fi
+
+    if [ -n "$DEVICE" ]; then
+      blkid "$DEVICE" || mkfs -t ext4 "$DEVICE"
+      mkdir -p /var/lib/containerd
+      rm -rf /var/lib/containerd/*
+      mount "$DEVICE" /var/lib/containerd
+      grep -q "/var/lib/containerd" /etc/fstab || \
+        echo "$DEVICE /var/lib/containerd ext4 defaults,nofail 0 2" >> /etc/fstab
+    fi
+
+    systemctl start containerd
+
+    --==BOUNDARY==--
+
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+
+  tags:
+    Environment: production
+    ManagedBy: karpenter
+    Architecture: arm64
+    karpenter.sh/discovery: "${CLUSTER_NAME}"

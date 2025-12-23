@@ -1,0 +1,59 @@
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  # 节点模板
+  template:
+    metadata:
+      labels:
+        karpenter.sh/capacity-type: on-demand
+        node-type: karpenter
+    spec:
+      # 引用 EC2NodeClass
+      nodeClassRef:
+        name: default
+
+      # 节点要求
+      requirements:
+        # 实例类型
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["5"]
+
+        # 架构 - 支持 arm64 和 amd64
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64", "amd64"]
+
+        # 容量类型 - on-demand
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+
+        # 可用区
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["${AWS_REGION}a", "${AWS_REGION}b", "${AWS_REGION}c"]
+
+      # Taints (如果需要)
+      # taints:
+      #   - key: workload
+      #     value: karpenter
+      #     effect: NoSchedule
+
+  # 限制
+  limits:
+    cpu: "1000"
+    memory: 1000Gi
+
+  # 中断处理
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    expireAfter: 720h # 30 days
+
+  # 权重
+  weight: 10
