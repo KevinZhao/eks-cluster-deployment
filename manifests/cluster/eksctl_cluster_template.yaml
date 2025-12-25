@@ -44,74 +44,16 @@ iam:
 # 节点组配置
 # 系统节点组，主要运行aws-load-balancer-controller coredns cluster-autoscaler等组件
 managedNodeGroups:
+  # 基础系统节点组 (AMD64)
+  # 注意: 建议在集群创建后使用脚本 9 替换为 Graviton + LVM 配置
   - name: eks-utils
-    instanceType: m8g.large
+    instanceType: m7i.large
     amiFamily: AmazonLinux2023
     desiredCapacity: 3
     minSize: 3
     maxSize: 6
     volumeSize: 50
     volumeType: gp3
-    # Additional data disk for containerd
-    additionalVolumes:
-      - volumeName: "/dev/sdz"
-        volumeSize: 100
-        volumeType: gp3
-    # Mount data disk to /var/lib/containerd using LVM with rsync migration
-    preBootstrapCommands:
-      - |
-        set -euxo pipefail
-        systemctl stop containerd || true
-
-        # Auto-detect EBS data disk (exclude root disk nvme0n1)
-        DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-        if [ -z "$$DISK" ]; then
-          echo "No data disk found, skip LVM setup"
-          systemctl start containerd
-          exit 0
-        fi
-
-        echo "Found data disk: $$DISK"
-
-        # Check if LVM already configured
-        if vgs vg_data &>/dev/null; then
-          echo "LVM already configured"
-        else
-          # Install lvm2 (not installed by default on AL2023)
-          dnf install -y lvm2
-
-          # Create LVM
-          pvcreate "$$DISK"
-          vgcreate vg_data "$$DISK"
-          lvcreate -l 100%VG -n lv_containerd vg_data
-          mkfs.xfs /dev/vg_data/lv_containerd
-        fi
-
-        # Mount LV to temporary directory and migrate data
-        TEMP_MOUNT="/mnt/runtime/containerd"
-        mkdir -p "$$TEMP_MOUNT"
-
-        echo "Mounting LV to temporary directory: $$TEMP_MOUNT"
-        mount /dev/vg_data/lv_containerd "$$TEMP_MOUNT"
-
-        echo "Copying containerd data (including cached images) from AMI..."
-        rsync -aHAX /var/lib/containerd/ "$$TEMP_MOUNT/"
-
-        echo "Unmounting temporary directory"
-        umount "$$TEMP_MOUNT"
-
-        echo "Mounting LV to final destination: /var/lib/containerd"
-        mount /dev/vg_data/lv_containerd /var/lib/containerd
-
-        # Add to fstab for persistence
-        grep -q "lv_containerd" /etc/fstab || \
-          echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
-
-        echo "Containerd data migration completed"
-        df -h /var/lib/containerd
-
-        # Start containerd with migrated data
-        systemctl start containerd
     privateNetworking: true
     subnets:
       - ${PRIVATE_SUBNET_A}
@@ -119,7 +61,7 @@ managedNodeGroups:
       - ${PRIVATE_SUBNET_C}
     labels:
       app: "eks-utils"
-      arch: "arm64"
+      arch: "amd64"
       node-group-type: "system"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"

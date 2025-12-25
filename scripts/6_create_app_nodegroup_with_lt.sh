@@ -6,15 +6,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-echo "=== Create Nodegroup with External Launch Template (Method A) ==="
+echo "=== Create Application Nodegroup with External Launch Template ==="
 echo ""
 echo "This script will:"
 echo "  1. Create Launch Template with LVM user-data using AWS CLI"
-echo "  2. Delete existing eks-utils-arm64 nodegroup"
-echo "  3. Create new nodegroup referencing the Launch Template"
+echo "  2. Create application nodegroup referencing the Launch Template"
+echo "  3. Configure taints for workload isolation"
 echo "  4. Verify LVM configuration"
 echo ""
-echo "WARNING: This will cause a brief service interruption (5-8 minutes)"
 echo "Press Ctrl+C to cancel, or Enter to continue..."
 read
 
@@ -48,11 +47,26 @@ AMI_ID=$(aws ssm get-parameter \
 
 echo "AMI ID: ${AMI_ID}"
 
-# 4. 创建 user-data 文件（不经过任何模板替换）
+# 4. 配置参数（可通过环境变量覆盖）
+APP_INSTANCE_TYPE="${APP_INSTANCE_TYPE:-c8g.large}"
+ROOT_VOLUME_SIZE="${ROOT_VOLUME_SIZE:-30}"
+DATA_VOLUME_SIZE="${DATA_VOLUME_SIZE:-100}"
+DESIRED_CAPACITY="${APP_DESIRED_CAPACITY:-3}"
+MIN_SIZE="${APP_MIN_SIZE:-3}"
+MAX_SIZE="${APP_MAX_SIZE:-12}"
+
+echo ""
+echo "Configuration:"
+echo "  Instance Type: ${APP_INSTANCE_TYPE}"
+echo "  Root Volume: ${ROOT_VOLUME_SIZE}GB"
+echo "  Data Volume: ${DATA_VOLUME_SIZE}GB"
+echo "  Capacity: ${DESIRED_CAPACITY} (min: ${MIN_SIZE}, max: ${MAX_SIZE})"
+
+# 5. 创建 user-data 文件（与系统节点组相同的 LVM 配置）
 echo ""
 echo "Step 3: Creating user-data script..."
 
-USERDATA_FILE="/tmp/eks-utils-userdata-$$.sh"
+USERDATA_FILE="/tmp/app-nodegroup-userdata-$$.sh"
 cat > "${USERDATA_FILE}" <<'EOF_USERDATA'
 MIME-Version: 1.0
 Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -137,11 +151,11 @@ EOF_USERDATA
 
 echo "User-data created at: ${USERDATA_FILE}"
 
-# 5. 创建或更新 Launch Template
+# 6. 创建或更新 Launch Template
 echo ""
 echo "Step 4: Creating Launch Template..."
 
-LT_NAME="${CLUSTER_NAME}-eks-utils-arm64-lt"
+LT_NAME="${CLUSTER_NAME}-app-nodegroup-lt"
 
 # 检查 Launch Template 是否已存在
 if aws ec2 describe-launch-templates \
@@ -161,13 +175,13 @@ if aws ec2 describe-launch-templates \
         --launch-template-id "${LT_ID}" \
         --launch-template-data "{
           \"ImageId\": \"${AMI_ID}\",
-          \"InstanceType\": \"m8g.large\",
+          \"InstanceType\": \"${APP_INSTANCE_TYPE}\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
           \"BlockDeviceMappings\": [
             {
               \"DeviceName\": \"/dev/xvda\",
               \"Ebs\": {
-                \"VolumeSize\": 50,
+                \"VolumeSize\": ${ROOT_VOLUME_SIZE},
                 \"VolumeType\": \"gp3\",
                 \"Encrypted\": true,
                 \"DeleteOnTermination\": true
@@ -176,7 +190,7 @@ if aws ec2 describe-launch-templates \
             {
               \"DeviceName\": \"/dev/xvdb\",
               \"Ebs\": {
-                \"VolumeSize\": 100,
+                \"VolumeSize\": ${DATA_VOLUME_SIZE},
                 \"VolumeType\": \"gp3\",
                 \"Iops\": 3000,
                 \"Throughput\": 125,
@@ -194,8 +208,9 @@ if aws ec2 describe-launch-templates \
             {
               \"ResourceType\": \"instance\",
               \"Tags\": [
-                {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-node\"},
-                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"}
+                {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-app-node\"},
+                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"},
+                {\"Key\": \"workload\", \"Value\": \"user-apps\"}
               ]
             }
           ]
@@ -213,13 +228,13 @@ else
         --launch-template-name "${LT_NAME}" \
         --launch-template-data "{
           \"ImageId\": \"${AMI_ID}\",
-          \"InstanceType\": \"m8g.large\",
+          \"InstanceType\": \"${APP_INSTANCE_TYPE}\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
           \"BlockDeviceMappings\": [
             {
               \"DeviceName\": \"/dev/xvda\",
               \"Ebs\": {
-                \"VolumeSize\": 50,
+                \"VolumeSize\": ${ROOT_VOLUME_SIZE},
                 \"VolumeType\": \"gp3\",
                 \"Encrypted\": true,
                 \"DeleteOnTermination\": true
@@ -228,7 +243,7 @@ else
             {
               \"DeviceName\": \"/dev/xvdb\",
               \"Ebs\": {
-                \"VolumeSize\": 100,
+                \"VolumeSize\": ${DATA_VOLUME_SIZE},
                 \"VolumeType\": \"gp3\",
                 \"Iops\": 3000,
                 \"Throughput\": 125,
@@ -246,8 +261,9 @@ else
             {
               \"ResourceType\": \"instance\",
               \"Tags\": [
-                {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-node\"},
-                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"}
+                {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-app-node\"},
+                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"},
+                {\"Key\": \"workload\", \"Value\": \"user-apps\"}
               ]
             }
           ]
@@ -264,32 +280,11 @@ fi
 # 清理临时文件
 rm -f "${USERDATA_FILE}"
 
-# 6. 删除现有节点组
+# 7. 创建引用 Launch Template 的应用节点组配置
 echo ""
-echo "Step 5: Deleting existing eks-utils-arm64 nodegroup..."
+echo "Step 5: Creating application nodegroup with Launch Template..."
 
-if aws eks describe-nodegroup \
-    --cluster-name "${CLUSTER_NAME}" \
-    --nodegroup-name eks-utils-arm64 \
-    --region "${AWS_REGION}" &>/dev/null; then
-
-    eksctl delete nodegroup \
-        --cluster="${CLUSTER_NAME}" \
-        --region="${AWS_REGION}" \
-        --name=eks-utils-arm64 \
-        --drain=false \
-        --wait
-
-    echo "Nodegroup deleted successfully"
-else
-    echo "Nodegroup eks-utils-arm64 not found, skipping deletion"
-fi
-
-# 7. 创建引用 Launch Template 的节点组配置
-echo ""
-echo "Step 6: Creating nodegroup with Launch Template..."
-
-TEMP_CONFIG="/tmp/eksctl_ng_with_lt_$$.yaml"
+TEMP_CONFIG="/tmp/eksctl_app_ng_$$.yaml"
 cat > "${TEMP_CONFIG}" <<EOF
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
@@ -311,23 +306,27 @@ vpc:
         id: "${PRIVATE_SUBNET_C}"
 
 managedNodeGroups:
-  - name: eks-utils-arm64
+  - name: app
     # 引用外部创建的 Launch Template
     launchTemplate:
       id: ${LT_ID}
       version: "${LT_VERSION}"
-    desiredCapacity: 3
-    minSize: 3
-    maxSize: 6
+    desiredCapacity: ${DESIRED_CAPACITY}
+    minSize: ${MIN_SIZE}
+    maxSize: ${MAX_SIZE}
     privateNetworking: true
     subnets:
       - ${PRIVATE_SUBNET_A}
       - ${PRIVATE_SUBNET_B}
       - ${PRIVATE_SUBNET_C}
     labels:
-      app: "eks-utils"
+      app: "application"
       arch: "arm64"
-      node-group-type: "system"
+      workload: "user-apps"
+    taints:
+      - key: "workload"
+        value: "user-apps"
+        effect: "NoSchedule"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
@@ -337,23 +336,23 @@ echo "Generated eksctl config:"
 cat "${TEMP_CONFIG}"
 
 echo ""
-echo "Creating nodegroup..."
+echo "Creating application nodegroup..."
 eksctl create nodegroup -f "${TEMP_CONFIG}"
 
 rm -f "${TEMP_CONFIG}"
 
 # 8. 等待节点就绪
 echo ""
-echo "Step 7: Waiting for nodes to be ready..."
+echo "Step 6: Waiting for nodes to be ready..."
 sleep 15
 
 RETRY_COUNT=0
 MAX_RETRIES=60
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    READY_NODES=$(kubectl get nodes -l app=eks-utils --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
-    echo "Ready nodes: ${READY_NODES}/3"
+    READY_NODES=$(kubectl get nodes -l workload=user-apps --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+    echo "Ready nodes: ${READY_NODES}/${DESIRED_CAPACITY}"
 
-    if [ "$READY_NODES" -ge 3 ]; then
+    if [ "$READY_NODES" -ge "${DESIRED_CAPACITY}" ]; then
         echo "All nodes are ready!"
         break
     fi
@@ -369,12 +368,11 @@ done
 
 # 9. 验证 LVM
 echo ""
-echo "Step 8: Verifying LVM configuration..."
+echo "Step 7: Verifying LVM configuration on one node..."
 
-NODES=$(kubectl get nodes -l app=eks-utils -o jsonpath='{.items[*].metadata.name}')
+NODE=$(kubectl get nodes -l workload=user-apps -o jsonpath='{.items[0].metadata.name}')
 
-for NODE in $NODES; do
-    echo ""
+if [ -n "$NODE" ]; then
     echo "Checking node: $NODE"
 
     kubectl debug node/$NODE -it --image=busybox:1.36 -- chroot /host bash -c '
@@ -388,13 +386,10 @@ for NODE in $NODES; do
         echo "=== Containerd Mount ==="
         df -h /var/lib/containerd
         echo ""
-        echo "=== fstab Entry ==="
-        grep containerd /etc/fstab 2>/dev/null || echo "No fstab entry"
-        echo ""
         echo "=== LVM Setup Log ==="
         tail -20 /var/log/lvm-setup.log 2>/dev/null || echo "No LVM setup log"
     ' 2>/dev/null || echo "Warning: Failed to debug node"
-done
+fi
 
 # 10. 显示结果
 echo ""
@@ -403,12 +398,22 @@ echo ""
 kubectl get nodes -o wide
 
 echo ""
-echo "Launch Template Information:"
-echo "  Name: ${LT_NAME}"
-echo "  ID: ${LT_ID}"
+echo "Application Nodegroup Information:"
+echo "  Name: app"
+echo "  Instance Type: ${APP_INSTANCE_TYPE}"
+echo "  Capacity: ${DESIRED_CAPACITY} (min: ${MIN_SIZE}, max: ${MAX_SIZE})"
+echo "  Launch Template: ${LT_NAME} (${LT_ID})"
 echo "  Version: ${LT_VERSION}"
 echo ""
-echo "If LVM is configured correctly, you should see:"
-echo "  - /dev/mapper/vg_data-lv_containerd mounted on /var/lib/containerd"
-echo "  - Size: 100GB"
+echo "Workload Isolation:"
+echo "  Label: workload=user-apps"
+echo "  Taint: workload=user-apps:NoSchedule"
+echo ""
+echo "To deploy pods on app nodes, use:"
+echo "  tolerations:"
+echo "    - key: workload"
+echo "      value: user-apps"
+echo "      effect: NoSchedule"
+echo "  nodeSelector:"
+echo "    workload: user-apps"
 echo ""
