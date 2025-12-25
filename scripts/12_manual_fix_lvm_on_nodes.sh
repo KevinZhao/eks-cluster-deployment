@@ -138,11 +138,36 @@ for INSTANCE_ID in $INSTANCE_IDS; do
     # 通过 SSM 执行脚本
     echo "Executing LVM setup script via SSM..."
 
+    # 使用更简单的方法：分步执行命令
     COMMAND_ID=$(aws ssm send-command \
         --region "${AWS_REGION}" \
         --instance-ids "$INSTANCE_ID" \
         --document-name "AWS-RunShellScript" \
-        --parameters "commands=[\"$LVM_SETUP_SCRIPT\"]" \
+        --parameters 'commands=[
+          "set -euxo pipefail",
+          "echo \"=== Starting LVM Setup ===\"",
+          "systemctl stop containerd",
+          "DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)",
+          "if [ -z \"$DISK\" ]; then echo \"ERROR: No data disk found\"; systemctl start containerd; exit 1; fi",
+          "echo \"Found data disk: $DISK\"",
+          "if vgs vg_data &>/dev/null; then echo \"LVM already configured\"; systemctl start containerd; exit 0; fi",
+          "if ! command -v lvm &>/dev/null; then dnf install -y lvm2; fi",
+          "pvcreate \"$DISK\"",
+          "vgcreate vg_data \"$DISK\"",
+          "lvcreate -l 100%VG -n lv_containerd vg_data",
+          "mkfs.xfs /dev/vg_data/lv_containerd",
+          "mkdir -p /mnt/runtime/containerd",
+          "mount /dev/vg_data/lv_containerd /mnt/runtime/containerd",
+          "rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true",
+          "umount /mnt/runtime/containerd",
+          "mount /dev/vg_data/lv_containerd /var/lib/containerd",
+          "grep -q lv_containerd /etc/fstab || echo \"/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2\" >> /etc/fstab",
+          "df -h /var/lib/containerd",
+          "vgs",
+          "lvs",
+          "systemctl start containerd",
+          "echo \"=== LVM Setup Complete ===\""
+        ]' \
         --query 'Command.CommandId' \
         --output text)
 
