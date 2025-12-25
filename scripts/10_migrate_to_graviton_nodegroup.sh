@@ -117,26 +117,26 @@ if [ "$NEW_NG_EXISTS" = false ]; then
 
     # 创建临时配置文件，只包含新节点组（使用 /tmp 目录避免权限问题）
     TEMP_CONFIG="/tmp/eksctl_nodegroup_graviton_temp_$$.yaml"
-    cat > "${TEMP_CONFIG}" <<EOF
+    cat > "${TEMP_CONFIG}" <<'EOF_TEMPLATE'
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
 metadata:
-  name: ${CLUSTER_NAME}
-  region: ${AWS_REGION}
-  version: "${K8S_VERSION}"
+  name: CLUSTER_NAME_PLACEHOLDER
+  region: AWS_REGION_PLACEHOLDER
+  version: "K8S_VERSION_PLACEHOLDER"
 
 # 使用已经存在的vpc
 vpc:
-  id: "${VPC_ID}"
+  id: "VPC_ID_PLACEHOLDER"
   subnets:
     private:
-      ${AZ_A}:
-        id: "${PRIVATE_SUBNET_A}"
-      ${AZ_B}:
-        id: "${PRIVATE_SUBNET_B}"
-      ${AZ_C}:
-        id: "${PRIVATE_SUBNET_C}"
+      AZ_A_PLACEHOLDER:
+        id: "PRIVATE_SUBNET_A_PLACEHOLDER"
+      AZ_B_PLACEHOLDER:
+        id: "PRIVATE_SUBNET_B_PLACEHOLDER"
+      AZ_C_PLACEHOLDER:
+        id: "PRIVATE_SUBNET_C_PLACEHOLDER"
 
 # Graviton 系统节点组
 managedNodeGroups:
@@ -160,14 +160,14 @@ managedNodeGroups:
         systemctl stop containerd || true
 
         # Auto-detect EBS data disk (exclude root disk nvme0n1)
-        DISK=\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-        if [ -z "\$DISK" ]; then
+        DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+        if [ -z "$$DISK" ]; then
           echo "No data disk found, skip LVM setup"
           systemctl start containerd
           exit 0
         fi
 
-        echo "Found data disk: \$DISK"
+        echo "Found data disk: $$DISK"
 
         # Check if LVM already configured
         if vgs vg_data &>/dev/null; then
@@ -177,24 +177,24 @@ managedNodeGroups:
           dnf install -y lvm2
 
           # Create LVM
-          pvcreate "\$DISK"
-          vgcreate vg_data "\$DISK"
+          pvcreate "$$DISK"
+          vgcreate vg_data "$$DISK"
           lvcreate -l 100%VG -n lv_containerd vg_data
           mkfs.xfs /dev/vg_data/lv_containerd
         fi
 
         # Mount LV to temporary directory and migrate data
         TEMP_MOUNT="/mnt/runtime/containerd"
-        mkdir -p "\$TEMP_MOUNT"
+        mkdir -p "$$TEMP_MOUNT"
 
-        echo "Mounting LV to temporary directory: \$TEMP_MOUNT"
-        mount /dev/vg_data/lv_containerd "\$TEMP_MOUNT"
+        echo "Mounting LV to temporary directory: $$TEMP_MOUNT"
+        mount /dev/vg_data/lv_containerd "$$TEMP_MOUNT"
 
         echo "Copying containerd data (including cached images) from AMI..."
-        rsync -aHAX /var/lib/containerd/ "\$TEMP_MOUNT/"
+        rsync -aHAX /var/lib/containerd/ "$$TEMP_MOUNT/"
 
         echo "Unmounting temporary directory"
-        umount "\$TEMP_MOUNT"
+        umount "$$TEMP_MOUNT"
 
         echo "Mounting LV to final destination: /var/lib/containerd"
         mount /dev/vg_data/lv_containerd /var/lib/containerd
@@ -210,17 +210,29 @@ managedNodeGroups:
         systemctl start containerd
     privateNetworking: true
     subnets:
-      - ${PRIVATE_SUBNET_A}
-      - ${PRIVATE_SUBNET_B}
-      - ${PRIVATE_SUBNET_C}
+      - PRIVATE_SUBNET_A_PLACEHOLDER
+      - PRIVATE_SUBNET_B_PLACEHOLDER
+      - PRIVATE_SUBNET_C_PLACEHOLDER
     labels:
       app: "eks-utils"
       arch: "arm64"
       node-group-type: "system"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
-EOF
+      k8s.io/cluster-autoscaler/CLUSTER_NAME_PLACEHOLDER: "owned"
+EOF_TEMPLATE
+
+    # 替换占位符为实际的环境变量值
+    sed -i "s/CLUSTER_NAME_PLACEHOLDER/${CLUSTER_NAME}/g" "${TEMP_CONFIG}"
+    sed -i "s/AWS_REGION_PLACEHOLDER/${AWS_REGION}/g" "${TEMP_CONFIG}"
+    sed -i "s/K8S_VERSION_PLACEHOLDER/${K8S_VERSION}/g" "${TEMP_CONFIG}"
+    sed -i "s/VPC_ID_PLACEHOLDER/${VPC_ID}/g" "${TEMP_CONFIG}"
+    sed -i "s/AZ_A_PLACEHOLDER/${AZ_A}/g" "${TEMP_CONFIG}"
+    sed -i "s/AZ_B_PLACEHOLDER/${AZ_B}/g" "${TEMP_CONFIG}"
+    sed -i "s/AZ_C_PLACEHOLDER/${AZ_C}/g" "${TEMP_CONFIG}"
+    sed -i "s/PRIVATE_SUBNET_A_PLACEHOLDER/${PRIVATE_SUBNET_A}/g" "${TEMP_CONFIG}"
+    sed -i "s/PRIVATE_SUBNET_B_PLACEHOLDER/${PRIVATE_SUBNET_B}/g" "${TEMP_CONFIG}"
+    sed -i "s/PRIVATE_SUBNET_C_PLACEHOLDER/${PRIVATE_SUBNET_C}/g" "${TEMP_CONFIG}"
 
     echo "Creating Graviton nodegroup..."
     eksctl create nodegroup -f "${TEMP_CONFIG}"
