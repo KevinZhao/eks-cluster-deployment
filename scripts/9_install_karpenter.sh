@@ -382,19 +382,20 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=karpenter -n "$
 echo ""
 echo "Step 11: Deploying EC2NodeClass and NodePool..."
 
-# 替换环境变量
+# 替换环境变量 - 使用sed而不是envsubst来避免破坏userData中的$$变量
 export CLUSTER_NAME
 export AWS_REGION
 
-envsubst < "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
-envsubst < "${PROJECT_ROOT}/manifests/karpenter/nodepool-default.yaml" | kubectl apply -f -
+# envsubst会把$$DATA_DISK变成$,所以改用sed只替换${CLUSTER_NAME}
+sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
+sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/nodepool-default.yaml" | kubectl apply -f -
 
 echo "  ✓ Default EC2NodeClass and NodePool deployed"
 
 # 可选：部署 Graviton 专用配置
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
-    envsubst < "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
-    envsubst < "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
+    sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
+    sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
     echo "  ✓ Graviton EC2NodeClass and NodePool deployed"
 fi
 

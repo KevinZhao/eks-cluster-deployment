@@ -35,10 +35,10 @@ echo -e "${YELLOW}Step 1: Applying updated EC2NodeClass configurations...${NC}"
 echo ""
 
 echo "Applying default EC2NodeClass..."
-envsubst < "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
+sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
 
 echo "Applying graviton EC2NodeClass..."
-envsubst < "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
+sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
 
 echo -e "${GREEN}✓ EC2NodeClass configurations applied${NC}"
 echo ""

@@ -36,22 +36,47 @@ Result:
 
 ## Solution
 
-Changed from `$$` to `\$` for escaping dollar signs in command substitutions.
+The real issue was **envsubst destroying `$` variables**, not the escaping in YAML.
+
+### Root Cause Analysis
+
+When using `envsubst` to substitute `${CLUSTER_NAME}` in EC2NodeClass YAML files, it also processes `$DATA_DISK` as:
+- `$` (literal dollar sign escape) + `DATA_DISK` (variable to substitute)
+- Since `DATA_DISK` environment variable doesn't exist, result is: `$DATA_DISK` → `$`
+
+Evidence from bastion testing:
+```bash
+# YAML contains:
+DATA_DISK=$(lsblk...)
+if [ -z "$DATA_DISK" ]; then
+
+# After envsubst:
+DATA_DISK=$(lsblk...)  # First occurrence preserved
+if [ -z "$" ]; then     # ❌ Subsequent $DATA_DISK became just $
+```
 
 ### Fixed Code
 
 **Files modified:**
 - [manifests/karpenter/ec2nodeclass-default.yaml](manifests/karpenter/ec2nodeclass-default.yaml)
 - [manifests/karpenter/ec2nodeclass-graviton.yaml](manifests/karpenter/ec2nodeclass-graviton.yaml)
+- [scripts/9_install_karpenter.sh](scripts/9_install_karpenter.sh)
+- [scripts/test_karpenter_lvm_fix.sh](scripts/test_karpenter_lvm_fix.sh)
+- [scripts/test_karpenter_lvm_fix_simple.sh](scripts/test_karpenter_lvm_fix_simple.sh)
+- [test_from_bastion.sh](test_from_bastion.sh)
 
-**New LVM script (lines 61-80):**
+**LVM script in YAML (uses standard bash variables):**
 ```bash
 # Auto-detect EBS data disk (exclude root disk nvme0n1)
-if [ -z "\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)" ]; then
+DATA_DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+
+if [ -z "$DATA_DISK" ]; then
   echo "No data disk found, skip LVM setup"
   systemctl start containerd
   exit 0
 fi
+
+echo "Found data disk: $DATA_DISK"
 
 # Check if LVM already configured
 if vgs vg_data &>/dev/null; then
@@ -60,17 +85,24 @@ else
   # Install lvm2 (not installed by default on AL2023)
   dnf install -y lvm2
 
-  # Create LVM using inline disk detection
-  pvcreate "\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
-  vgcreate vg_data "\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
+  # Create LVM
+  pvcreate "$DATA_DISK"
+  vgcreate vg_data "$DATA_DISK"
   lvcreate -l 100%VG -n lv_containerd vg_data
   mkfs.xfs /dev/vg_data/lv_containerd
 fi
 ```
 
-**Key change:** `$$` → `\$`
+**Deployment method (uses sed instead of envsubst):**
+```bash
+# In scripts/9_install_karpenter.sh:
+sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
+sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
+```
 
-This ensures `$(command)` is preserved literally in the user-data and executed correctly by the shell at boot time.
+**Key change:** Replace `envsubst` with `sed` that only substitutes `${CLUSTER_NAME}`
+
+This ensures all bash variables (`$DATA_DISK`, `$?`, etc.) in the user-data script are preserved intact.
 
 ## Testing
 
