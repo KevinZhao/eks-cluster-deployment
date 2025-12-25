@@ -60,7 +60,7 @@ spec:
 
     # Auto-detect EBS data disk (exclude root disk nvme0n1)
     # Use inline detection to avoid variable expansion issues
-    if [ -z "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)" ]; then
+    if [ -z "\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)" ]; then
       echo "No data disk found, skip LVM setup"
       systemctl start containerd
       exit 0
@@ -74,8 +74,8 @@ spec:
       dnf install -y lvm2
 
       # Create LVM using inline disk detection
-      pvcreate "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
-      vgcreate vg_data "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
+      pvcreate "\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
+      vgcreate vg_data "\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
       lvcreate -l 100%VG -n lv_containerd vg_data
       mkfs.xfs /dev/vg_data/lv_containerd
     fi
