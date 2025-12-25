@@ -444,9 +444,9 @@ echo "Step 7: Creating nodegroup with Launch Template..."
 # 检查节点组是否已存在
 if aws eks describe-nodegroup \
     --cluster-name "${CLUSTER_NAME}" \
-    --nodegroup-name eks-utils-x86 \
+    --nodegroup-name eks-utils \
     --region "${AWS_REGION}" &>/dev/null; then
-    echo "Nodegroup eks-utils-x86 already exists, skipping creation"
+    echo "Nodegroup eks-utils already exists, skipping creation"
     echo "If you want to recreate it, delete it first and run this script again"
     exit 0
 fi
@@ -476,7 +476,7 @@ vpc:
         id: "${PRIVATE_SUBNET_C}"
 
 managedNodeGroups:
-  - name: eks-utils-x86
+  - name: eks-utils
     # 引用外部创建的 Launch Template
     launchTemplate:
       id: ${LT_ID}
