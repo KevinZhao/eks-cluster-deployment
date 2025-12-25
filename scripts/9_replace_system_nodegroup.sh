@@ -72,8 +72,8 @@ EOF
         --tags \
             Key=Cluster,Value="${CLUSTER_NAME}" \
             Key=ManagedBy,Value=script \
-            Key=business,Value=platform \
-            Key=resource,Value=eks-node
+            Key=business,Value=middleware \
+            Key=resource,Value=eks
 
     # 附加必需的策略
     aws iam attach-role-policy \
@@ -107,8 +107,8 @@ else
         --tags \
             Key=Cluster,Value="${CLUSTER_NAME}" \
             Key=ManagedBy,Value=script \
-            Key=business,Value=platform \
-            Key=resource,Value=eks-node
+            Key=business,Value=middleware \
+            Key=resource,Value=eks
 
     aws iam add-role-to-instance-profile \
         --instance-profile-name "${INSTANCE_PROFILE_NAME}" \
@@ -292,16 +292,16 @@ if aws ec2 describe-launch-templates \
               \"Tags\": [
                 {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-node\"},
                 {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"},
-                {\"Key\": \"business\", \"Value\": \"platform\"},
-                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
+                {\"Key\": \"business\", \"Value\": \"middleware\"},
+                {\"Key\": \"resource\", \"Value\": \"eks\"}
               ]
             },
             {
               \"ResourceType\": \"volume\",
               \"Tags\": [
                 {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-volume\"},
-                {\"Key\": \"business\", \"Value\": \"platform\"},
-                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
+                {\"Key\": \"business\", \"Value\": \"middleware\"},
+                {\"Key\": \"resource\", \"Value\": \"eks\"}
               ]
             }
           ]
@@ -358,16 +358,16 @@ else
               \"Tags\": [
                 {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-node\"},
                 {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"},
-                {\"Key\": \"business\", \"Value\": \"platform\"},
-                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
+                {\"Key\": \"business\", \"Value\": \"middleware\"},
+                {\"Key\": \"resource\", \"Value\": \"eks\"}
               ]
             },
             {
               \"ResourceType\": \"volume\",
               \"Tags\": [
                 {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-volume\"},
-                {\"Key\": \"business\", \"Value\": \"platform\"},
-                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
+                {\"Key\": \"business\", \"Value\": \"middleware\"},
+                {\"Key\": \"resource\", \"Value\": \"eks\"}
               ]
             }
           ]

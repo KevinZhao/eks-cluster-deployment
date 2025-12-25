@@ -98,8 +98,8 @@ EOF
         --tags \
             Key=ManagedBy,Value=karpenter \
             Key=Cluster,Value="${CLUSTER_NAME}" \
-            Key=business,Value=platform \
-            Key=resource,Value=karpenter-node
+            Key=business,Value=middleware \
+            Key=resource,Value=eks
 
     # 附加必需的策略
     aws iam attach-role-policy \
@@ -129,8 +129,8 @@ if ! aws iam get-instance-profile --instance-profile-name "${KARPENTER_NODE_ROLE
         --tags \
             Key=ManagedBy,Value=karpenter \
             Key=Cluster,Value="${CLUSTER_NAME}" \
-            Key=business,Value=platform \
-            Key=resource,Value=karpenter-node
+            Key=business,Value=middleware \
+            Key=resource,Value=eks
 
     aws iam add-role-to-instance-profile \
         --instance-profile-name "${KARPENTER_NODE_ROLE}" \
