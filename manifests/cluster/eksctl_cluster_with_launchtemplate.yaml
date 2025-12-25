@@ -41,7 +41,7 @@ accessConfig:
 iam:
   withOIDC: false
 
-# 节点组配置 - 使用 Launch Template with LVM
+# 节点组配置 - 使用 additionalVolumes + userData
 managedNodeGroups:
   - name: eks-utils-arm64
     instanceType: m8g.large
@@ -49,6 +49,17 @@ managedNodeGroups:
     desiredCapacity: 3
     minSize: 3
     maxSize: 6
+    volumeSize: 50
+    volumeType: gp3
+
+    # 额外数据盘
+    additionalVolumes:
+      - volumeName: '/dev/xvdb'
+        volumeSize: 100
+        volumeType: gp3
+        volumeIOPS: 3000
+        volumeThroughput: 125
+
     privateNetworking: true
     subnets:
       - ${PRIVATE_SUBNET_A}
@@ -62,83 +73,79 @@ managedNodeGroups:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
 
-    # Launch Template 配置
-    launchTemplate:
-      # 使用 overrideBootstrapCommand 完全控制启动流程
-      overrideBootstrapCommand: |
+    # Pre-bootstrap user data - 在 EKS bootstrap 之前执行
+    preBootstrapCommands:
+      - |
         #!/bin/bash
         set -ex
 
-        # === LVM Setup (before bootstrap) ===
-        echo "=== Starting LVM Setup ==="
+        # Log to file for debugging
+        exec > >(tee /var/log/lvm-setup.log)
+        exec 2>&1
+
+        echo "=== Starting LVM Setup at $$(date) ==="
 
         # Stop containerd
         systemctl stop containerd || true
 
-        # Auto-detect EBS data disk (exclude root disk nvme0n1)
-        DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-
-        if [ -z "$DISK" ]; then
-          echo "No data disk found, skip LVM setup"
-        else
-          echo "Found data disk: $DISK"
-
-          # Check if LVM already configured
-          if ! vgs vg_data &>/dev/null; then
-            # Install lvm2 (not installed by default on AL2023)
-            dnf install -y lvm2
-
-            # Create LVM
-            pvcreate "$DISK"
-            vgcreate vg_data "$DISK"
-            lvcreate -l 100%VG -n lv_containerd vg_data
-            mkfs.xfs /dev/vg_data/lv_containerd
-
-            # Mount LV to temporary directory and migrate data
-            mkdir -p /mnt/runtime/containerd
-            mount /dev/vg_data/lv_containerd /mnt/runtime/containerd
-
-            # Copy containerd data
-            rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true
-
-            # Unmount temp and mount to final destination
-            umount /mnt/runtime/containerd
-            mount /dev/vg_data/lv_containerd /var/lib/containerd
-
-            # Add to fstab
-            echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
-
-            echo "LVM setup completed"
-            df -h /var/lib/containerd
-          else
-            echo "LVM already configured"
-            mount /dev/vg_data/lv_containerd /var/lib/containerd || true
+        # Wait for data disk to be available (max 60 seconds)
+        echo "Waiting for data disk..."
+        for i in {1..60}; do
+          DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+          if [ -n "$$DISK" ]; then
+            echo "Found data disk: $$DISK"
+            break
           fi
+          echo "Attempt $$i/60: Data disk not found yet, waiting..."
+          sleep 1
+        done
+
+        if [ -z "$$DISK" ]; then
+          echo "ERROR: No data disk found after 60 seconds"
+          systemctl start containerd
+          exit 0
         fi
+
+        # Check if LVM already configured
+        if vgs vg_data &>/dev/null; then
+          echo "LVM already configured, mounting..."
+          mount /dev/vg_data/lv_containerd /var/lib/containerd || true
+          systemctl start containerd
+          exit 0
+        fi
+
+        # Install lvm2
+        echo "Installing lvm2..."
+        dnf install -y lvm2
+
+        # Create LVM
+        echo "Creating LVM on $$DISK..."
+        pvcreate "$$DISK"
+        vgcreate vg_data "$$DISK"
+        lvcreate -l 100%VG -n lv_containerd vg_data
+        mkfs.xfs /dev/vg_data/lv_containerd
+
+        # Mount and migrate data
+        echo "Mounting and migrating containerd data..."
+        mkdir -p /mnt/runtime/containerd
+        mount /dev/vg_data/lv_containerd /mnt/runtime/containerd
+        rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true
+        umount /mnt/runtime/containerd
+        mount /dev/vg_data/lv_containerd /var/lib/containerd
+
+        # Add to fstab
+        grep -q "lv_containerd" /etc/fstab || \
+          echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
+
+        echo "LVM setup completed successfully"
+        df -h /var/lib/containerd
+        vgs
+        lvs
 
         # Start containerd
         systemctl start containerd
 
-        # === EKS Bootstrap ===
-        /etc/eks/bootstrap.sh ${CLUSTER_NAME} \
-          --kubelet-extra-args '--node-labels=app=eks-utils,arch=arm64,node-group-type=system'
-
-      # Block device mappings
-      blockDeviceMappings:
-        # Root volume
-        - deviceName: /dev/xvda
-          ebs:
-            volumeSize: 50
-            volumeType: gp3
-            encrypted: true
-            deleteOnTermination: true
-        # Data volume for containerd
-        - deviceName: /dev/xvdb
-          ebs:
-            volumeSize: 100
-            volumeType: gp3
-            encrypted: true
-            deleteOnTermination: true
+        echo "=== LVM Setup Complete at $$(date) ==="
 
 addons:
   - name: vpc-cni
