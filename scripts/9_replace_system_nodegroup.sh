@@ -193,9 +193,9 @@ if vgs vg_data &>/dev/null; then
   exit 0
 fi
 
-# Install lvm2
-echo "Installing lvm2..."
-dnf install -y lvm2
+# Install lvm2 and rsync
+echo "Installing lvm2 and rsync..."
+dnf install -y lvm2 rsync
 
 # Create LVM
 echo "Creating LVM on \$DISK..."
@@ -399,43 +399,43 @@ fi
 # 清理临时文件
 rm -f "${USERDATA_FILE}"
 
-# 7. 删除现有节点组
+# 7. 删除现有节点组 (TEMPORARILY DISABLED)
 echo ""
-echo "Step 6: Checking and deleting existing eks-utils nodegroups..."
+echo "Step 6: Skipping deletion of existing nodegroups (temporarily disabled)..."
 
 # 检查是否有需要删除的节点组
-NODEGROUPS_TO_DELETE=()
-for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
-    if aws eks describe-nodegroup \
-        --cluster-name "${CLUSTER_NAME}" \
-        --nodegroup-name "${NG_NAME}" \
-        --region "${AWS_REGION}" &>/dev/null; then
-        NODEGROUPS_TO_DELETE+=("${NG_NAME}")
-        echo "Found nodegroup to delete: ${NG_NAME}"
-    fi
-done
+# NODEGROUPS_TO_DELETE=()
+# for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
+#     if aws eks describe-nodegroup \
+#         --cluster-name "${CLUSTER_NAME}" \
+#         --nodegroup-name "${NG_NAME}" \
+#         --region "${AWS_REGION}" &>/dev/null; then
+#         NODEGROUPS_TO_DELETE+=("${NG_NAME}")
+#         echo "Found nodegroup to delete: ${NG_NAME}"
+#     fi
+# done
 
-# 如果没有需要删除的节点组，直接跳过
-if [ ${#NODEGROUPS_TO_DELETE[@]} -eq 0 ]; then
-    echo "No existing nodegroups found, skipping deletion step"
-else
-    echo "Deleting ${#NODEGROUPS_TO_DELETE[@]} nodegroup(s)..."
+# # 如果没有需要删除的节点组，直接跳过
+# if [ ${#NODEGROUPS_TO_DELETE[@]} -eq 0 ]; then
+#     echo "No existing nodegroups found, skipping deletion step"
+# else
+#     echo "Deleting ${#NODEGROUPS_TO_DELETE[@]} nodegroup(s)..."
 
-    # 删除找到的节点组
-    for NG_NAME in "${NODEGROUPS_TO_DELETE[@]}"; do
-        echo "Deleting nodegroup ${NG_NAME}..."
-        eksctl delete nodegroup \
-            --cluster="${CLUSTER_NAME}" \
-            --region="${AWS_REGION}" \
-            --name="${NG_NAME}" \
-            --drain=false \
-            --wait
+#     # 删除找到的节点组
+#     for NG_NAME in "${NODEGROUPS_TO_DELETE[@]}"; do
+#         echo "Deleting nodegroup ${NG_NAME}..."
+#         eksctl delete nodegroup \
+#             --cluster="${CLUSTER_NAME}" \
+#             --region="${AWS_REGION}" \
+#             --name="${NG_NAME}" \
+#             --drain=false \
+#             --wait
 
-        echo "✓ Nodegroup ${NG_NAME} deleted successfully"
-    done
+#         echo "✓ Nodegroup ${NG_NAME} deleted successfully"
+#     done
 
-    echo "✓ All nodegroups deleted"
-fi
+#     echo "✓ All nodegroups deleted"
+# fi
 
 # 8. 创建引用 Launch Template 的节点组配置
 echo ""
