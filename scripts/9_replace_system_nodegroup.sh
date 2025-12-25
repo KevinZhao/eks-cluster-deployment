@@ -485,7 +485,7 @@ cat "${TEMP_CONFIG}"
 
 echo ""
 echo "Creating nodegroup with verbose logging..."
-eksctl create nodegroup -f "${TEMP_CONFIG}" --verbose 2>&1 | tee /tmp/eksctl_create_nodegroup.log
+eksctl create nodegroup -f "${TEMP_CONFIG}" --verbose=4 2>&1 | tee /tmp/eksctl_create_nodegroup.log
 
 rm -f "${TEMP_CONFIG}"
 
