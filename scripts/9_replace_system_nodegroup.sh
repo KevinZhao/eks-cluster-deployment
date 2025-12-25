@@ -204,12 +204,18 @@ vgcreate vg_data "\$DISK"
 lvcreate -l 100%VG -n lv_containerd vg_data
 mkfs.xfs /dev/vg_data/lv_containerd
 
-# Mount and migrate data
+# Mount and migrate data (including pre-cached images from AMI)
 echo "Mounting and migrating containerd data..."
 mkdir -p /mnt/runtime/containerd
 mount /dev/vg_data/lv_containerd /mnt/runtime/containerd
+
+echo "Copying containerd data (including pre-cached pause image) from AMI..."
 rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true
+
+echo "Unmounting temporary directory"
 umount /mnt/runtime/containerd
+
+echo "Mounting LV to final destination: /var/lib/containerd"
 mount /dev/vg_data/lv_containerd /var/lib/containerd
 
 # Add to fstab
