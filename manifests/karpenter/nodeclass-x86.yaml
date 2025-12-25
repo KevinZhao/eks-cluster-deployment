@@ -40,3 +40,5 @@ spec:
     Environment: "${ENVIRONMENT}"
     ManagedBy: "karpenter"
     Architecture: "amd64"
+    business: middleware
+    resource: eks

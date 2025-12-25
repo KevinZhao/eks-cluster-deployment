@@ -121,3 +121,5 @@ spec:
     ManagedBy: karpenter
     Architecture: arm64
     karpenter.sh/discovery: "${CLUSTER_NAME}"
+    business: middleware
+    resource: eks

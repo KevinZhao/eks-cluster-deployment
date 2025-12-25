@@ -124,3 +124,5 @@ spec:
     Environment: production
     ManagedBy: karpenter
     karpenter.sh/discovery: "${CLUSTER_NAME}"
+    business: middleware
+    resource: eks
