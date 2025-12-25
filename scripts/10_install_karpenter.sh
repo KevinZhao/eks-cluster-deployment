@@ -95,7 +95,11 @@ EOF
     aws iam create-role \
         --role-name "${KARPENTER_NODE_ROLE}" \
         --assume-role-policy-document file:///tmp/karpenter-node-trust-policy.json \
-        --tags Key=ManagedBy,Value=karpenter Key=Cluster,Value="${CLUSTER_NAME}"
+        --tags \
+            Key=ManagedBy,Value=karpenter \
+            Key=Cluster,Value="${CLUSTER_NAME}" \
+            Key=business,Value=platform \
+            Key=resource,Value=karpenter-node
 
     # 附加必需的策略
     aws iam attach-role-policy \
@@ -122,7 +126,11 @@ echo "  Creating Instance Profile for ${KARPENTER_NODE_ROLE}..."
 if ! aws iam get-instance-profile --instance-profile-name "${KARPENTER_NODE_ROLE}" &>/dev/null; then
     aws iam create-instance-profile \
         --instance-profile-name "${KARPENTER_NODE_ROLE}" \
-        --tags Key=ManagedBy,Value=karpenter Key=Cluster,Value="${CLUSTER_NAME}"
+        --tags \
+            Key=ManagedBy,Value=karpenter \
+            Key=Cluster,Value="${CLUSTER_NAME}" \
+            Key=business,Value=platform \
+            Key=resource,Value=karpenter-node
 
     aws iam add-role-to-instance-profile \
         --instance-profile-name "${KARPENTER_NODE_ROLE}" \

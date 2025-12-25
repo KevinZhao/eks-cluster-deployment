@@ -44,8 +44,10 @@ echo "Step 2: Creating EKS Node IAM Role and Instance Profile..."
 NODE_ROLE_NAME="EKSNodeRole-eks-frankfurt"
 INSTANCE_PROFILE_NAME="${NODE_ROLE_NAME}"
 
-# 检查 IAM Role 是否已存在
-if ! aws iam get-role --role-name "${NODE_ROLE_NAME}" &>/dev/null; then
+# 检查 IAM Role 是否已存在（原子性检查）
+if aws iam get-role --role-name "${NODE_ROLE_NAME}" &>/dev/null; then
+    echo "✓ IAM Role ${NODE_ROLE_NAME} already exists, skipping creation"
+else
     echo "Creating IAM Role: ${NODE_ROLE_NAME}"
 
     # 创建信任策略
@@ -67,7 +69,11 @@ EOF
     aws iam create-role \
         --role-name "${NODE_ROLE_NAME}" \
         --assume-role-policy-document file:///tmp/node-trust-policy.json \
-        --tags Key=Cluster,Value="${CLUSTER_NAME}" Key=ManagedBy,Value=script
+        --tags \
+            Key=Cluster,Value="${CLUSTER_NAME}" \
+            Key=ManagedBy,Value=script \
+            Key=business,Value=platform \
+            Key=resource,Value=eks-node
 
     # 附加必需的策略
     aws iam attach-role-policy \
@@ -88,17 +94,21 @@ EOF
 
     rm -f /tmp/node-trust-policy.json
     echo "✓ IAM Role created"
-else
-    echo "IAM Role ${NODE_ROLE_NAME} already exists"
 fi
 
-# 创建或获取 Instance Profile
-if ! aws iam get-instance-profile --instance-profile-name "${INSTANCE_PROFILE_NAME}" &>/dev/null; then
+# 检查 Instance Profile 是否已存在（原子性检查）
+if aws iam get-instance-profile --instance-profile-name "${INSTANCE_PROFILE_NAME}" &>/dev/null; then
+    echo "✓ Instance Profile ${INSTANCE_PROFILE_NAME} already exists, skipping creation"
+else
     echo "Creating Instance Profile: ${INSTANCE_PROFILE_NAME}"
 
     aws iam create-instance-profile \
         --instance-profile-name "${INSTANCE_PROFILE_NAME}" \
-        --tags Key=Cluster,Value="${CLUSTER_NAME}" Key=ManagedBy,Value=script
+        --tags \
+            Key=Cluster,Value="${CLUSTER_NAME}" \
+            Key=ManagedBy,Value=script \
+            Key=business,Value=platform \
+            Key=resource,Value=eks-node
 
     aws iam add-role-to-instance-profile \
         --instance-profile-name "${INSTANCE_PROFILE_NAME}" \
@@ -109,8 +119,6 @@ if ! aws iam get-instance-profile --instance-profile-name "${INSTANCE_PROFILE_NA
     sleep 10
 
     echo "✓ Instance Profile created"
-else
-    echo "Instance Profile ${INSTANCE_PROFILE_NAME} already exists"
 fi
 
 INSTANCE_PROFILE_ARN=$(aws iam get-instance-profile \
@@ -283,7 +291,17 @@ if aws ec2 describe-launch-templates \
               \"ResourceType\": \"instance\",
               \"Tags\": [
                 {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-node\"},
-                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"}
+                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"},
+                {\"Key\": \"business\", \"Value\": \"platform\"},
+                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
+              ]
+            },
+            {
+              \"ResourceType\": \"volume\",
+              \"Tags\": [
+                {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-volume\"},
+                {\"Key\": \"business\", \"Value\": \"platform\"},
+                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
               ]
             }
           ]
@@ -339,7 +357,17 @@ else
               \"ResourceType\": \"instance\",
               \"Tags\": [
                 {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-node\"},
-                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"}
+                {\"Key\": \"kubernetes.io/cluster/${CLUSTER_NAME}\", \"Value\": \"owned\"},
+                {\"Key\": \"business\", \"Value\": \"platform\"},
+                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
+              ]
+            },
+            {
+              \"ResourceType\": \"volume\",
+              \"Tags\": [
+                {\"Key\": \"Name\", \"Value\": \"${CLUSTER_NAME}-eks-utils-volume\"},
+                {\"Key\": \"business\", \"Value\": \"platform\"},
+                {\"Key\": \"resource\", \"Value\": \"eks-node\"}
               ]
             }
           ]
