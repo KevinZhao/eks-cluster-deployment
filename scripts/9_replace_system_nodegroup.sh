@@ -40,7 +40,8 @@ echo "Cluster Security Group: ${CLUSTER_SG}"
 echo ""
 echo "Step 2: Creating EKS Node IAM Role and Instance Profile..."
 
-NODE_ROLE_NAME="EKSNodeRole-${CLUSTER_NAME}"
+# 使用固定的名称 EKSNodeRole-eks-frankfurt（不包含 -test 后缀）
+NODE_ROLE_NAME="EKSNodeRole-eks-frankfurt"
 INSTANCE_PROFILE_NAME="${NODE_ROLE_NAME}"
 
 # 检查 IAM Role 是否已存在
