@@ -36,9 +36,92 @@ CLUSTER_SG=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_R
 echo "Cluster Endpoint: ${CLUSTER_ENDPOINT}"
 echo "Cluster Security Group: ${CLUSTER_SG}"
 
-# 3. 获取最新的 EKS optimized AMI for x86_64
+# 3. 创建 EKS 节点 IAM Role 和 Instance Profile
 echo ""
-echo "Step 2: Getting latest EKS optimized AMI..."
+echo "Step 2: Creating EKS Node IAM Role and Instance Profile..."
+
+NODE_ROLE_NAME="EKSNodeRole-${CLUSTER_NAME}"
+INSTANCE_PROFILE_NAME="${NODE_ROLE_NAME}"
+
+# 检查 IAM Role 是否已存在
+if ! aws iam get-role --role-name "${NODE_ROLE_NAME}" &>/dev/null; then
+    echo "Creating IAM Role: ${NODE_ROLE_NAME}"
+
+    # 创建信任策略
+    cat > /tmp/node-trust-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+    aws iam create-role \
+        --role-name "${NODE_ROLE_NAME}" \
+        --assume-role-policy-document file:///tmp/node-trust-policy.json \
+        --tags Key=Cluster,Value="${CLUSTER_NAME}" Key=ManagedBy,Value=script
+
+    # 附加必需的策略
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+
+    rm -f /tmp/node-trust-policy.json
+    echo "✓ IAM Role created"
+else
+    echo "IAM Role ${NODE_ROLE_NAME} already exists"
+fi
+
+# 创建或获取 Instance Profile
+if ! aws iam get-instance-profile --instance-profile-name "${INSTANCE_PROFILE_NAME}" &>/dev/null; then
+    echo "Creating Instance Profile: ${INSTANCE_PROFILE_NAME}"
+
+    aws iam create-instance-profile \
+        --instance-profile-name "${INSTANCE_PROFILE_NAME}" \
+        --tags Key=Cluster,Value="${CLUSTER_NAME}" Key=ManagedBy,Value=script
+
+    aws iam add-role-to-instance-profile \
+        --instance-profile-name "${INSTANCE_PROFILE_NAME}" \
+        --role-name "${NODE_ROLE_NAME}"
+
+    # 等待 Instance Profile 创建完成
+    echo "Waiting for Instance Profile to be ready..."
+    sleep 10
+
+    echo "✓ Instance Profile created"
+else
+    echo "Instance Profile ${INSTANCE_PROFILE_NAME} already exists"
+fi
+
+INSTANCE_PROFILE_ARN=$(aws iam get-instance-profile \
+    --instance-profile-name "${INSTANCE_PROFILE_NAME}" \
+    --query 'InstanceProfile.Arn' \
+    --output text)
+
+echo "Instance Profile ARN: ${INSTANCE_PROFILE_ARN}"
+
+# 4. 获取最新的 EKS optimized AMI for x86_64
+echo ""
+echo "Step 3: Getting latest EKS optimized AMI..."
 
 AMI_ID=$(aws ssm get-parameter \
     --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id" \
@@ -48,9 +131,9 @@ AMI_ID=$(aws ssm get-parameter \
 
 echo "AMI ID: ${AMI_ID}"
 
-# 4. 创建 user-data 文件（不经过任何模板替换）
+# 5. 创建 user-data 文件（不经过任何模板替换）
 echo ""
-echo "Step 3: Creating user-data script..."
+echo "Step 4: Creating user-data script..."
 
 USERDATA_FILE="/tmp/eks-utils-userdata-$$.sh"
 cat > "${USERDATA_FILE}" <<'EOF_USERDATA'
@@ -137,9 +220,9 @@ EOF_USERDATA
 
 echo "User-data created at: ${USERDATA_FILE}"
 
-# 5. 创建或更新 Launch Template
+# 6. 创建或更新 Launch Template
 echo ""
-echo "Step 4: Creating Launch Template..."
+echo "Step 5: Creating Launch Template..."
 
 LT_NAME="${CLUSTER_NAME}-eks-utils-x86-lt"
 
@@ -156,10 +239,14 @@ if aws ec2 describe-launch-templates \
         --query 'LaunchTemplates[0].LaunchTemplateId' \
         --output text)
 
-    # 创建新版本
+    # 创建新版本（包含 IAM Instance Profile）
+    echo "Using Instance Profile: ${INSTANCE_PROFILE_ARN}"
     LT_VERSION=$(aws ec2 create-launch-template-version \
         --launch-template-id "${LT_ID}" \
         --launch-template-data "{
+          \"IamInstanceProfile\": {
+            \"Arn\": \"${INSTANCE_PROFILE_ARN}\"
+          },
           \"ImageId\": \"${AMI_ID}\",
           \"InstanceType\": \"m7i.large\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
@@ -208,10 +295,14 @@ if aws ec2 describe-launch-templates \
 
 else
     echo "Creating new Launch Template: ${LT_NAME}..."
+    echo "Using Instance Profile: ${INSTANCE_PROFILE_ARN}"
 
     LT_RESULT=$(aws ec2 create-launch-template \
         --launch-template-name "${LT_NAME}" \
         --launch-template-data "{
+          \"IamInstanceProfile\": {
+            \"Arn\": \"${INSTANCE_PROFILE_ARN}\"
+          },
           \"ImageId\": \"${AMI_ID}\",
           \"InstanceType\": \"m7i.large\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
@@ -264,9 +355,9 @@ fi
 # 清理临时文件
 rm -f "${USERDATA_FILE}"
 
-# 6. 删除现有节点组
+# 7. 删除现有节点组
 echo ""
-echo "Step 5: Deleting existing eks-utils nodegroup..."
+echo "Step 6: Deleting existing eks-utils nodegroup..."
 
 # 尝试删除可能存在的所有旧节点组
 for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
@@ -289,9 +380,9 @@ done
 
 echo "All existing nodegroups checked and deleted if found"
 
-# 7. 创建引用 Launch Template 的节点组配置
+# 8. 创建引用 Launch Template 的节点组配置
 echo ""
-echo "Step 6: Creating nodegroup with Launch Template..."
+echo "Step 7: Creating nodegroup with Launch Template..."
 
 # 检查节点组是否已存在
 if aws eks describe-nodegroup \
@@ -356,9 +447,9 @@ eksctl create nodegroup -f "${TEMP_CONFIG}"
 
 rm -f "${TEMP_CONFIG}"
 
-# 8. 等待节点就绪
+# 9. 等待节点就绪
 echo ""
-echo "Step 7: Waiting for nodes to be ready..."
+echo "Step 8: Waiting for nodes to be ready..."
 sleep 15
 
 RETRY_COUNT=0
@@ -388,9 +479,9 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     sleep 10
 done
 
-# 9. 验证 LVM
+# 10. 验证 LVM
 echo ""
-echo "Step 8: Verifying LVM configuration..."
+echo "Step 9: Verifying LVM configuration..."
 
 NODES=$(kubectl get nodes -l app=eks-utils -o jsonpath='{.items[*].metadata.name}')
 
