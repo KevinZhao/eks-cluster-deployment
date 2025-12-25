@@ -18,10 +18,14 @@ echo ""
 
 export CLUSTER_NAME=${CLUSTER_NAME:-eks-frankfurt-test}
 export AWS_REGION=${AWS_REGION:-eu-central-1}
-export PROJECT_ROOT=${PROJECT_ROOT:-/home/ec2-user/eks-cluster-deployment}
+
+# 检测脚本所在目录
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+export PROJECT_ROOT="${SCRIPT_DIR}"
 
 echo "集群: ${CLUSTER_NAME}"
 echo "区域: ${AWS_REGION}"
+echo "项目路径: ${PROJECT_ROOT}"
 echo ""
 
 # 1. 应用更新的 EC2NodeClass 配置
