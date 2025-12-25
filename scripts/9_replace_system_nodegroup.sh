@@ -248,14 +248,11 @@ if aws ec2 describe-launch-templates \
         --query 'LaunchTemplates[0].LaunchTemplateId' \
         --output text)
 
-    # 创建新版本（包含 IAM Instance Profile）
-    echo "Using Instance Profile: ${INSTANCE_PROFILE_ARN}"
+    # 创建新版本（不包含 IAM Instance Profile，由 eksctl 管理）
+    echo "Creating Launch Template version without IAM Instance Profile (managed by eksctl)"
     LT_VERSION=$(aws ec2 create-launch-template-version \
         --launch-template-id "${LT_ID}" \
         --launch-template-data "{
-          \"IamInstanceProfile\": {
-            \"Arn\": \"${INSTANCE_PROFILE_ARN}\"
-          },
           \"ImageId\": \"${AMI_ID}\",
           \"InstanceType\": \"m7i.large\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
@@ -314,14 +311,11 @@ if aws ec2 describe-launch-templates \
 
 else
     echo "Creating new Launch Template: ${LT_NAME}..."
-    echo "Using Instance Profile: ${INSTANCE_PROFILE_ARN}"
+    echo "Note: IAM Instance Profile will be managed by eksctl"
 
     LT_RESULT=$(aws ec2 create-launch-template \
         --launch-template-name "${LT_NAME}" \
         --launch-template-data "{
-          \"IamInstanceProfile\": {
-            \"Arn\": \"${INSTANCE_PROFILE_ARN}\"
-          },
           \"ImageId\": \"${AMI_ID}\",
           \"InstanceType\": \"m7i.large\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
@@ -436,6 +430,9 @@ if aws eks describe-nodegroup \
     exit 0
 fi
 
+# 获取 AWS Account ID（用于 IAM Role ARN）
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
 TEMP_CONFIG="/tmp/eksctl_ng_with_lt_$$.yaml"
 cat > "${TEMP_CONFIG}" <<EOF
 apiVersion: eksctl.io/v1alpha5
@@ -462,7 +459,10 @@ managedNodeGroups:
     # 引用外部创建的 Launch Template
     launchTemplate:
       id: ${LT_ID}
-      version: "${LT_VERSION}"
+      version: ${LT_VERSION}
+    # 使用已存在的 IAM Role（eksctl 会创建 Instance Profile）
+    iam:
+      instanceRoleARN: arn:aws:iam::${ACCOUNT_ID}:role/${NODE_ROLE_NAME}
     desiredCapacity: 3
     minSize: 3
     maxSize: 6
@@ -484,8 +484,8 @@ echo "Generated eksctl config:"
 cat "${TEMP_CONFIG}"
 
 echo ""
-echo "Creating nodegroup..."
-eksctl create nodegroup -f "${TEMP_CONFIG}"
+echo "Creating nodegroup with verbose logging..."
+eksctl create nodegroup -f "${TEMP_CONFIG}" --verbose 2>&1 | tee /tmp/eksctl_create_nodegroup.log
 
 rm -f "${TEMP_CONFIG}"
 
