@@ -19,6 +19,17 @@ echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
 
+# 验证集群存在并更新 kubeconfig
+echo "Verifying EKS cluster exists and updating kubeconfig..."
+if ! aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
+    echo "❌ ERROR: EKS cluster '${CLUSTER_NAME}' not found in region '${AWS_REGION}'"
+    exit 1
+fi
+
+aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
+echo "✓ Cluster found and kubeconfig updated"
+echo ""
+
 echo "This script installs optional CSI drivers for your EKS cluster."
 echo ""
 echo "Available drivers:"

@@ -370,3 +370,65 @@ fi
 # Save instance ID to file for later reference
 echo "${INSTANCE_ID}" > /tmp/eks-bastion-instance-id.txt
 echo -e "${GREEN}Instance ID saved to: /tmp/eks-bastion-instance-id.txt${NC}"
+
+# Configure EKS cluster access for bastion
+echo ""
+echo -e "${YELLOW}Configuring EKS cluster access...${NC}"
+
+# Check if cluster exists
+if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
+    echo "EKS cluster found: ${CLUSTER_NAME}"
+
+    # Get cluster security group
+    CLUSTER_SG=$(aws eks describe-cluster \
+        --name "${CLUSTER_NAME}" \
+        --region "${AWS_REGION}" \
+        --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' \
+        --output text)
+
+    # Get bastion security group
+    BASTION_SG=$(aws ec2 describe-instances \
+        --instance-ids ${INSTANCE_ID} \
+        --region ${AWS_REGION} \
+        --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+        --output text)
+
+    echo "  Cluster Security Group: ${CLUSTER_SG}"
+    echo "  Bastion Security Group: ${BASTION_SG}"
+
+    # Add security group rule to allow bastion access to EKS API
+    echo "  Configuring security group access..."
+    aws ec2 authorize-security-group-ingress \
+        --group-id ${CLUSTER_SG} \
+        --protocol tcp \
+        --port 443 \
+        --source-group ${BASTION_SG} \
+        --region ${AWS_REGION} 2>/dev/null && echo "  ✓ Security group rule added" || echo "  ℹ Security group rule already exists"
+
+    # Configure EKS access entry for bastion IAM role
+    echo "  Configuring EKS access entry..."
+    BASTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/EKS-Deploy-Role"
+
+    # Create access entry
+    aws eks create-access-entry \
+        --cluster-name "${CLUSTER_NAME}" \
+        --principal-arn "${BASTION_ROLE_ARN}" \
+        --type STANDARD \
+        --region "${AWS_REGION}" 2>/dev/null && echo "  ✓ Access entry created" || echo "  ℹ Access entry already exists"
+
+    # Associate cluster admin policy
+    aws eks associate-access-policy \
+        --cluster-name "${CLUSTER_NAME}" \
+        --principal-arn "${BASTION_ROLE_ARN}" \
+        --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+        --access-scope type=cluster \
+        --region "${AWS_REGION}" 2>/dev/null && echo "  ✓ Admin policy associated" || echo "  ℹ Policy already associated"
+
+    echo -e "${GREEN}✓ EKS cluster access configured${NC}"
+else
+    echo -e "${YELLOW}ℹ EKS cluster not found yet. Access will need to be configured after cluster creation.${NC}"
+    echo "  Run this script again after creating the cluster, or manually configure access using:"
+    echo "  aws eks create-access-entry --cluster-name ${CLUSTER_NAME} --principal-arn arn:aws:iam::${ACCOUNT_ID}:role/EKS-Deploy-Role --type STANDARD"
+    echo "  aws eks associate-access-policy --cluster-name ${CLUSTER_NAME} --principal-arn arn:aws:iam::${ACCOUNT_ID}:role/EKS-Deploy-Role --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy --access-scope type=cluster"
+fi
+echo ""

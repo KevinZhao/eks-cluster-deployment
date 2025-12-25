@@ -1,4 +1,4 @@
-apiVersion: karpenter.sh/v1beta1
+apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: default
@@ -12,6 +12,8 @@ spec:
     spec:
       # 引用 EC2NodeClass
       nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
         name: default
 
       # 节点要求
@@ -52,8 +54,10 @@ spec:
 
   # 中断处理
   disruption:
-    consolidationPolicy: WhenUnderutilized
-    expireAfter: 720h # 30 days
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+    budgets:
+      - nodes: "10%"
 
   # 权重
   weight: 10

@@ -18,13 +18,35 @@ echo "KUBECONFIG set to: ${KUBECONFIG}"
 # 1.5. 导入 Pod Identity helper 函数
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
 
-# 2. 检查集群是否存在
-echo "Step 1: Checking if cluster exists..."
+# 2. 验证集群存在并更新 kubeconfig
+echo "Step 1: Checking if cluster exists and updating kubeconfig..."
 if ! aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
     echo "❌ ERROR: Cluster ${CLUSTER_NAME} does not exist"
     exit 1
 fi
-echo "✓ Cluster ${CLUSTER_NAME} exists"
+
+aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
+echo "✓ Cluster ${CLUSTER_NAME} exists and kubeconfig updated"
+
+# 2.5. 验证kubectl访问权限
+echo ""
+echo "Step 1.5: Verifying kubectl access to cluster..."
+if ! kubectl get nodes &>/dev/null; then
+    echo "❌ ERROR: Cannot access cluster with kubectl"
+    echo ""
+    echo "This usually means:"
+    echo "  1. You don't have permission to access the cluster"
+    echo "  2. Security groups are not configured correctly"
+    echo "  3. You're not running from within the VPC"
+    echo ""
+    echo "If running from a bastion host, ensure:"
+    echo "  - Bastion security group can access EKS API (port 443)"
+    echo "  - Bastion IAM role has EKS cluster access"
+    echo ""
+    echo "To configure access, run: ./scripts/create_bastion.sh"
+    exit 1
+fi
+echo "✓ kubectl access verified"
 
 # 3. 获取集群信息
 echo ""
@@ -193,6 +215,20 @@ else
         "pricing:GetProducts"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetInstanceProfile",
+        "iam:CreateInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:ListInstanceProfiles",
+        "iam:ListInstanceProfileTags"
+      ],
+      "Resource": "*"
     }
   ]
 }
@@ -315,17 +351,13 @@ echo "  ✓ Tagged security group ${CLUSTER_SG}"
 echo ""
 echo "Step 9: Installing Karpenter Helm Chart..."
 
-# 添加 Karpenter Helm repo
-helm repo add karpenter https://charts.karpenter.sh
-helm repo update karpenter
-
+# 注意: Karpenter v1.x 使用 OCI registry，不需要添加 helm repo
 # 安装 Karpenter
-helm upgrade --install karpenter karpenter/karpenter \
+helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
     --namespace "${KARPENTER_NAMESPACE}" \
     --version "${KARPENTER_VERSION}" \
     --set "settings.clusterName=${CLUSTER_NAME}" \
     --set "settings.clusterEndpoint=${CLUSTER_ENDPOINT}" \
-    --set "settings.interruptionQueue=Karpenter-${CLUSTER_NAME}" \
     --set "serviceAccount.create=false" \
     --set "serviceAccount.name=${KARPENTER_SA}" \
     --set "replicas=2" \
@@ -333,7 +365,11 @@ helm upgrade --install karpenter karpenter/karpenter \
     --set "tolerations[0].key=node.kubernetes.io/not-ready" \
     --set "tolerations[0].operator=Exists" \
     --set "tolerations[0].effect=NoExecute" \
+    --timeout 10m \
     --wait
+
+# Note: Removed settings.interruptionQueue as SQS queue is not created by default
+# To enable interruption handling, create an SQS queue and EventBridge rules manually
 
 echo "  ✓ Karpenter Helm Chart installed successfully"
 

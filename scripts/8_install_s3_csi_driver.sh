@@ -15,9 +15,24 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
+# 设置 KUBECONFIG 环境变量
+export KUBECONFIG="${HOME}/.kube/config"
+echo "KUBECONFIG set to: ${KUBECONFIG}"
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Installing S3 CSI Driver with Pod Identity${NC}"
 echo -e "${GREEN}========================================${NC}"
+echo ""
+
+# 验证集群存在并更新 kubeconfig
+echo -e "${YELLOW}Verifying EKS cluster exists and updating kubeconfig...${NC}"
+if ! aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
+    echo -e "${RED}❌ ERROR: EKS cluster '${CLUSTER_NAME}' not found in region '${AWS_REGION}'${NC}"
+    exit 1
+fi
+
+aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
+echo -e "${GREEN}✓ Cluster found and kubeconfig updated${NC}"
 echo ""
 
 # Validate required variables

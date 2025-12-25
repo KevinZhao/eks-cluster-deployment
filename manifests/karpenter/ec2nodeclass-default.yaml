@@ -1,10 +1,12 @@
-apiVersion: karpenter.k8s.aws/v1beta1
+apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
   name: default
 spec:
   # AMI 选择器 - 使用 EKS 优化的 AL2023 AMI
   amiFamily: AL2023
+  amiSelectorTerms:
+    - name: "amazon-eks-node-al2023-*-standard-1.34-*"
 
   # IAM 角色
   role: "KarpenterNodeRole-${CLUSTER_NAME}"
@@ -24,7 +26,7 @@ spec:
     # Root volume (系统盘)
     - deviceName: /dev/xvda
       ebs:
-        volumeSize: 30Gi
+        volumeSize: 50Gi
         volumeType: gp3
         iops: 3000
         throughput: 125
@@ -41,7 +43,7 @@ spec:
         encrypted: true
         deleteOnTermination: true
 
-  # User Data - 挂载数据盘到 /var/lib/containerd
+  # User Data - 使用 LVM 挂载数据盘到 /var/lib/containerd
   userData: |
     MIME-Version: 1.0
     Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -50,40 +52,40 @@ spec:
     Content-Type: text/cloud-boothook; charset="us-ascii"
 
     #!/bin/bash
-    # Mount data disk to /var/lib/containerd before containerd starts
+    # Mount data disk to /var/lib/containerd using LVM
     set -euxo pipefail
 
     # Stop containerd first
     systemctl stop containerd || true
 
-    # Auto-detect EBS data disk (exclude instance store)
-    # Method 1: Use nvme-cli to identify EBS volumes
-    DEVICE=$(nvme list 2>/dev/null | grep 'Amazon Elastic Block Store' | tail -n 1 | awk '{print $1}')
-
-    # Method 2: Fallback to lsblk if nvme command unavailable
-    if [ -z "$DEVICE" ]; then
-      DEVICE=$(lsblk -dpno NAME,MOUNTPOINT | awk '$2==""{print $1}' | grep nvme | tail -n 1)
+    # Auto-detect EBS data disk (exclude root disk nvme0n1)
+    # Use inline detection to avoid variable expansion issues
+    if [ -z "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)" ]; then
+      echo "No data disk found, skip LVM setup"
+      systemctl start containerd
+      exit 0
     fi
 
-    # Only proceed if a data disk is found
-    if [ -n "$DEVICE" ]; then
-      # Format only if not already formatted
-      if ! blkid "$DEVICE" >/dev/null 2>&1; then
-        mkfs -t ext4 "$DEVICE"
-      fi
+    # Check if LVM already configured
+    if vgs vg_data &>/dev/null; then
+      echo "LVM already configured"
+    else
+      # Install lvm2 (not installed by default on AL2023)
+      dnf install -y lvm2
 
-      # Prepare mount point
-      mkdir -p /var/lib/containerd
-      rm -rf /var/lib/containerd/*
-
-      # Mount the data disk
-      mount "$DEVICE" /var/lib/containerd
-
-      # Persist mount in fstab
-      if ! grep -q "/var/lib/containerd" /etc/fstab; then
-        echo "$DEVICE /var/lib/containerd ext4 defaults,nofail 0 2" >> /etc/fstab
-      fi
+      # Create LVM using inline disk detection
+      pvcreate "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
+      vgcreate vg_data "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
+      lvcreate -l 100%VG -n lv_containerd vg_data
+      mkfs.xfs /dev/vg_data/lv_containerd
     fi
+
+    # Mount containerd
+    mkdir -p /var/lib/containerd
+    rm -rf /var/lib/containerd/*
+    mount /dev/vg_data/lv_containerd /var/lib/containerd
+    grep -q "lv_containerd" /etc/fstab || \
+      echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
 
     # Start containerd with data disk mounted
     systemctl start containerd

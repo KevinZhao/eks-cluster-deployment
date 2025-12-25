@@ -45,7 +45,7 @@ iam:
 # 系统节点组，主要运行aws-load-balancer-controller coredns cluster-autoscaler等组件
 managedNodeGroups:
   - name: eks-utils
-    instanceType: m7i.large
+    instanceType: m8g.large
     amiFamily: AmazonLinux2023
     desiredCapacity: 3
     minSize: 3
@@ -62,36 +62,36 @@ managedNodeGroups:
       - |
         set -euxo pipefail
         systemctl stop containerd || true
-        
+
         # Auto-detect EBS data disk (exclude root disk nvme0n1)
-        DATA_DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-        if [ -z "$DATA_DISK" ]; then
+        DATA_DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+        if [ -z "$$DATA_DISK" ]; then
           echo "No data disk found, skip LVM setup"
           systemctl start containerd
           exit 0
         fi
-        
+
         # Check if LVM already configured
         if vgs vg_data &>/dev/null; then
           echo "LVM already configured"
         else
           # Install lvm2 (not installed by default on AL2023)
           dnf install -y lvm2
-          
+
           # Create LVM
-          pvcreate "$DATA_DISK"
-          vgcreate vg_data "$DATA_DISK"
+          pvcreate "$$DATA_DISK"
+          vgcreate vg_data "$$DATA_DISK"
           lvcreate -l 100%VG -n lv_containerd vg_data
           mkfs.xfs /dev/vg_data/lv_containerd
         fi
-        
+
         # Mount containerd
         mkdir -p /var/lib/containerd
         rm -rf /var/lib/containerd/*
         mount /dev/vg_data/lv_containerd /var/lib/containerd
         grep -q "lv_containerd" /etc/fstab || \
           echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
-        
+
         systemctl start containerd
     privateNetworking: true
     subnets:
@@ -100,73 +100,7 @@ managedNodeGroups:
       - ${PRIVATE_SUBNET_C}
     labels:
       app: "eks-utils"
-      arch: "amd64"
-    tags:
-      k8s.io/cluster-autoscaler/enabled: "true"
-      k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
-
-  - name: app
-    instanceType: c8g.large
-    amiFamily: AmazonLinux2023
-    desiredCapacity: 3
-    minSize: 3
-    maxSize: 12
-    volumeSize: 50
-    volumeType: gp3
-    # Additional data disk for containerd
-    additionalVolumes:
-      - volumeName: "/dev/sdz"
-        volumeSize: 100
-        volumeType: gp3
-    # Mount data disk to /var/lib/containerd using LVM
-    preBootstrapCommands:
-      - |
-        set -euxo pipefail
-        systemctl stop containerd || true
-        
-        # Auto-detect EBS data disk (exclude root disk nvme0n1)
-        DATA_DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-        if [ -z "$DATA_DISK" ]; then
-          echo "No data disk found, skip LVM setup"
-          systemctl start containerd
-          exit 0
-        fi
-        
-        # Check if LVM already configured
-        if vgs vg_data &>/dev/null; then
-          echo "LVM already configured"
-        else
-          # Install lvm2 (not installed by default on AL2023)
-          dnf install -y lvm2
-          
-          # Create LVM
-          pvcreate "$DATA_DISK"
-          vgcreate vg_data "$DATA_DISK"
-          lvcreate -l 100%VG -n lv_containerd vg_data
-          mkfs.xfs /dev/vg_data/lv_containerd
-        fi
-        
-        # Mount containerd
-        mkdir -p /var/lib/containerd
-        rm -rf /var/lib/containerd/*
-        mount /dev/vg_data/lv_containerd /var/lib/containerd
-        grep -q "lv_containerd" /etc/fstab || \
-          echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
-        
-        systemctl start containerd
-    privateNetworking: true
-    subnets:
-      - ${PRIVATE_SUBNET_A}
-      - ${PRIVATE_SUBNET_B}
-      - ${PRIVATE_SUBNET_C}
-    labels:
-      app: application
       arch: "arm64"
-      workload: "user-apps"
-    taints:
-      - key: "workload"
-        value: "user-apps"
-        effect: "NoSchedule"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
