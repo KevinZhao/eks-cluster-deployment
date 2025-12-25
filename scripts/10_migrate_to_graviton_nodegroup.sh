@@ -46,42 +46,78 @@ fi
 
 echo "Cluster connection verified successfully"
 
-# 2. 显示当前节点组信息
+# 2. 检查当前节点组状态
 echo ""
-echo "Step 1: Current nodegroup information..."
-aws eks describe-nodegroup \
+echo "Step 1: Checking current nodegroup status..."
+
+# 检查旧节点组是否存在
+OLD_NG_EXISTS=false
+if aws eks describe-nodegroup \
     --cluster-name "${CLUSTER_NAME}" \
     --nodegroup-name eks-utils \
-    --region "${AWS_REGION}" \
-    --query 'nodegroup.{instanceTypes:instanceTypes,desiredSize:scalingConfig.desiredSize,amiType:amiType,labels:labels}' \
-    --output table || echo "Failed to describe nodegroup"
+    --region "${AWS_REGION}" &>/dev/null; then
+    OLD_NG_EXISTS=true
+    echo "Old nodegroup 'eks-utils' found"
+    aws eks describe-nodegroup \
+        --cluster-name "${CLUSTER_NAME}" \
+        --nodegroup-name eks-utils \
+        --region "${AWS_REGION}" \
+        --query 'nodegroup.{instanceTypes:instanceTypes,desiredSize:scalingConfig.desiredSize,amiType:amiType,labels:labels}' \
+        --output table
+else
+    echo "Old nodegroup 'eks-utils' not found (may already be deleted)"
+fi
+
+# 检查新节点组是否存在
+NEW_NG_EXISTS=false
+if aws eks describe-nodegroup \
+    --cluster-name "${CLUSTER_NAME}" \
+    --nodegroup-name eks-utils-arm64 \
+    --region "${AWS_REGION}" &>/dev/null; then
+    NEW_NG_EXISTS=true
+    echo "New nodegroup 'eks-utils-arm64' already exists"
+    aws eks describe-nodegroup \
+        --cluster-name "${CLUSTER_NAME}" \
+        --nodegroup-name eks-utils-arm64 \
+        --region "${AWS_REGION}" \
+        --query 'nodegroup.{instanceTypes:instanceTypes,desiredSize:scalingConfig.desiredSize,amiType:amiType,labels:labels}' \
+        --output table
+else
+    echo "New nodegroup 'eks-utils-arm64' not found"
+fi
 
 echo ""
 echo "Current nodes:"
 kubectl get nodes -o wide || echo "Failed to list nodes (cluster may be inaccessible)"
 
-# 3. 删除旧的 AMD64 节点组
-echo ""
-echo "Step 2: Deleting old AMD64 nodegroup (eks-utils)..."
-echo "This will take 2-3 minutes..."
+# 3. 删除旧的 AMD64 节点组（如果存在）
+if [ "$OLD_NG_EXISTS" = true ]; then
+    echo ""
+    echo "Step 2: Deleting old AMD64 nodegroup (eks-utils)..."
+    echo "This will take 2-3 minutes..."
 
-eksctl delete nodegroup \
-    --cluster="${CLUSTER_NAME}" \
-    --region="${AWS_REGION}" \
-    --name=eks-utils \
-    --drain=false \
-    --wait
+    eksctl delete nodegroup \
+        --cluster="${CLUSTER_NAME}" \
+        --region="${AWS_REGION}" \
+        --name=eks-utils \
+        --drain=false \
+        --wait
 
-echo "Old nodegroup deleted successfully"
+    echo "Old nodegroup deleted successfully"
+else
+    echo ""
+    echo "Step 2: Skipping nodegroup deletion (already deleted)"
+fi
 
-# 4. 创建新的 Graviton ARM64 节点组（临时名称）
-echo ""
-echo "Step 3: Creating new Graviton ARM64 nodegroup (eks-utils-arm64)..."
-echo "Using template: ${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml"
+# 4. 创建新的 Graviton ARM64 节点组（如果不存在）
+if [ "$NEW_NG_EXISTS" = false ]; then
+    echo ""
+    echo "Step 3: Creating new Graviton ARM64 nodegroup (eks-utils-arm64)..."
+    echo "Using template: ${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml"
 
-# 创建临时配置文件，只包含新节点组（使用 /tmp 目录避免权限问题）
-TEMP_CONFIG="/tmp/eksctl_nodegroup_graviton_temp_$$.yaml"
-cat > "${TEMP_CONFIG}" <<EOF
+    # 创建临时配置文件，只包含新节点组（使用 /tmp 目录避免权限问题）
+    TEMP_CONFIG="/tmp/eksctl_nodegroup_graviton_temp_$$.yaml"
+    cat > "${TEMP_CONFIG}" <<EOF
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
@@ -186,8 +222,15 @@ managedNodeGroups:
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
 EOF
 
-echo "Creating Graviton nodegroup..."
-eksctl create nodegroup -f "${TEMP_CONFIG}"
+    echo "Creating Graviton nodegroup..."
+    eksctl create nodegroup -f "${TEMP_CONFIG}"
+
+    # 清理临时文件
+    rm -f "${TEMP_CONFIG}"
+else
+    echo ""
+    echo "Step 3: Skipping nodegroup creation (already exists)"
+fi
 
 # 5. 等待节点就绪
 echo ""
@@ -301,8 +344,4 @@ echo ""
 echo "Note: The nodegroup is named 'eks-utils-arm64' to distinguish from the old one."
 echo "      You can keep this name or rename it later if needed."
 echo ""
-
-# 清理临时文件
-rm -f "${TEMP_CONFIG}"
-
 echo "Script completed successfully!"
