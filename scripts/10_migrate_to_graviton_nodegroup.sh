@@ -22,9 +22,29 @@ read
 # 1. 设置环境变量
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
-# 1.1 设置 KUBECONFIG 环境变量
+# 1.1 更新 kubeconfig 确保连接到正确的集群
+echo "Updating kubeconfig for cluster: ${CLUSTER_NAME}"
+aws eks update-kubeconfig \
+    --region "${AWS_REGION}" \
+    --name "${CLUSTER_NAME}"
+
+# 1.2 设置 KUBECONFIG 环境变量
 export KUBECONFIG="${HOME}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
+
+# 1.3 验证集群连接
+echo "Verifying cluster connection..."
+kubectl cluster-info | head -1
+CURRENT_CONTEXT=$(kubectl config current-context)
+echo "Current context: ${CURRENT_CONTEXT}"
+
+if [[ ! "$CURRENT_CONTEXT" =~ "$CLUSTER_NAME" ]]; then
+    echo "ERROR: Current context does not match cluster name ${CLUSTER_NAME}"
+    echo "Please check your kubeconfig"
+    exit 1
+fi
+
+echo "Cluster connection verified successfully"
 
 # 2. 显示当前节点组信息
 echo ""
@@ -59,8 +79,9 @@ echo ""
 echo "Step 3: Creating new Graviton ARM64 nodegroup (eks-utils-arm64)..."
 echo "Using template: ${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml"
 
-# 创建临时配置文件，只包含新节点组
-cat > "${PROJECT_ROOT}/eksctl_nodegroup_graviton_temp.yaml" <<EOF
+# 创建临时配置文件，只包含新节点组（使用 /tmp 目录避免权限问题）
+TEMP_CONFIG="/tmp/eksctl_nodegroup_graviton_temp_$$.yaml"
+cat > "${TEMP_CONFIG}" <<EOF
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
@@ -166,7 +187,7 @@ managedNodeGroups:
 EOF
 
 echo "Creating Graviton nodegroup..."
-eksctl create nodegroup -f "${PROJECT_ROOT}/eksctl_nodegroup_graviton_temp.yaml"
+eksctl create nodegroup -f "${TEMP_CONFIG}"
 
 # 5. 等待节点就绪
 echo ""
@@ -282,6 +303,6 @@ echo "      You can keep this name or rename it later if needed."
 echo ""
 
 # 清理临时文件
-rm -f "${PROJECT_ROOT}/eksctl_nodegroup_graviton_temp.yaml"
+rm -f "${TEMP_CONFIG}"
 
 echo "Script completed successfully!"
