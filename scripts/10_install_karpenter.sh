@@ -398,11 +398,12 @@ echo "Step 11: Deploying EC2NodeClass and NodePool..."
 export CLUSTER_NAME
 export AWS_REGION
 
-# envsubst会把$$DATA_DISK变成$,所以改用sed只替换${CLUSTER_NAME}
-sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
-sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/nodepool-default.yaml" | kubectl apply -f -
+# 跳过 default (mixed) NodePool 部署
+# sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
+# sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/nodepool-default.yaml" | kubectl apply -f -
+# echo "  ✓ Default EC2NodeClass and NodePool deployed"
 
-echo "  ✓ Default EC2NodeClass and NodePool deployed"
+echo "  ⊘ Skipped default (mixed architecture) NodePool deployment"
 
 # 可选：部署 Graviton 专用配置 (r8g.8xlarge)
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
@@ -456,7 +457,7 @@ echo "  Controller IAM Role: ${KARPENTER_CONTROLLER_ROLE}"
 echo "  Node IAM Role: ${KARPENTER_NODE_ROLE}"
 echo ""
 echo "Installed NodePools:"
-echo "  - default: Mixed architecture (amd64/arm64)"
+# echo "  - default: Mixed architecture (amd64/arm64) [DISABLED]"
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     echo "  - graviton: ARM64 only (r8g.8xlarge)"
 fi
