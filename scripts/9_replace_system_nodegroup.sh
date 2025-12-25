@@ -399,43 +399,43 @@ fi
 # 清理临时文件
 rm -f "${USERDATA_FILE}"
 
-# 7. 删除现有节点组 (TEMPORARILY DISABLED)
+# 7. 删除现有节点组
 echo ""
-echo "Step 6: Skipping deletion of existing nodegroups (temporarily disabled)..."
+echo "Step 6: Checking and deleting existing eks-utils nodegroups..."
 
 # 检查是否有需要删除的节点组
-# NODEGROUPS_TO_DELETE=()
-# for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
-#     if aws eks describe-nodegroup \
-#         --cluster-name "${CLUSTER_NAME}" \
-#         --nodegroup-name "${NG_NAME}" \
-#         --region "${AWS_REGION}" &>/dev/null; then
-#         NODEGROUPS_TO_DELETE+=("${NG_NAME}")
-#         echo "Found nodegroup to delete: ${NG_NAME}"
-#     fi
-# done
+NODEGROUPS_TO_DELETE=()
+for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
+    if aws eks describe-nodegroup \
+        --cluster-name "${CLUSTER_NAME}" \
+        --nodegroup-name "${NG_NAME}" \
+        --region "${AWS_REGION}" &>/dev/null; then
+        NODEGROUPS_TO_DELETE+=("${NG_NAME}")
+        echo "Found nodegroup to delete: ${NG_NAME}"
+    fi
+done
 
-# # 如果没有需要删除的节点组，直接跳过
-# if [ ${#NODEGROUPS_TO_DELETE[@]} -eq 0 ]; then
-#     echo "No existing nodegroups found, skipping deletion step"
-# else
-#     echo "Deleting ${#NODEGROUPS_TO_DELETE[@]} nodegroup(s)..."
+# 如果没有需要删除的节点组，直接跳过
+if [ ${#NODEGROUPS_TO_DELETE[@]} -eq 0 ]; then
+    echo "No existing nodegroups found, skipping deletion step"
+else
+    echo "Deleting ${#NODEGROUPS_TO_DELETE[@]} nodegroup(s)..."
 
-#     # 删除找到的节点组
-#     for NG_NAME in "${NODEGROUPS_TO_DELETE[@]}"; do
-#         echo "Deleting nodegroup ${NG_NAME}..."
-#         eksctl delete nodegroup \
-#             --cluster="${CLUSTER_NAME}" \
-#             --region="${AWS_REGION}" \
-#             --name="${NG_NAME}" \
-#             --drain=false \
-#             --wait
+    # 删除找到的节点组
+    for NG_NAME in "${NODEGROUPS_TO_DELETE[@]}"; do
+        echo "Deleting nodegroup ${NG_NAME}..."
+        eksctl delete nodegroup \
+            --cluster="${CLUSTER_NAME}" \
+            --region="${AWS_REGION}" \
+            --name="${NG_NAME}" \
+            --drain=false \
+            --wait
 
-#         echo "✓ Nodegroup ${NG_NAME} deleted successfully"
-#     done
+        echo "✓ Nodegroup ${NG_NAME} deleted successfully"
+    done
 
-#     echo "✓ All nodegroups deleted"
-# fi
+    echo "✓ All nodegroups deleted"
+fi
 
 # 8. 创建引用 Launch Template 的节点组配置
 echo ""
@@ -542,35 +542,6 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     sleep 10
 done
 
-# 10. 验证 LVM
-echo ""
-echo "Step 9: Verifying LVM configuration..."
-
-NODES=$(kubectl get nodes -l app=eks-utils -o jsonpath='{.items[*].metadata.name}')
-
-for NODE in $NODES; do
-    echo ""
-    echo "Checking node: $NODE"
-
-    kubectl debug node/$NODE -it --image=busybox:1.36 -- chroot /host bash -c '
-        echo "=== Block Devices ==="
-        lsblk
-        echo ""
-        echo "=== LVM Status ==="
-        vgs 2>/dev/null || echo "No VGs"
-        lvs 2>/dev/null || echo "No LVs"
-        echo ""
-        echo "=== Containerd Mount ==="
-        df -h /var/lib/containerd
-        echo ""
-        echo "=== fstab Entry ==="
-        grep containerd /etc/fstab 2>/dev/null || echo "No fstab entry"
-        echo ""
-        echo "=== LVM Setup Log ==="
-        tail -20 /var/log/lvm-setup.log 2>/dev/null || echo "No LVM setup log"
-    ' 2>/dev/null || echo "Warning: Failed to debug node"
-done
-
 # 10. 显示结果
 echo ""
 echo "=== Deployment Complete ==="
@@ -582,8 +553,4 @@ echo "Launch Template Information:"
 echo "  Name: ${LT_NAME}"
 echo "  ID: ${LT_ID}"
 echo "  Version: ${LT_VERSION}"
-echo ""
-echo "If LVM is configured correctly, you should see:"
-echo "  - /dev/mapper/vg_data-lv_containerd mounted on /var/lib/containerd"
-echo "  - Size: 100GB"
 echo ""

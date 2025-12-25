@@ -41,10 +41,11 @@ spec:
     cpu: "1000"
     memory: 1000Gi
 
+  # 中断处理 - 禁用自动缩容（只扩容不缩容）
   disruption:
-    consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 1m
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 24h
     budgets:
-      - nodes: "10%"
+      - nodes: "0%"
 
   weight: 20
