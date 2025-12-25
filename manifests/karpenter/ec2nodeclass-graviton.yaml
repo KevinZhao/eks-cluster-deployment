@@ -57,15 +57,14 @@ spec:
     systemctl stop containerd || true
 
     # Auto-detect EBS data disk (exclude root disk nvme0n1)
-    DATA_DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-
-    if [ -z "$$DATA_DISK" ]; then
+    # Use inline command substitution to avoid variable expansion issues
+    if [ -z "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)" ]; then
       echo "No data disk found, skip LVM setup"
       systemctl start containerd
       exit 0
     fi
 
-    echo "Found data disk: $$DATA_DISK"
+    echo "Found data disk: $$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
 
     # Check if LVM already configured
     if vgs vg_data &>/dev/null; then
@@ -74,9 +73,9 @@ spec:
       # Install lvm2 (not installed by default on AL2023)
       dnf install -y lvm2
 
-      # Create LVM
-      pvcreate "$$DATA_DISK"
-      vgcreate vg_data "$$DATA_DISK"
+      # Create LVM using inline command substitution
+      pvcreate "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
+      vgcreate vg_data "$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)"
       lvcreate -l 100%VG -n lv_containerd vg_data
       mkfs.xfs /dev/vg_data/lv_containerd
     fi
