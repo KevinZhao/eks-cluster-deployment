@@ -1,25 +1,25 @@
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
-  name: graviton
+  name: x86
 spec:
   template:
     metadata:
       labels:
         karpenter.sh/capacity-type: on-demand
-        node-type: graviton
-        arch: arm64
+        node-type: x86
+        arch: amd64
     spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: graviton
+        name: x86
 
       requirements:
-        # 固定实例类型 r8g.8xlarge
+        # 固定实例类型 r7i.8xlarge
         - key: node.kubernetes.io/instance-type
           operator: In
-          values: ["r8g.8xlarge"]
+          values: ["r7i.8xlarge"]
 
         # On-demand 实例
         - key: karpenter.sh/capacity-type
@@ -31,10 +31,10 @@ spec:
           operator: In
           values: ["${AWS_REGION}a", "${AWS_REGION}b", "${AWS_REGION}c"]
 
-      # Taints - 确保只有指定的工作负载运行在 Graviton 节点上
+      # Taints - 确保只有指定的工作负载运行在 x86 节点上
       taints:
         - key: arch
-          value: arm64
+          value: amd64
           effect: NoSchedule
 
   limits:

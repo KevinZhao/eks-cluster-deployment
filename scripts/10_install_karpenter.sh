@@ -396,11 +396,28 @@ sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/no
 
 echo "  ✓ Default EC2NodeClass and NodePool deployed"
 
-# 可选：部署 Graviton 专用配置
+# 可选：部署 Graviton 专用配置 (r8g.8xlarge)
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
-    sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
-    sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
-    echo "  ✓ Graviton EC2NodeClass and NodePool deployed"
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        -e "s/\${ENVIRONMENT}/${ENVIRONMENT:-prod}/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/nodeclass-graviton.yaml" | kubectl apply -f -
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
+    echo "  ✓ Graviton EC2NodeClass and NodePool deployed (r8g.8xlarge)"
+fi
+
+# 可选：部署 x86 专用配置 (r7i.8xlarge)
+if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        -e "s/\${ENVIRONMENT}/${ENVIRONMENT:-prod}/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/nodeclass-x86.yaml" | kubectl apply -f -
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/nodepool-x86.yaml" | kubectl apply -f -
+    echo "  ✓ x86 EC2NodeClass and NodePool deployed (r7i.8xlarge)"
 fi
 
 # 13. 验证安装
@@ -433,7 +450,10 @@ echo ""
 echo "Installed NodePools:"
 echo "  - default: Mixed architecture (amd64/arm64)"
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
-    echo "  - graviton: ARM64 only (Graviton instances)"
+    echo "  - graviton: ARM64 only (r8g.8xlarge)"
+fi
+if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
+    echo "  - x86: x86-64 only (r7i.8xlarge)"
 fi
 echo ""
 echo "Features:"
