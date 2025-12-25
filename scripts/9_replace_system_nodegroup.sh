@@ -293,6 +293,16 @@ echo "All existing nodegroups checked and deleted if found"
 echo ""
 echo "Step 6: Creating nodegroup with Launch Template..."
 
+# 检查节点组是否已存在
+if aws eks describe-nodegroup \
+    --cluster-name "${CLUSTER_NAME}" \
+    --nodegroup-name eks-utils-x86 \
+    --region "${AWS_REGION}" &>/dev/null; then
+    echo "Nodegroup eks-utils-x86 already exists, skipping creation"
+    echo "If you want to recreate it, delete it first and run this script again"
+    exit 0
+fi
+
 TEMP_CONFIG="/tmp/eksctl_ng_with_lt_$$.yaml"
 cat > "${TEMP_CONFIG}" <<EOF
 apiVersion: eksctl.io/v1alpha5
@@ -354,7 +364,12 @@ sleep 15
 RETRY_COUNT=0
 MAX_RETRIES=60
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    READY_NODES=$(kubectl get nodes -l app=eks-utils --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+    # 使用更可靠的方式计数节点
+    READY_NODES=$(kubectl get nodes -l app=eks-utils --no-headers 2>/dev/null | grep -c "Ready" || echo "0")
+    # 确保是数字
+    READY_NODES=${READY_NODES//[^0-9]/}
+    READY_NODES=${READY_NODES:-0}
+
     echo "Ready nodes: ${READY_NODES}/3"
 
     if [ "$READY_NODES" -ge 3 ]; then
@@ -365,6 +380,8 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     RETRY_COUNT=$((RETRY_COUNT + 1))
     if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
         echo "ERROR: Timeout waiting for nodes"
+        echo "Current node status:"
+        kubectl get nodes -l app=eks-utils
         exit 1
     fi
 
