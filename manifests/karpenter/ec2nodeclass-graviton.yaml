@@ -82,14 +82,30 @@ spec:
       mkfs.xfs /dev/vg_data/lv_containerd
     fi
 
-    # Mount containerd
+    # Mount containerd data disk
     mkdir -p /var/lib/containerd
     rm -rf /var/lib/containerd/*
     mount /dev/vg_data/lv_containerd /var/lib/containerd
     grep -q "lv_containerd" /etc/fstab || \
       echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
 
+    # Start containerd
     systemctl start containerd
+
+    # Wait for containerd to be ready
+    sleep 3
+
+    # Pull and configure pause image to avoid "localhost/kubernetes/pause" error
+    PAUSE_IMAGE="public.ecr.aws/eks-distro/kubernetes/pause:3.9"
+
+    echo "Pulling pause image: $PAUSE_IMAGE"
+    ctr -n k8s.io images pull $PAUSE_IMAGE
+
+    # Tag it as localhost/kubernetes/pause for kubelet compatibility
+    ctr -n k8s.io images tag $PAUSE_IMAGE localhost/kubernetes/pause:latest
+
+    echo "Pause image configured successfully"
+    ctr -n k8s.io images ls | grep pause
 
     --==BOUNDARY==--
 
