@@ -76,76 +76,52 @@ managedNodeGroups:
     # Pre-bootstrap user data - 在 EKS bootstrap 之前执行
     preBootstrapCommands:
       - |
-        #!/bin/bash
         set -ex
-
-        # Log to file for debugging
         exec > >(tee /var/log/lvm-setup.log)
         exec 2>&1
-
-        echo "=== Starting LVM Setup at $$(date) ==="
-
-        # Stop containerd
+        echo "=== Starting LVM Setup ==="
         systemctl stop containerd || true
-
-        # Wait for data disk to be available (max 60 seconds)
         echo "Waiting for data disk..."
         for i in {1..60}; do
-          DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-          if [ -n "$$DISK" ]; then
-            echo "Found data disk: $$DISK"
+          DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+          if [ -n "$DISK" ]; then
+            echo "Found data disk: $DISK"
             break
           fi
-          echo "Attempt $$i/60: Data disk not found yet, waiting..."
+          echo "Attempt $i/60: Data disk not found yet, waiting..."
           sleep 1
         done
-
-        if [ -z "$$DISK" ]; then
+        if [ -z "$DISK" ]; then
           echo "ERROR: No data disk found after 60 seconds"
           systemctl start containerd
           exit 0
         fi
-
-        # Check if LVM already configured
         if vgs vg_data &>/dev/null; then
           echo "LVM already configured, mounting..."
           mount /dev/vg_data/lv_containerd /var/lib/containerd || true
           systemctl start containerd
           exit 0
         fi
-
-        # Install lvm2
         echo "Installing lvm2..."
         dnf install -y lvm2
-
-        # Create LVM
-        echo "Creating LVM on $$DISK..."
-        pvcreate "$$DISK"
-        vgcreate vg_data "$$DISK"
+        echo "Creating LVM on $DISK..."
+        pvcreate "$DISK"
+        vgcreate vg_data "$DISK"
         lvcreate -l 100%VG -n lv_containerd vg_data
         mkfs.xfs /dev/vg_data/lv_containerd
-
-        # Mount and migrate data
         echo "Mounting and migrating containerd data..."
         mkdir -p /mnt/runtime/containerd
         mount /dev/vg_data/lv_containerd /mnt/runtime/containerd
         rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true
         umount /mnt/runtime/containerd
         mount /dev/vg_data/lv_containerd /var/lib/containerd
-
-        # Add to fstab
-        grep -q "lv_containerd" /etc/fstab || \
-          echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
-
+        grep -q "lv_containerd" /etc/fstab || echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
         echo "LVM setup completed successfully"
         df -h /var/lib/containerd
         vgs
         lvs
-
-        # Start containerd
         systemctl start containerd
-
-        echo "=== LVM Setup Complete at $$(date) ==="
+        echo "=== LVM Setup Complete ==="
 
 addons:
   - name: vpc-cni
