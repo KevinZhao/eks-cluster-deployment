@@ -32,9 +32,11 @@ echo "Step 1: Gathering EKS cluster information..."
 CLUSTER_ENDPOINT=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query 'cluster.endpoint' --output text)
 CLUSTER_CA=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query 'cluster.certificateAuthority.data' --output text)
 CLUSTER_SG=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text)
+SERVICE_IPV4_CIDR=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text)
 
 echo "Cluster Endpoint: ${CLUSTER_ENDPOINT}"
 echo "Cluster Security Group: ${CLUSTER_SG}"
+echo "Service CIDR: ${SERVICE_IPV4_CIDR}"
 
 # 3. 创建 EKS 节点 IAM Role 和 Instance Profile
 echo ""
@@ -144,8 +146,8 @@ echo "AMI ID: ${AMI_ID}"
 echo ""
 echo "Step 4: Creating user-data script..."
 
-USERDATA_FILE="/tmp/eks-utils-userdata-$$.sh"
-cat > "${USERDATA_FILE}" <<'EOF_USERDATA'
+USERDATA_FILE="/tmp/eks-utils-userdata-$$.txt"
+cat > "${USERDATA_FILE}" <<EOF_USERDATA
 MIME-Version: 1.0
 Content-Type: multipart/mixed; boundary="==BOUNDARY=="
 
@@ -168,16 +170,16 @@ systemctl stop containerd || true
 # Wait for data disk to be available (max 60 seconds)
 echo "Waiting for data disk..."
 for i in {1..60}; do
-  DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-  if [ -n "$DISK" ]; then
-    echo "Found data disk: $DISK"
+  DISK=\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+  if [ -n "\$DISK" ]; then
+    echo "Found data disk: \$DISK"
     break
   fi
-  echo "Attempt $i/60: Data disk not found yet, waiting..."
+  echo "Attempt \$i/60: Data disk not found yet, waiting..."
   sleep 1
 done
 
-if [ -z "$DISK" ]; then
+if [ -z "\$DISK" ]; then
   echo "ERROR: No data disk found after 60 seconds"
   systemctl start containerd
   exit 0
@@ -196,9 +198,9 @@ echo "Installing lvm2..."
 dnf install -y lvm2
 
 # Create LVM
-echo "Creating LVM on $DISK..."
-pvcreate "$DISK"
-vgcreate vg_data "$DISK"
+echo "Creating LVM on \$DISK..."
+pvcreate "\$DISK"
+vgcreate vg_data "\$DISK"
 lvcreate -l 100%VG -n lv_containerd vg_data
 mkfs.xfs /dev/vg_data/lv_containerd
 
@@ -223,6 +225,19 @@ lvs
 systemctl start containerd
 
 echo "=== LVM Setup Complete ==="
+
+--==BOUNDARY==
+Content-Type: application/node.eks.aws
+
+---
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: ${CLUSTER_NAME}
+    apiServerEndpoint: ${CLUSTER_ENDPOINT}
+    certificateAuthority: ${CLUSTER_CA}
+    cidr: ${SERVICE_IPV4_CIDR}
 
 --==BOUNDARY==--
 EOF_USERDATA
@@ -459,7 +474,7 @@ managedNodeGroups:
     # 引用外部创建的 Launch Template
     launchTemplate:
       id: ${LT_ID}
-      version: ${LT_VERSION}
+      version: "${LT_VERSION}"
     # 使用已存在的 IAM Role（eksctl 会创建 Instance Profile）
     iam:
       instanceRoleARN: arn:aws:iam::${ACCOUNT_ID}:role/${NODE_ROLE_NAME}
@@ -485,7 +500,7 @@ cat "${TEMP_CONFIG}"
 
 echo ""
 echo "Creating nodegroup with verbose logging..."
-eksctl create nodegroup -f "${TEMP_CONFIG}" --verbose=4 2>&1 | tee /tmp/eksctl_create_nodegroup.log
+eksctl create nodegroup -f "${TEMP_CONFIG}" -v 4 2>&1 | tee /tmp/eksctl_create_nodegroup.log
 
 rm -f "${TEMP_CONFIG}"
 
