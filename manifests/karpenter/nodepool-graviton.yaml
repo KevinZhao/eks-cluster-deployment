@@ -16,13 +16,13 @@ spec:
         name: graviton
 
       requirements:
-        # 仅 Graviton 实例 (c6g, c7g, m6g, m7g, r6g, r7g等)
+        # 仅 Graviton 实例 (c7g, c8g, m7g, m8g, r7g, r8g等) - 排除6代
         - key: karpenter.k8s.aws/instance-category
           operator: In
           values: ["c", "m", "r"]
         - key: karpenter.k8s.aws/instance-generation
           operator: Gt
-          values: ["5"]
+          values: ["6"]
 
         # 仅 ARM64 架构
         - key: kubernetes.io/arch
