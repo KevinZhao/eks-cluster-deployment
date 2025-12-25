@@ -6,12 +6,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-echo "=== Replace System Nodegroup with Graviton + LVM ==="
+echo "=== Replace System Nodegroup with x86 + LVM ==="
 echo ""
 echo "This script will:"
 echo "  1. Create Launch Template with LVM user-data using AWS CLI"
 echo "  2. Delete existing system nodegroup (eks-utils or eks-utils-arm64)"
-echo "  3. Create new Graviton nodegroup (m8g.large) with LVM"
+echo "  3. Create new x86 nodegroup (m7i.large) with LVM"
 echo "  4. Verify LVM configuration"
 echo ""
 echo "WARNING: This will cause a brief service interruption (5-8 minutes)"
@@ -36,12 +36,12 @@ CLUSTER_SG=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_R
 echo "Cluster Endpoint: ${CLUSTER_ENDPOINT}"
 echo "Cluster Security Group: ${CLUSTER_SG}"
 
-# 3. 获取最新的 EKS optimized AMI for ARM64
+# 3. 获取最新的 EKS optimized AMI for x86_64
 echo ""
 echo "Step 2: Getting latest EKS optimized AMI..."
 
 AMI_ID=$(aws ssm get-parameter \
-    --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/arm64/standard/recommended/image_id" \
+    --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id" \
     --region "${AWS_REGION}" \
     --query 'Parameter.Value' \
     --output text)
@@ -141,7 +141,7 @@ echo "User-data created at: ${USERDATA_FILE}"
 echo ""
 echo "Step 4: Creating Launch Template..."
 
-LT_NAME="${CLUSTER_NAME}-eks-utils-arm64-lt"
+LT_NAME="${CLUSTER_NAME}-eks-utils-x86-lt"
 
 # 检查 Launch Template 是否已存在
 if aws ec2 describe-launch-templates \
@@ -161,7 +161,7 @@ if aws ec2 describe-launch-templates \
         --launch-template-id "${LT_ID}" \
         --launch-template-data "{
           \"ImageId\": \"${AMI_ID}\",
-          \"InstanceType\": \"m8g.large\",
+          \"InstanceType\": \"m7i.large\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
           \"BlockDeviceMappings\": [
             {
@@ -213,7 +213,7 @@ else
         --launch-template-name "${LT_NAME}" \
         --launch-template-data "{
           \"ImageId\": \"${AMI_ID}\",
-          \"InstanceType\": \"m8g.large\",
+          \"InstanceType\": \"m7i.large\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
           \"BlockDeviceMappings\": [
             {
@@ -268,22 +268,26 @@ rm -f "${USERDATA_FILE}"
 echo ""
 echo "Step 5: Deleting existing eks-utils nodegroup..."
 
-if aws eks describe-nodegroup \
-    --cluster-name "${CLUSTER_NAME}" \
-    --nodegroup-name eks-utils \
-    --region "${AWS_REGION}" &>/dev/null; then
+# 尝试删除可能存在的所有旧节点组
+for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
+    if aws eks describe-nodegroup \
+        --cluster-name "${CLUSTER_NAME}" \
+        --nodegroup-name "${NG_NAME}" \
+        --region "${AWS_REGION}" &>/dev/null; then
 
-    eksctl delete nodegroup \
-        --cluster="${CLUSTER_NAME}" \
-        --region="${AWS_REGION}" \
-        --name=eks-utils \
-        --drain=false \
-        --wait
+        echo "Found nodegroup ${NG_NAME}, deleting..."
+        eksctl delete nodegroup \
+            --cluster="${CLUSTER_NAME}" \
+            --region="${AWS_REGION}" \
+            --name="${NG_NAME}" \
+            --drain=false \
+            --wait
 
-    echo "Nodegroup deleted successfully"
-else
-    echo "Nodegroup eks-utils not found, skipping deletion"
-fi
+        echo "Nodegroup ${NG_NAME} deleted successfully"
+    fi
+done
+
+echo "All existing nodegroups checked and deleted if found"
 
 # 7. 创建引用 Launch Template 的节点组配置
 echo ""
@@ -311,7 +315,7 @@ vpc:
         id: "${PRIVATE_SUBNET_C}"
 
 managedNodeGroups:
-  - name: eks-utils-arm64
+  - name: eks-utils-x86
     # 引用外部创建的 Launch Template
     launchTemplate:
       id: ${LT_ID}
@@ -326,7 +330,7 @@ managedNodeGroups:
       - ${PRIVATE_SUBNET_C}
     labels:
       app: "eks-utils"
-      arch: "arm64"
+      arch: "x86_64"
       node-group-type: "system"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
