@@ -352,7 +352,7 @@ echo ""
 echo "Step 9: Installing Karpenter Helm Chart..."
 
 # 注意: Karpenter v1.x 使用 OCI registry，不需要添加 helm repo
-# 安装 Karpenter
+# 安装 Karpenter - 确保只运行在系统节点组
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
     --namespace "${KARPENTER_NAMESPACE}" \
     --version "${KARPENTER_VERSION}" \
@@ -361,10 +361,14 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
     --set "serviceAccount.create=false" \
     --set "serviceAccount.name=${KARPENTER_SA}" \
     --set "replicas=2" \
-    --set "nodeSelector.app=eks-utils" \
-    --set "tolerations[0].key=node.kubernetes.io/not-ready" \
+    --set "nodeSelector.node-group-type=system" \
+    --set "tolerations[0].key=CriticalAddonsOnly" \
     --set "tolerations[0].operator=Exists" \
-    --set "tolerations[0].effect=NoExecute" \
+    --set "tolerations[1].key=node.kubernetes.io/not-ready" \
+    --set "tolerations[1].operator=Exists" \
+    --set "tolerations[1].effect=NoExecute" \
+    --set "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=karpenter.sh/nodepool" \
+    --set "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=DoesNotExist" \
     --timeout 10m \
     --wait
 

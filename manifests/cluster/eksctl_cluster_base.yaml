@@ -57,19 +57,21 @@ managedNodeGroups:
       - volumeName: "/dev/sdz"
         volumeSize: 100
         volumeType: gp3
-    # Mount data disk to /var/lib/containerd using LVM
+    # Mount data disk to /var/lib/containerd using LVM with rsync migration
     preBootstrapCommands:
       - |
         set -euxo pipefail
         systemctl stop containerd || true
 
         # Auto-detect EBS data disk (exclude root disk nvme0n1)
-        DATA_DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-        if [ -z "$$DATA_DISK" ]; then
+        DISK=$$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+        if [ -z "$$DISK" ]; then
           echo "No data disk found, skip LVM setup"
           systemctl start containerd
           exit 0
         fi
+
+        echo "Found data disk: $$DISK"
 
         # Check if LVM already configured
         if vgs vg_data &>/dev/null; then
@@ -79,19 +81,36 @@ managedNodeGroups:
           dnf install -y lvm2
 
           # Create LVM
-          pvcreate "$$DATA_DISK"
-          vgcreate vg_data "$$DATA_DISK"
+          pvcreate "$$DISK"
+          vgcreate vg_data "$$DISK"
           lvcreate -l 100%VG -n lv_containerd vg_data
           mkfs.xfs /dev/vg_data/lv_containerd
         fi
 
-        # Mount containerd
-        mkdir -p /var/lib/containerd
-        rm -rf /var/lib/containerd/*
+        # Mount LV to temporary directory and migrate data
+        TEMP_MOUNT="/mnt/runtime/containerd"
+        mkdir -p "$$TEMP_MOUNT"
+
+        echo "Mounting LV to temporary directory: $$TEMP_MOUNT"
+        mount /dev/vg_data/lv_containerd "$$TEMP_MOUNT"
+
+        echo "Copying containerd data (including cached images) from AMI..."
+        rsync -aHAX /var/lib/containerd/ "$$TEMP_MOUNT/"
+
+        echo "Unmounting temporary directory"
+        umount "$$TEMP_MOUNT"
+
+        echo "Mounting LV to final destination: /var/lib/containerd"
         mount /dev/vg_data/lv_containerd /var/lib/containerd
+
+        # Add to fstab for persistence
         grep -q "lv_containerd" /etc/fstab || \
           echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
 
+        echo "Containerd data migration completed"
+        df -h /var/lib/containerd
+
+        # Start containerd with migrated data
         systemctl start containerd
     privateNetworking: true
     subnets:
@@ -101,6 +120,7 @@ managedNodeGroups:
     labels:
       app: "eks-utils"
       arch: "amd64"
+      node-group-type: "system"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
       k8s.io/cluster-autoscaler/${CLUSTER_NAME}: "owned"
