@@ -357,16 +357,29 @@ rm -f "${USERDATA_FILE}"
 
 # 7. 删除现有节点组
 echo ""
-echo "Step 6: Deleting existing eks-utils nodegroup..."
+echo "Step 6: Checking and deleting existing eks-utils nodegroups..."
 
-# 尝试删除可能存在的所有旧节点组
+# 检查是否有需要删除的节点组
+NODEGROUPS_TO_DELETE=()
 for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
     if aws eks describe-nodegroup \
         --cluster-name "${CLUSTER_NAME}" \
         --nodegroup-name "${NG_NAME}" \
         --region "${AWS_REGION}" &>/dev/null; then
+        NODEGROUPS_TO_DELETE+=("${NG_NAME}")
+        echo "Found nodegroup to delete: ${NG_NAME}"
+    fi
+done
 
-        echo "Found nodegroup ${NG_NAME}, deleting..."
+# 如果没有需要删除的节点组，直接跳过
+if [ ${#NODEGROUPS_TO_DELETE[@]} -eq 0 ]; then
+    echo "No existing nodegroups found, skipping deletion step"
+else
+    echo "Deleting ${#NODEGROUPS_TO_DELETE[@]} nodegroup(s)..."
+
+    # 删除找到的节点组
+    for NG_NAME in "${NODEGROUPS_TO_DELETE[@]}"; do
+        echo "Deleting nodegroup ${NG_NAME}..."
         eksctl delete nodegroup \
             --cluster="${CLUSTER_NAME}" \
             --region="${AWS_REGION}" \
@@ -374,11 +387,11 @@ for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
             --drain=false \
             --wait
 
-        echo "Nodegroup ${NG_NAME} deleted successfully"
-    fi
-done
+        echo "✓ Nodegroup ${NG_NAME} deleted successfully"
+    done
 
-echo "All existing nodegroups checked and deleted if found"
+    echo "✓ All nodegroups deleted"
+fi
 
 # 8. 创建引用 Launch Template 的节点组配置
 echo ""
