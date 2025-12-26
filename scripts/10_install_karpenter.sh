@@ -398,14 +398,7 @@ echo "Step 11: Deploying EC2NodeClass and NodePool..."
 export CLUSTER_NAME
 export AWS_REGION
 
-# 跳过 default (mixed) NodePool 部署
-# sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-default.yaml" | kubectl apply -f -
-# sed "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" "${PROJECT_ROOT}/manifests/karpenter/nodepool-default.yaml" | kubectl apply -f -
-# echo "  ✓ Default EC2NodeClass and NodePool deployed"
-
-echo "  ⊘ Skipped default (mixed architecture) NodePool deployment"
-
-# 可选：部署 Graviton 专用配置 (r8g.8xlarge)
+# 部署 Graviton 专用配置 (r8g.8xlarge)
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
@@ -457,7 +450,6 @@ echo "  Controller IAM Role: ${KARPENTER_CONTROLLER_ROLE}"
 echo "  Node IAM Role: ${KARPENTER_NODE_ROLE}"
 echo ""
 echo "Installed NodePools:"
-# echo "  - default: Mixed architecture (amd64/arm64) [DISABLED]"
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     echo "  - graviton: ARM64 only (r8g.8xlarge)"
 fi
@@ -466,10 +458,10 @@ if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
 fi
 echo ""
 echo "Features:"
-echo "  - Automatic data disk mounting to /var/lib/containerd (100GB)"
+echo "  - Additional 100GB data disk attached (manual LVM setup required)"
 echo "  - EBS volume encryption enabled"
 echo "  - Pod Identity authentication"
-echo "  - Instance store detection (avoids mounting local disks)"
+echo "  - Architecture-specific node pools (ARM64 & x86_64)"
 echo ""
 echo "Next steps:"
 echo "  1. Check Karpenter logs: kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter"
