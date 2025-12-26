@@ -147,13 +147,8 @@ echo "Step 5: Creating Karpenter Controller IAM Policy..."
 
 KARPENTER_CONTROLLER_POLICY="KarpenterControllerPolicy-${CLUSTER_NAME}"
 
-# 检查策略是否已存在
-if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" &>/dev/null; then
-    echo "  Policy ${KARPENTER_CONTROLLER_POLICY} already exists, skipping creation"
-else
-    echo "  Creating IAM policy ${KARPENTER_CONTROLLER_POLICY}..."
-
-    cat > /tmp/karpenter-controller-policy.json <<EOF
+# 生成策略文档
+cat > /tmp/karpenter-controller-policy.json <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -241,6 +236,20 @@ else
   ]
 }
 EOF
+
+# 检查策略是否已存在
+if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" &>/dev/null; then
+    echo "  Policy ${KARPENTER_CONTROLLER_POLICY} already exists, updating to latest version..."
+
+    # 创建新版本并设为默认
+    aws iam create-policy-version \
+        --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" \
+        --policy-document file:///tmp/karpenter-controller-policy.json \
+        --set-as-default
+
+    echo "  ✓ IAM policy updated to new version"
+else
+    echo "  Creating IAM policy ${KARPENTER_CONTROLLER_POLICY}..."
 
     aws iam create-policy \
         --policy-name "${KARPENTER_CONTROLLER_POLICY}" \
