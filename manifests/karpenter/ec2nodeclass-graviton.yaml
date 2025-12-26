@@ -118,6 +118,7 @@ spec:
     httpTokens: required
 
   tags:
+    Name: "${CLUSTER_NAME}-karpenter-graviton"
     Environment: production
     ManagedBy: karpenter
     Architecture: arm64
