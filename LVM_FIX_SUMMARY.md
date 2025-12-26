@@ -36,7 +36,9 @@ Result:
 
 ## Solution
 
-The real issue was **envsubst destroying `$` variables**, not the escaping in YAML.
+Three critical issues were discovered and fixed:
+
+### Issue 1: envsubst destroying bash variables (RESOLVED)
 
 ### Root Cause Analysis
 
@@ -55,17 +57,49 @@ DATA_DISK=$(lsblk...)  # First occurrence preserved
 if [ -z "$" ]; then     # ❌ Subsequent $DATA_DISK became just $
 ```
 
+### Issue 2: rsync command not found (RESOLVED)
+
+**Problem**: AL2023 doesn't have `rsync` installed by default.
+- Boothook script failed with exit code 127: "rsync: command not found"
+- Script successfully created LVM but failed during data migration
+- Volume mounted at /mnt/runtime/containerd but not migrated to final location
+
+**Solution**: Replace `rsync -aHAX` with `cp -a` which is available by default.
+
+### Issue 3: Root disk misidentification (RESOLVED - CRITICAL)
+
+**Problem**: Script detected root disk (/dev/nvme0n1) as data disk, causing `pvcreate` failure (exit code 5).
+
+**Root cause**:
+```bash
+# findmnt returns: /dev/nvme0n1p1
+# After sed 's/[0-9]*$//' becomes: /dev/nvme0n1p (still has 'p')
+ROOT_DEV="$(findmnt -no SOURCE / | sed 's/[0-9]*$//' || echo nvme0n1)"
+# awk receives double /dev/ prefix: /dev//dev/nvme0n1p
+DISK="$(lsblk -dpno NAME,TYPE | awk -v r="/dev/$ROOT_DEV" '$2=="disk" && $1!=r {print $1; exit}' || true)"
+```
+
+**Solution**:
+- Use `sed 's/p\?[0-9]*$//'` to strip partition suffix with 'p' prefix
+- Remove duplicate /dev/ prefix in awk command
+- Update fallback to include /dev/ prefix
+
 ### Fixed Code
 
 **Files modified:**
-- [manifests/karpenter/ec2nodeclass-default.yaml](manifests/karpenter/ec2nodeclass-default.yaml) - LVM setup with rsync migration
-- [manifests/karpenter/ec2nodeclass-graviton.yaml](manifests/karpenter/ec2nodeclass-graviton.yaml) - LVM setup with rsync migration
-- [scripts/9_install_karpenter.sh](scripts/9_install_karpenter.sh) - Changed from envsubst to sed
+- [manifests/karpenter/ec2nodeclass-x86.yaml](manifests/karpenter/ec2nodeclass-x86.yaml) - All fixes applied
+- [manifests/karpenter/ec2nodeclass-graviton.yaml](manifests/karpenter/ec2nodeclass-graviton.yaml) - All fixes applied
+- [scripts/10_install_karpenter.sh](scripts/10_install_karpenter.sh) - Changed from envsubst to sed
 
-**LVM script in YAML (uses rsync to preserve AMI cached images):**
+**Final working LVM script (preserves AMI cached images):**
 ```bash
-# Auto-detect EBS data disk (exclude root disk nvme0n1)
-DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+# Stop containerd first
+systemctl stop containerd || true
+
+# Auto-detect EBS data disk (exclude root disk)
+# Get root device first, then find the first non-root NVMe disk
+ROOT_DEV="$(findmnt -no SOURCE / | sed 's/p\?[0-9]*$//' || echo /dev/nvme0n1)"
+DISK="$(lsblk -dpno NAME,TYPE | awk -v r="$ROOT_DEV" '$2=="disk" && $1!=r {print $1; exit}' || true)"
 
 if [ -z "$DISK" ]; then
   echo "No data disk found, skip LVM setup"
@@ -97,7 +131,7 @@ echo "Mounting LV to temporary directory: $TEMP_MOUNT"
 mount /dev/vg_data/lv_containerd "$TEMP_MOUNT"
 
 echo "Copying containerd data (including cached images) from AMI..."
-rsync -aHAX /var/lib/containerd/ "$TEMP_MOUNT/"
+cp -a /var/lib/containerd/. "$TEMP_MOUNT/"
 
 echo "Unmounting temporary directory"
 umount "$TEMP_MOUNT"
@@ -116,7 +150,11 @@ df -h /var/lib/containerd
 systemctl start containerd
 ```
 
-**Key advantage:** Using rsync preserves all AMI-cached images (pause, kube-proxy, aws-node, etc.), avoiding the need to pull images on first boot and preventing "localhost/kubernetes/pause not found" errors.
+**Key advantages:**
+- Uses `cp -a` instead of rsync (available by default on AL2023)
+- Correctly identifies data disk vs root disk
+- Preserves all AMI-cached images (pause, kube-proxy, aws-node, etc.)
+- Prevents "localhost/kubernetes/pause not found" errors
 
 **Deployment method (uses sed instead of envsubst):**
 ```bash
@@ -173,23 +211,37 @@ df -h /var/lib/containerd  # Should show /dev/mapper/vg_data-lv_containerd
 ctr -n k8s.io images ls | grep pause  # Should show cached pause images
 ```
 
-## Problems Encountered and Solutions
+##  Verification - Final Working State
 
-### Problem 1: Variable Escaping with envsubst
-**Issue:** `envsubst` destroyed `$$DATA_DISK` variables
+Successfully tested on Frankfurt cluster (eks-frankfurt-test):
+
+**x86 Node (i-0516b479359256bef / ip-10-3-12-97)**:
+```
+VG: vg_data (100GB)
+LV: lv_containerd (100GB, mounted at /var/lib/containerd)
+fstab: /dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2
+Disks: nvme0n1 (50G root) + nvme1n1 (100G data/LVM)
+Status: Node Ready, all pods Running
+```
+
+**Graviton Node (i-080ed8ab9a44bc58e / ip-10-3-12-72)**:
+```
+VG: vg_data (100GB)
+LV: lv_containerd (100GB, mounted at /var/lib/containerd)
+Cached images: pause, kube-proxy, aws-node (preserved from AMI)
+Status: Node Ready, all pods Running
+```
+
+## Problems Encountered and Solutions Summary
+
+### Problem 1: envsubst destroying bash variables (FIXED)
 **Solution:** Replace `envsubst` with `sed` that only substitutes `${CLUSTER_NAME}`
 
-### Problem 2: Node NotReady - CNI Plugin Not Initialized
-**Issue:** After clearing `/var/lib/containerd/*`, pause image was lost, causing:
-- CNI plugin initialization failure
-- All system pods stuck in Init/ContainerCreating
-- Node stuck in NotReady state
+### Problem 2: rsync command not found (FIXED)
+**Solution:** Replace `rsync -aHAX` with `cp -a` (available by default)
 
-**Solution:** Use rsync to migrate containerd data instead of `rm -rf`:
-1. Mount LV to temporary location
-2. `rsync -aHAX` to copy all AMI-cached data
-3. Remount LV to final location
-4. Start containerd with all images intact
+### Problem 3: Root disk misidentification - CRITICAL (FIXED)
+**Solution:** Fix sed pattern and awk command to correctly identify root device
 
 ## Related Issues
 
