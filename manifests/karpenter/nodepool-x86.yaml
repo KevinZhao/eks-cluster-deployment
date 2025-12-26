@@ -31,11 +31,12 @@ spec:
           operator: In
           values: ["${AWS_REGION}a", "${AWS_REGION}b", "${AWS_REGION}c"]
 
-      # Taints - 确保只有指定的工作负载运行在 x86 节点上
-      taints:
-        - key: arch
-          value: amd64
-          effect: NoSchedule
+      # Taints - 移除 taints，使用 nodeSelector 就足够了
+      # 如果需要专用节点，请给 Pod 添加对应的 tolerations
+      # taints:
+      #   - key: arch
+      #     value: amd64
+      #     effect: NoSchedule
 
   limits:
     cpu: "1000"

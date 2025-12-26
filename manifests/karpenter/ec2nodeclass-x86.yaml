@@ -22,21 +22,90 @@ spec:
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:
-        volumeSize: 100Gi
+        volumeSize: 50Gi
         volumeType: gp3
+        iops: 3000
+        throughput: 125
         encrypted: true
         deleteOnTermination: true
 
-  userData: |
-    #!/bin/bash
-    set -e
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
 
-    # 配置 kubelet
-    cat > /etc/eks/kubelet-config.json <<EOF
-    {
-      "maxPods": 110
-    }
-    EOF
+  # User Data - 使用 LVM 挂载数据盘到 /var/lib/containerd
+  userData: |
+    MIME-Version: 1.0
+    Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+
+    --==BOUNDARY==
+    Content-Type: text/cloud-boothook; charset="us-ascii"
+
+    #!/bin/bash
+    # Mount data disk to /var/lib/containerd using LVM
+    set -euxo pipefail
+
+    # Stop containerd first
+    systemctl stop containerd || true
+
+    # Auto-detect EBS data disk (exclude root disk nvme0n1)
+    # Use inline command substitution - single $ in YAML literal block
+    DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+
+    if [ -z "$DISK" ]; then
+      echo "No data disk found, skip LVM setup"
+      systemctl start containerd
+      exit 0
+    fi
+
+    echo "Found data disk: $DISK"
+
+    # Check if LVM already configured
+    if vgs vg_data &>/dev/null; then
+      echo "LVM already configured"
+    else
+      # Install lvm2 (not installed by default on AL2023)
+      dnf install -y lvm2
+
+      # Create LVM
+      pvcreate "$DISK"
+      vgcreate vg_data "$DISK"
+      lvcreate -l 100%VG -n lv_containerd vg_data
+      mkfs.xfs /dev/vg_data/lv_containerd
+    fi
+
+    # Mount LV to temporary directory and migrate data
+    TEMP_MOUNT="/mnt/runtime/containerd"
+    mkdir -p "$TEMP_MOUNT"
+
+    echo "Mounting LV to temporary directory: $TEMP_MOUNT"
+    mount /dev/vg_data/lv_containerd "$TEMP_MOUNT"
+
+    echo "Copying containerd data (including cached images) from AMI..."
+    rsync -aHAX /var/lib/containerd/ "$TEMP_MOUNT/"
+
+    echo "Unmounting temporary directory"
+    umount "$TEMP_MOUNT"
+
+    echo "Mounting LV to final destination: /var/lib/containerd"
+    mount /dev/vg_data/lv_containerd /var/lib/containerd
+
+    # Add to fstab for persistence
+    grep -q "lv_containerd" /etc/fstab || \
+      echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
+
+    echo "Containerd data migration completed"
+    df -h /var/lib/containerd
+
+    # Start containerd with migrated data
+    systemctl start containerd
+
+    --==BOUNDARY==--
 
   tags:
     Name: "${CLUSTER_NAME}-karpenter-x86"
