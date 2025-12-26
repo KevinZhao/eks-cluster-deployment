@@ -11,7 +11,7 @@ echo ""
 echo "This script will:"
 echo "  1. Create Launch Template with LVM user-data using AWS CLI"
 echo "  2. Delete existing system nodegroup (eks-utils or eks-utils-arm64)"
-echo "  3. Create new x86 nodegroup (m7i.large) with LVM"
+echo "  3. Create new x86 nodegroup (m7i.2xlarge) with LVM"
 echo "  4. Verify LVM configuration"
 echo ""
 echo "WARNING: This will cause a brief service interruption (5-8 minutes)"
@@ -275,7 +275,7 @@ if aws ec2 describe-launch-templates \
         --launch-template-id "${LT_ID}" \
         --launch-template-data "{
           \"ImageId\": \"${AMI_ID}\",
-          \"InstanceType\": \"m7i.large\",
+          \"InstanceType\": \"m7i.2xlarge\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
           \"BlockDeviceMappings\": [
             {
@@ -338,7 +338,7 @@ else
         --launch-template-name "${LT_NAME}" \
         --launch-template-data "{
           \"ImageId\": \"${AMI_ID}\",
-          \"InstanceType\": \"m7i.large\",
+          \"InstanceType\": \"m7i.2xlarge\",
           \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
           \"BlockDeviceMappings\": [
             {
