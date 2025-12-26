@@ -56,9 +56,10 @@ spec:
     # Stop containerd first
     systemctl stop containerd || true
 
-    # Auto-detect EBS data disk (exclude root disk nvme0n1)
-    # Use inline command substitution - single $ in YAML literal block
-    DISK=$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
+    # Auto-detect EBS data disk (exclude root disk)
+    # Get root device first, then find the first non-root NVMe disk
+    ROOT_DEV="$(findmnt -no SOURCE / | sed 's/[0-9]*$//' || echo nvme0n1)"
+    DISK="$(lsblk -dpno NAME,TYPE | awk -v r="/dev/$ROOT_DEV" '$2=="disk" && $1!=r {print $1; exit}' || true)"
 
     if [ -z "$DISK" ]; then
       echo "No data disk found, skip LVM setup"
@@ -123,3 +124,4 @@ spec:
     karpenter.sh/discovery: "${CLUSTER_NAME}"
     business: middleware
     resource: eks
+    bdm-rev: "2025-12-26-1"
