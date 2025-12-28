@@ -20,7 +20,7 @@
    - **现在**: 仅创建集群控制平面
    - **好处**: 控制平面创建独立，更清晰的职责分离
 
-2. **新增脚本4.5** (`4.5_create_system_nodegroup_with_lvm.sh`)
+2. **新增脚本5** (`5_create_system_nodegroup_with_lvm.sh`)
    - **功能**: 专门创建系统节点组，包含LVM配置
    - **特性**:
      - 创建IAM Role和Instance Profile
@@ -35,15 +35,15 @@
 
 3. **新部署流程**
    ```bash
-   ./scripts/4_install_eks_cluster.sh                 # 创建控制平面（8-10分钟）
-   ./scripts/4.5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组（8-12分钟）
-   ./scripts/5_install_eks_addon.sh                   # 安装addons
+   ./scripts/4_install_eks_cluster.sh                # 创建控制平面（8-10分钟）
+   ./scripts/5_create_system_nodegroup_with_lvm.sh   # 创建系统节点组（8-12分钟）
+   ./scripts/6_install_eks_addon.sh                  # 安装addons
    ```
 
 **设计理由：**
 - **灵活性**: 控制平面和节点组解耦，用户可灵活调整
 - **可维护性**: 系统节点组逻辑集中管理，便于更新
-- **可复用性**: 脚本4.5可用于替换或升级现有节点组
+- **可复用性**: 脚本5可用于替换或升级现有节点组
 - **清晰性**: 每个脚本职责单一，代码结构更清晰
 
 ---

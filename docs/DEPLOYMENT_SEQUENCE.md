@@ -55,7 +55,7 @@
 - 创建集群 + app 节点组（使用 Launch Template）
 
 #### 3.2 安装核心插件
-**脚本**：[scripts/5_install_eks_addon.sh](../scripts/5_install_eks_addon.sh)
+**脚本**：[scripts/6_install_eks_addon.sh](../scripts/6_install_eks_addon.sh)
 
 - 安装/更新 EKS 插件：
   - vpc-cni
@@ -140,7 +140,7 @@
 
 # 2. 创建集群
 ./scripts/4_install_eks_cluster.sh
-./scripts/5_install_eks_addon.sh
+./scripts/6_install_eks_addon.sh
 
 # 3. 优化系统节点组（推荐）
 ./scripts/9_replace_system_nodegroup.sh
@@ -158,7 +158,7 @@
 ./scripts/2_validate_network_environment.sh
 ./scripts/3_create_vpc_endpoints.sh
 ./scripts/4_install_eks_cluster.sh
-./scripts/5_install_eks_addon.sh
+./scripts/6_install_eks_addon.sh
 
 # 3. 优化系统节点组（推荐，Karpenter 将运行在这些节点上）
 ./scripts/9_replace_system_nodegroup.sh

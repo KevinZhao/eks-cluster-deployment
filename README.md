@@ -72,10 +72,10 @@ chmod +x scripts/*.sh
 ./scripts/4_install_eks_cluster.sh
 
 # 步骤2.2: 创建系统节点组（带LVM配置）
-./scripts/4.5_create_system_nodegroup_with_lvm.sh
+./scripts/5_create_system_nodegroup_with_lvm.sh
 
 # 步骤2.3: 安装集群addons
-./scripts/5_install_eks_addon.sh
+./scripts/6_install_eks_addon.sh
 ```
 
 **部署时间:** 约 20-25 分钟（3个步骤合计）
@@ -134,10 +134,10 @@ VPC (10.0.0.0/16)
 ./scripts/4_install_eks_cluster.sh
 
 # 步骤2: 创建系统节点组（带LVM配置）
-./scripts/4.5_create_system_nodegroup_with_lvm.sh
+./scripts/5_create_system_nodegroup_with_lvm.sh
 
 # 步骤3: 安装集群addons
-./scripts/5_install_eks_addon.sh
+./scripts/6_install_eks_addon.sh
 ```
 
 **更新说明（2025-12-28）:**
@@ -265,10 +265,10 @@ chmod +x scripts/*.sh
 ./scripts/4_install_eks_cluster.sh
 
 # 步骤2: 创建系统节点组（带LVM配置）
-./scripts/4.5_create_system_nodegroup_with_lvm.sh
+./scripts/5_create_system_nodegroup_with_lvm.sh
 
 # 步骤3: 安装集群addons
-./scripts/5_install_eks_addon.sh
+./scripts/6_install_eks_addon.sh
 ```
 
 **自动执行:**
@@ -1042,16 +1042,16 @@ chmod +x scripts/*.sh
 
 # 标准部署流程
 ./scripts/4_install_eks_cluster.sh                 # 创建集群控制平面
-./scripts/4.5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组（LVM）
-./scripts/5_install_eks_addon.sh                   # 安装addons
+./scripts/5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组（LVM）
+./scripts/6_install_eks_addon.sh                   # 安装addons
 
 # 或者包含网络配置的完整部署
 ./scripts/1_enable_vpc_dns.sh
 ./scripts/2_validate_network_environment.sh
 ./scripts/3_create_vpc_endpoints.sh
 ./scripts/4_install_eks_cluster.sh
-./scripts/4.5_create_system_nodegroup_with_lvm.sh
-./scripts/5_install_eks_addon.sh
+./scripts/5_create_system_nodegroup_with_lvm.sh
+./scripts/6_install_eks_addon.sh
 ```
 
 **部署时间**：约 20-25 分钟（3个核心步骤）
@@ -1191,8 +1191,8 @@ nano .env
 
 # 运行安装
 ./scripts/4_install_eks_cluster.sh                 # 创建集群控制平面
-./scripts/4.5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组
-./scripts/5_install_eks_addon.sh                   # 安装addons
+./scripts/5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组
+./scripts/6_install_eks_addon.sh                   # 安装addons
 ```
 
 **步骤 3：部署完成后禁用公网访问**
@@ -1434,8 +1434,8 @@ eks-cluster-deployment/
 ├── scripts/
 │   ├── 0_setup_env.sh                          # 环境变量加载
 │   ├── 4_install_eks_cluster.sh                # 创建集群控制平面
-│   ├── 4.5_create_system_nodegroup_with_lvm.sh # 创建系统节点组（LVM）
-│   ├── 5_install_eks_addon.sh                  # 安装集群addons
+│   ├── 5_create_system_nodegroup_with_lvm.sh # 创建系统节点组（LVM）
+│   ├── 6_install_eks_addon.sh                  # 安装集群addons
 │   └── 6_install_eks_with_custom_nodegroup.sh  # Launch Template部署（应用节点组）
 │
 ├── manifests/

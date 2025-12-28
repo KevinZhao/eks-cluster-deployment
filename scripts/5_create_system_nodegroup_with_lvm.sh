@@ -742,6 +742,6 @@ echo "  • Nodes: ${SYSTEM_NODE_DESIRED_CAPACITY} ready"
 echo ""
 kubectl get nodes -o wide
 echo ""
-echo "Next step: Continue with script 5 to install cluster addons"
-echo "  ./scripts/5_install_eks_addon.sh"
+echo "Next step: Continue with script 6 to install cluster addons"
+echo "  ./scripts/6_install_eks_addon.sh"
 echo ""

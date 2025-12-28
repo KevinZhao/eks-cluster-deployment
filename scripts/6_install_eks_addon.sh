@@ -49,7 +49,7 @@ aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 echo "✓ Cluster found and kubeconfig updated"
 echo ""
 echo "Note: Security group configuration for bastion access should have been"
-echo "      completed in script 4.5_create_system_nodegroup_with_lvm.sh"
+echo "      completed in script 5_create_system_nodegroup_with_lvm.sh"
 echo ""
 
 # 3. 验证集群状态
