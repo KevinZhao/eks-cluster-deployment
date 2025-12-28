@@ -67,10 +67,18 @@ nano .env  # 填写 VPC_ID、子网 ID 等
 
 # 2. 部署集群
 chmod +x scripts/*.sh
+
+# 步骤2.1: 创建集群控制平面
 ./scripts/4_install_eks_cluster.sh
+
+# 步骤2.2: 创建系统节点组（带LVM配置）
+./scripts/4.5_create_system_nodegroup_with_lvm.sh
+
+# 步骤2.3: 安装集群addons
+./scripts/5_install_eks_addon.sh
 ```
 
-**部署时间:** 约 20-25 分钟
+**部署时间:** 约 20-25 分钟（3个步骤合计）
 
 > ⚠️ **重要提示**：本项目集群配置为私有 API 访问（`publicAccess: false`），部署脚本需要从 **VPC 内部** 执行。如果您在 VPC 外部（如 CloudShell、本地机器），请参考 [如何从 VPC 外部署集群](#如何从-vpc-外部署集群) 章节。
 
@@ -109,21 +117,34 @@ VPC (10.0.0.0/16)
 
 ## 🎯 部署方式选择
 
-### 方式 1: 标准部署 ⭐ 推荐新手
+### 方式 1: 标准部署 ⭐ 推荐
 
 **特点:**
 - ✅ 配置简单，只需 .env 文件
-- ✅ 快速部署，约 20 分钟
-- ❌ 无法自定义 SSH Key
-- ❌ 无法添加数据盘
-- ❌ 无法自定义 User Data
+- ✅ 系统节点组使用LVM配置（m7i.2xlarge + 100GB数据卷）
+- ✅ 灵活部署，可独立创建控制平面和节点组
+- ✅ 自动创建Launch Template和IAM资源
+- ✅ 快速部署，约 15-20 分钟
 
-**适用:** 测试环境、学习、演示
+**适用:** 生产环境、测试环境、学习、演示
 
-**命令:**
+**部署步骤:**
 ```bash
+# 步骤1: 创建集群控制平面（无节点组）
 ./scripts/4_install_eks_cluster.sh
+
+# 步骤2: 创建系统节点组（带LVM配置）
+./scripts/4.5_create_system_nodegroup_with_lvm.sh
+
+# 步骤3: 安装集群addons
+./scripts/5_install_eks_addon.sh
 ```
+
+**更新说明（2025-12-28）:**
+- ✅ 系统节点组创建逻辑分离为独立脚本 4.5
+- ✅ 脚本4仅创建控制平面，提供更高灵活性
+- ✅ 脚本4.5专门创建带LVM配置的系统节点组
+- ✅ 支持灵活的部署流程，可按需跳过或重新运行
 
 ### 方式 2: Launch Template 部署 ⭐ 推荐生产
 
@@ -143,14 +164,17 @@ VPC (10.0.0.0/16)
 
 ### 对比表格
 
-| 特性 | 标准部署 | Launch Template |
+| 特性 | 标准部署 | Launch Template（应用节点组） |
 |------|---------|----------------|
 | 复杂度 | ⭐ 简单 | ⭐⭐⭐ 中等 |
+| 系统节点LVM | ✅ 自动配置 | ✅ 自动配置 |
+| 应用节点LVM | ❌ | ✅ 自动配置 |
 | SSH Key | ❌ | ✅ |
-| 数据盘 | ❌ | ✅ |
-| 预装软件 | ❌ | ✅ |
-| 系统优化 | ❌ | ✅ |
-| 部署时间 | 20分钟 | 25-30分钟 |
+| 自定义User Data | ❌ | ✅ |
+| 系统优化 | ✅ 基础配置 | ✅ 完全自定义 |
+| 部署时间 | 15-20分钟 | 20-25分钟 |
+
+**说明:** 标准部署（脚本4）现在会自动为系统节点组配置LVM（m7i.2xlarge + 100GB数据卷），无需额外操作。
 
 ---
 
@@ -236,12 +260,21 @@ AWS_DEFAULT_REGION=ap-southeast-1
 
 ```bash
 chmod +x scripts/*.sh
+
+# 步骤1: 创建集群控制平面
 ./scripts/4_install_eks_cluster.sh
+
+# 步骤2: 创建系统节点组（带LVM配置）
+./scripts/4.5_create_system_nodegroup_with_lvm.sh
+
+# 步骤3: 安装集群addons
+./scripts/5_install_eks_addon.sh
 ```
 
 **自动执行:**
-1. 创建 EKS 集群（15-20分钟）
-2. 部署 Cluster Autoscaler
+1. 脚本4: 创建 EKS 集群控制平面（8-10分钟）
+2. 脚本4.5: 创建系统节点组，配置LVM（8-12分钟）
+3. 脚本5: 部署 Cluster Autoscaler 和其他addons
 3. 安装 AWS Load Balancer Controller
 4. 迁移到 Pod Identity
 
@@ -1007,17 +1040,21 @@ nano .env  # 或使用 vi
 # 给脚本执行权限
 chmod +x scripts/*.sh
 
-# 运行完整安装
-./scripts/4_install_eks_cluster.sh
+# 标准部署流程
+./scripts/4_install_eks_cluster.sh                 # 创建集群控制平面
+./scripts/4.5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组（LVM）
+./scripts/5_install_eks_addon.sh                   # 安装addons
 
-# 或者分步执行
+# 或者包含网络配置的完整部署
 ./scripts/1_enable_vpc_dns.sh
 ./scripts/2_validate_network_environment.sh
 ./scripts/3_create_vpc_endpoints.sh
 ./scripts/4_install_eks_cluster.sh
+./scripts/4.5_create_system_nodegroup_with_lvm.sh
+./scripts/5_install_eks_addon.sh
 ```
 
-**部署时间**：约 20-25 分钟
+**部署时间**：约 20-25 分钟（3个核心步骤）
 
 **监控部署进度**：
 
@@ -1153,7 +1190,9 @@ cp .env.example .env
 nano .env
 
 # 运行安装
-./scripts/4_install_eks_cluster.sh
+./scripts/4_install_eks_cluster.sh                 # 创建集群控制平面
+./scripts/4.5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组
+./scripts/5_install_eks_addon.sh                   # 安装addons
 ```
 
 **步骤 3：部署完成后禁用公网访问**
@@ -1393,9 +1432,11 @@ eks-cluster-deployment/
 ├── .env.example                 # 环境变量模板
 │
 ├── scripts/
-│   ├── 0_setup_env.sh          # 环境变量加载
-│   ├── 4_install_eks_cluster.sh            # 标准部署
-│   └── 6_install_eks_with_custom_nodegroup.sh  # Launch Template 部署
+│   ├── 0_setup_env.sh                          # 环境变量加载
+│   ├── 4_install_eks_cluster.sh                # 创建集群控制平面
+│   ├── 4.5_create_system_nodegroup_with_lvm.sh # 创建系统节点组（LVM）
+│   ├── 5_install_eks_addon.sh                  # 安装集群addons
+│   └── 6_install_eks_with_custom_nodegroup.sh  # Launch Template部署（应用节点组）
 │
 ├── manifests/
 │   ├── cluster/

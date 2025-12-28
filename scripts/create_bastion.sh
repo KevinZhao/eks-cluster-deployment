@@ -346,6 +346,68 @@ else
     echo "  Subnet:        ${SUBNET_ID}"
     echo ""
 
+    # Install deployment tools on bastion
+    echo -e "${YELLOW}Installing deployment tools on bastion...${NC}"
+    echo "  This may take 1-2 minutes..."
+
+    INSTALL_COMMAND_ID=$(aws ssm send-command \
+        --instance-ids ${INSTANCE_ID} \
+        --region ${AWS_REGION} \
+        --document-name "AWS-RunShellScript" \
+        --timeout-seconds 600 \
+        --parameters 'commands=[
+            "echo Installing kubectl...",
+            "curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl",
+            "sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl",
+            "rm kubectl",
+            "echo Installing eksctl...",
+            "curl -sLO https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz",
+            "tar -xzf eksctl_Linux_amd64.tar.gz",
+            "sudo mv eksctl /usr/local/bin/",
+            "rm eksctl_Linux_amd64.tar.gz",
+            "echo Installing helm...",
+            "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
+            "echo Installing additional tools...",
+            "sudo yum install -y git jq gettext",
+            "echo --- Tool Versions ---",
+            "kubectl version --client --short 2>/dev/null || kubectl version --client",
+            "eksctl version",
+            "helm version --short",
+            "jq --version",
+            "echo --- Tools installed successfully ---"
+        ]' \
+        --query 'Command.CommandId' \
+        --output text)
+
+    if [ -n "${INSTALL_COMMAND_ID}" ]; then
+        echo "  Waiting for tools installation to complete..."
+        sleep 5
+
+        for i in {1..24}; do
+            INSTALL_STATUS=$(aws ssm get-command-invocation \
+                --command-id ${INSTALL_COMMAND_ID} \
+                --instance-id ${INSTANCE_ID} \
+                --region ${AWS_REGION} \
+                --query 'Status' \
+                --output text 2>/dev/null)
+
+            if [ "${INSTALL_STATUS}" = "Success" ]; then
+                echo -e "${GREEN}  ✓ Tools installed successfully${NC}"
+                break
+            elif [ "${INSTALL_STATUS}" = "Failed" ]; then
+                echo -e "${RED}  ✗ Tools installation failed${NC}"
+                break
+            fi
+
+            echo "  Installing... ($i/24)"
+            sleep 5
+        done
+    else
+        echo -e "${YELLOW}  ⚠ Could not initiate tools installation${NC}"
+        echo "  You can install tools manually after connecting"
+    fi
+    echo ""
+
     echo -e "${BLUE}To connect to the instance:${NC}"
     echo "  aws ssm start-session --target ${INSTANCE_ID} --region ${AWS_REGION}"
     echo ""
@@ -356,9 +418,8 @@ else
 
     echo -e "${YELLOW}Next steps:${NC}"
     echo "  1. Connect to the instance using the command above"
-    echo "  2. Install deployment tools (kubectl, eksctl, helm):"
-    echo "     Run: curl -O https://raw.githubusercontent.com/your-repo/main/scripts/install_tools.sh && bash install_tools.sh"
-    echo "  3. Clone this project and run deployment scripts"
+    echo "  2. Upload your project code or clone from git"
+    echo "  3. Run deployment scripts from /home/ssm-user/"
     echo ""
 
     echo -e "${YELLOW}To delete the bastion instance later:${NC}"

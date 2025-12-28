@@ -83,7 +83,26 @@ aws sts get-caller-identity >/dev/null 2>&1 || \
 
 log "Configuration validation completed successfully!"
 
-# 8. 显示配置摘要
+# 8. 系统节点组配置（高级选项）
+export SYSTEM_NODE_INSTANCE_TYPE="${SYSTEM_NODE_INSTANCE_TYPE:-m7i.2xlarge}"
+export SYSTEM_NODE_ROOT_VOLUME_SIZE="${SYSTEM_NODE_ROOT_VOLUME_SIZE:-50}"
+export SYSTEM_NODE_DATA_VOLUME_SIZE="${SYSTEM_NODE_DATA_VOLUME_SIZE:-100}"
+export SYSTEM_NODE_DESIRED_CAPACITY="${SYSTEM_NODE_DESIRED_CAPACITY:-3}"
+export SYSTEM_NODE_MIN_SIZE="${SYSTEM_NODE_MIN_SIZE:-3}"
+export SYSTEM_NODE_MAX_SIZE="${SYSTEM_NODE_MAX_SIZE:-6}"
+
+# 配置验证
+if [[ ! "$SYSTEM_NODE_INSTANCE_TYPE" =~ ^[a-z][0-9][a-z]?\.[a-z0-9]+$ ]]; then
+    echo "⚠ WARNING: Invalid SYSTEM_NODE_INSTANCE_TYPE format, using default: m7i.2xlarge"
+    export SYSTEM_NODE_INSTANCE_TYPE="m7i.2xlarge"
+fi
+
+if [ "$SYSTEM_NODE_DATA_VOLUME_SIZE" -lt 50 ]; then
+    echo "⚠ WARNING: SYSTEM_NODE_DATA_VOLUME_SIZE too small, using minimum: 50GB"
+    export SYSTEM_NODE_DATA_VOLUME_SIZE=50
+fi
+
+# 9. 显示配置摘要
 log "=== Configuration Summary ==="
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 echo "AWS_REGION: $AWS_REGION"
@@ -93,4 +112,6 @@ echo "VPC_ID: $VPC_ID"
 echo "AZ: $AZ_A, $AZ_B, $AZ_C"
 echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"
 echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
+echo "SYSTEM_NODE_INSTANCE_TYPE: $SYSTEM_NODE_INSTANCE_TYPE"
+echo "SYSTEM_NODE_DATA_VOLUME_SIZE: ${SYSTEM_NODE_DATA_VOLUME_SIZE}GB"
 log "============================"

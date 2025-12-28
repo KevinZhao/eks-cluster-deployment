@@ -47,75 +47,9 @@ fi
 
 aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 echo "✓ Cluster found and kubeconfig updated"
-
-# 2.1 配置安全组以允许堡垒机访问集群 API (针对私有集群)
 echo ""
-echo "Configuring security group for bastion access to EKS API..."
-
-# 获取集群安全组
-CLUSTER_SG=$(aws eks describe-cluster \
-    --name ${CLUSTER_NAME} \
-    --region ${AWS_REGION} \
-    --query 'cluster.resourcesVpcConfig.securityGroupIds[0]' \
-    --output text 2>/dev/null)
-
-if [ -z "${CLUSTER_SG}" ] || [ "${CLUSTER_SG}" = "None" ]; then
-    echo "❌ ERROR: Could not get cluster security group"
-    exit 1
-fi
-
-echo "Cluster Security Group: ${CLUSTER_SG}"
-
-# 获取当前堡垒机的安全组（使用IMDSv2）
-echo "Detecting current bastion security group..."
-TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" -s 2>/dev/null || echo "")
-if [ -n "${TOKEN}" ]; then
-    INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
-else
-    echo "❌ ERROR: Cannot get EC2 metadata token. This script must be run from inside an EC2 instance"
-    echo ""
-    echo "Expected deployment order:"
-    echo "  1. Create VPC (Terraform)"
-    echo "  2. Create bastion instance (scripts/create_bastion.sh)"
-    echo "  3. SSH into bastion via AWS SSM"
-    echo "  4. Run this script from bastion"
-    echo ""
-    exit 1
-fi
-
-if [ -z "${INSTANCE_ID}" ]; then
-    echo "❌ ERROR: Could not get instance ID. This script must be run from inside an EC2 instance"
-    exit 1
-fi
-
-BASTION_SG=$(aws ec2 describe-instances \
-    --instance-ids ${INSTANCE_ID} \
-    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
-    --output text \
-    --region ${AWS_REGION} 2>/dev/null)
-
-if [ -z "${BASTION_SG}" ] || [ "${BASTION_SG}" = "None" ]; then
-    echo "❌ ERROR: Could not detect bastion security group"
-    exit 1
-fi
-
-echo "Bastion Instance ID: ${INSTANCE_ID}"
-echo "Bastion Security Group: ${BASTION_SG}"
-
-# 添加入站规则允许堡垒机访问集群API端口443
-echo "Adding security group rule..."
-if aws ec2 authorize-security-group-ingress \
-    --group-id ${CLUSTER_SG} \
-    --protocol tcp \
-    --port 443 \
-    --source-group ${BASTION_SG} \
-    --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
-    echo "✓ Security group rule already exists"
-else
-    echo "✓ Security group rule added successfully"
-fi
-
-echo "✓ Bastion can now access EKS API Server"
+echo "Note: Security group configuration for bastion access should have been"
+echo "      completed in script 4.5_create_system_nodegroup_with_lvm.sh"
 echo ""
 
 # 3. 验证集群状态
@@ -231,7 +165,18 @@ for i in {1..60}; do
     fi
 done
 
-# 6.3 验证 EBS CSI Driver
+# 6.3 清理 IRSA annotation 避免与 Pod Identity 冲突
+echo "Removing IRSA annotation from service account (if exists)..."
+kubectl annotate sa -n kube-system ebs-csi-controller-sa eks.amazonaws.com/role-arn- --overwrite 2>/dev/null || echo "No IRSA annotation to remove"
+
+# 6.4 重启 EBS CSI Controller 使 Pod Identity 生效
+echo "Restarting EBS CSI Controller deployment..."
+kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+
+echo "Waiting for EBS CSI Controller rollout to complete..."
+kubectl rollout status deployment/ebs-csi-controller -n kube-system --timeout=120s
+
+# 6.5 验证 EBS CSI Driver
 echo "Checking EBS CSI Driver pods..."
 kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
 
