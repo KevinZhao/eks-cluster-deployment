@@ -55,13 +55,12 @@ echo ""
 echo "Verifying EKS cluster exists..."
 if ! aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
     echo "❌ ERROR: EKS cluster '${CLUSTER_NAME}' not found in region '${AWS_REGION}'"
-    echo "Please run script 4_install_eks_cluster.sh first to create the cluster."
+    echo "Please run script 5_install_eks_cluster.sh first to create the cluster."
     exit 1
 fi
 
-# 更新 kubeconfig
-aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
-echo "✓ Cluster exists and kubeconfig updated"
+# 验证 kubectl context（使用统一函数）
+verify_kubectl_context
 echo ""
 
 # 2.1 配置安全组以允许堡垒机访问集群 API (针对私有集群)
@@ -91,9 +90,9 @@ else
     echo ""
     echo "Expected deployment order:"
     echo "  1. Create VPC (Terraform)"
-    echo "  2. Create bastion instance (scripts/create_bastion.sh)"
+    echo "  2. Create bastion instance (scripts/4_create_bastion.sh)"
     echo "  3. SSH into bastion via AWS SSM"
-    echo "  4. Run scripts 4, 4.5, and 5 from bastion"
+    echo "  4. Run scripts 5, 6, and 7 from bastion"
     echo ""
     exit 1
 fi
@@ -742,6 +741,6 @@ echo "  • Nodes: ${SYSTEM_NODE_DESIRED_CAPACITY} ready"
 echo ""
 kubectl get nodes -o wide
 echo ""
-echo "Next step: Continue with script 6 to install cluster addons"
-echo "  ./scripts/6_install_eks_addon.sh"
+echo "Next step: Continue with script 7 to install cluster addons"
+echo "  ./scripts/7_install_eks_addon.sh"
 echo ""

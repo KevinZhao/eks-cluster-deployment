@@ -115,3 +115,59 @@ echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
 echo "SYSTEM_NODE_INSTANCE_TYPE: $SYSTEM_NODE_INSTANCE_TYPE"
 echo "SYSTEM_NODE_DATA_VOLUME_SIZE: ${SYSTEM_NODE_DATA_VOLUME_SIZE}GB"
 log "============================"
+
+# ============================================================
+# Kubectl Context Verification Function
+# ============================================================
+# 验证 kubectl 是否连接到正确的集群
+# 用法: verify_kubectl_context
+verify_kubectl_context() {
+    local cluster_name="${CLUSTER_NAME}"
+    local region="${AWS_REGION}"
+
+    if [ -z "${cluster_name}" ]; then
+        error "CLUSTER_NAME not set, cannot verify kubectl context"
+    fi
+
+    log "Verifying kubectl is connected to cluster '${cluster_name}'..."
+
+    # 首先更新 kubeconfig 确保连接到正确的集群
+    if ! aws eks update-kubeconfig --name "${cluster_name}" --region "${region}" &>/dev/null; then
+        error "Failed to update kubeconfig for cluster '${cluster_name}'"
+    fi
+
+    # 检查当前 context 是否包含集群名
+    local current_context
+    current_context=$(kubectl config current-context 2>/dev/null || echo "")
+
+    if [[ "${current_context}" != *"${cluster_name}"* ]]; then
+        log "WARNING: kubectl context '${current_context}' doesn't match cluster '${cluster_name}'"
+        log "Forcing context update with alias..."
+        aws eks update-kubeconfig --region "${region}" --name "${cluster_name}" --alias "${cluster_name}"
+        current_context=$(kubectl config current-context 2>/dev/null || echo "")
+    fi
+
+    # 验证 API endpoint 匹配
+    local expected_endpoint
+    local current_endpoint
+
+    expected_endpoint=$(aws eks describe-cluster --name "${cluster_name}" --region "${region}" --query 'cluster.endpoint' --output text 2>/dev/null)
+    current_endpoint=$(kubectl config view --minify --output jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+
+    if [ -z "${expected_endpoint}" ]; then
+        error "Failed to get cluster endpoint for '${cluster_name}'"
+    fi
+
+    if [ "${current_endpoint}" != "${expected_endpoint}" ]; then
+        error "kubectl is pointing to WRONG cluster endpoint!
+  Expected: ${expected_endpoint}
+  Current:  ${current_endpoint}
+  Kubeconfig: ${KUBECONFIG:-default}
+
+Please ensure you are operating on the correct cluster."
+    fi
+
+    log "✓ kubectl verified - connected to cluster '${cluster_name}'"
+    log "  Context: ${current_context}"
+    log "  Endpoint: ${current_endpoint}"
+}

@@ -31,8 +31,8 @@ if ! aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" 
     exit 1
 fi
 
-aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
-echo -e "${GREEN}✓ Cluster found and kubeconfig updated${NC}"
+# 验证 kubectl context（使用统一函数）
+verify_kubectl_context
 echo ""
 
 # Validate required variables

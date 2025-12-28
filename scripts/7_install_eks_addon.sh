@@ -41,15 +41,15 @@ echo ""
 echo "Verifying EKS cluster exists and updating kubeconfig..."
 if ! aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} &>/dev/null; then
     echo "❌ ERROR: EKS cluster '${CLUSTER_NAME}' not found in region '${AWS_REGION}'"
-    echo "Please run script 4_install_eks_cluster.sh first to create the cluster."
+    echo "Please run script 5_install_eks_cluster.sh first to create the cluster."
     exit 1
 fi
 
-aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
-echo "✓ Cluster found and kubeconfig updated"
+# 验证 kubectl context（使用统一函数）
+verify_kubectl_context
 echo ""
 echo "Note: Security group configuration for bastion access should have been"
-echo "      completed in script 5_create_system_nodegroup_with_lvm.sh"
+echo "      completed in script 6_create_system_nodegroup.sh"
 echo ""
 
 # 3. 验证集群状态
@@ -170,11 +170,17 @@ echo "Removing IRSA annotation from service account (if exists)..."
 kubectl annotate sa -n kube-system ebs-csi-controller-sa eks.amazonaws.com/role-arn- --overwrite 2>/dev/null || echo "No IRSA annotation to remove"
 
 # 6.4 重启 EBS CSI Controller 使 Pod Identity 生效
-echo "Restarting EBS CSI Controller deployment..."
-kubectl rollout restart deployment/ebs-csi-controller -n kube-system
-
-echo "Waiting for EBS CSI Controller rollout to complete..."
-kubectl rollout status deployment/ebs-csi-controller -n kube-system --timeout=120s
+echo "Checking if EBS CSI Controller needs restart..."
+# 只有在 IRSA annotation 被移除或 addon 刚刚创建时才重启
+if kubectl get sa -n kube-system ebs-csi-controller-sa -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null | grep -q "arn:aws"; then
+    echo "IRSA annotation still exists, restarting controller..."
+    kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+    kubectl rollout status deployment/ebs-csi-controller -n kube-system --timeout=120s
+else
+    echo "✓ EBS CSI Controller already using Pod Identity, no restart needed"
+    # 但仍然等待部署就绪
+    kubectl rollout status deployment/ebs-csi-controller -n kube-system --timeout=120s
+fi
 
 # 6.5 验证 EBS CSI Driver
 echo "Checking EBS CSI Driver pods..."

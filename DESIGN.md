@@ -12,15 +12,15 @@
 
 **架构改进：系统节点组创建逻辑分离**
 
-为了提高部署流程的灵活性和可维护性，我们将系统节点组创建逻辑从脚本4分离为独立的脚本4.5：
+为了提高部署流程的灵活性和可维护性，我们将系统节点组创建逻辑从脚本5分离为独立的脚本6：
 
 **变更详情：**
-1. **脚本4** (`4_install_eks_cluster.sh`)
+1. **脚本5** (`5_install_eks_cluster.sh`)
    - **之前**: 创建集群控制平面 + 系统节点组（带LVM配置）
    - **现在**: 仅创建集群控制平面
    - **好处**: 控制平面创建独立，更清晰的职责分离
 
-2. **新增脚本5** (`5_create_system_nodegroup_with_lvm.sh`)
+2. **新增脚本6** (`6_create_system_nodegroup.sh`)
    - **功能**: 专门创建系统节点组，包含LVM配置
    - **特性**:
      - 创建IAM Role和Instance Profile
@@ -35,15 +35,15 @@
 
 3. **新部署流程**
    ```bash
-   ./scripts/4_install_eks_cluster.sh                # 创建控制平面（8-10分钟）
-   ./scripts/5_create_system_nodegroup_with_lvm.sh   # 创建系统节点组（8-12分钟）
-   ./scripts/6_install_eks_addon.sh                  # 安装addons
+   ./scripts/5_install_eks_cluster.sh                # 创建控制平面（8-10分钟）
+   ./scripts/6_create_system_nodegroup.sh   # 创建系统节点组（8-12分钟）
+   ./scripts/7_install_eks_addon.sh                  # 安装addons
    ```
 
 **设计理由：**
 - **灵活性**: 控制平面和节点组解耦，用户可灵活调整
 - **可维护性**: 系统节点组逻辑集中管理，便于更新
-- **可复用性**: 脚本5可用于替换或升级现有节点组
+- **可复用性**: 脚本6可用于替换或升级现有节点组
 - **清晰性**: 每个脚本职责单一，代码结构更清晰
 
 ---
@@ -413,7 +413,7 @@ export NCCL_SOCKET_IFNAME=^docker,lo
 
 **设计决策**: 结合 Terraform 和 eksctl 的编排脚本。
 
-**脚本**: `scripts/9_create_gpu_nodegroup.sh`
+**脚本**: `scripts/12_create_gpu_nodegroup.sh`
 
 **工作流程**:
 ```
@@ -675,8 +675,8 @@ setup_<component>_pod_identity() {
 - `manifests/storage/README.md`
 - `manifests/addons/metrics-server.yaml`
 - 更新的 `scripts/pod_identity_helpers.sh`
-- 更新的 `scripts/4_install_eks_cluster.sh`
-- 更新的 `scripts/6_install_eks_with_custom_nodegroup.sh`
+- 更新的 `scripts/5_install_eks_cluster.sh`
+- 更新的 `scripts/8_install_eks_with_custom_nodegroup.sh`
 
 ### 6.3 阶段 3: 可选组件
 **优先级**: 中
@@ -698,8 +698,8 @@ setup_<component>_pod_identity() {
 - `iam-policies/fsx-csi-policy.json`
 - `manifests/addons/fsx-csi-driver.yaml`
 - 更新的 `scripts/pod_identity_helpers.sh`(2 个新函数)
-- 更新的 `scripts/7_install_optional_csi_drivers.sh`
-- 更新的脚本 4 和 6(可选组件集成)
+- 更新的 `scripts/9_install_optional_csi_drivers.sh`
+- 更新的脚本 5 和 8(可选组件集成)
 
 ### 6.4 阶段 4: S3 CSI 独立脚本
 **优先级**: 高
@@ -748,7 +748,7 @@ setup_<component>_pod_identity() {
 6. 测试端到端 GPU 节点部署
 
 **交付成果**:
-- `scripts/9_create_gpu_nodegroup.sh`(约 300 行)
+- `scripts/12_create_gpu_nodegroup.sh`(约 300 行)
 
 ### 6.7 阶段 7: 测试和文档
 **优先级**: 高
@@ -811,8 +811,8 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -f
 
 **完整集群部署**:
 ```bash
-# 测试脚本 4
-./scripts/4_install_eks_cluster.sh
+# 测试脚本 5
+./scripts/5_install_eks_cluster.sh
 
 # 验证所有必备组件
 kubectl get storageclass
@@ -823,7 +823,7 @@ kubectl get pod-identity-associations
 **GPU 部署**:
 ```bash
 # 部署 GPU 节点组
-./scripts/9_create_gpu_nodegroup.sh
+./scripts/12_create_gpu_nodegroup.sh
 
 # 验证 GPU 节点
 kubectl get nodes -l nvidia.com/gpu=true
@@ -986,12 +986,15 @@ eks-cluster-deployment/
 │       └── README.md (新)
 ├── scripts/
 │   ├── 0_setup_env.sh (更新)
-│   ├── 4_install_eks_cluster.sh (更新)
-│   ├── 6_install_eks_with_custom_nodegroup.sh (更新)
-│   ├── 7_install_optional_csi_drivers.sh (更新)
+│   ├── 4_create_bastion.sh (新)
+│   ├── 5_install_eks_cluster.sh (更新)
+│   ├── 6_create_system_nodegroup.sh (新)
+│   ├── 7_install_eks_addon.sh (更新)
+│   ├── 8_install_eks_with_custom_nodegroup.sh (更新)
+│   ├── 9_install_optional_csi_drivers.sh (更新)
 │   ├── pod_identity_helpers.sh (更新)
 │   ├── add_s3_csi.sh (新)
-│   └── 9_create_gpu_nodegroup.sh (新)
+│   └── 12_create_gpu_nodegroup.sh (新)
 └── terraform/
     └── launch-template-gpu/ (新目录)
         ├── main.tf (新)

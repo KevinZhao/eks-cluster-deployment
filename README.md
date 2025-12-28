@@ -69,13 +69,13 @@ nano .env  # 填写 VPC_ID、子网 ID 等
 chmod +x scripts/*.sh
 
 # 步骤2.1: 创建集群控制平面
-./scripts/4_install_eks_cluster.sh
+./scripts/5_install_eks_cluster.sh
 
 # 步骤2.2: 创建系统节点组（带LVM配置）
-./scripts/5_create_system_nodegroup_with_lvm.sh
+./scripts/6_create_system_nodegroup.sh
 
 # 步骤2.3: 安装集群addons
-./scripts/6_install_eks_addon.sh
+./scripts/7_install_eks_addon.sh
 ```
 
 **部署时间:** 约 20-25 分钟（3个步骤合计）
@@ -131,19 +131,19 @@ VPC (10.0.0.0/16)
 **部署步骤:**
 ```bash
 # 步骤1: 创建集群控制平面（无节点组）
-./scripts/4_install_eks_cluster.sh
+./scripts/5_install_eks_cluster.sh
 
 # 步骤2: 创建系统节点组（带LVM配置）
-./scripts/5_create_system_nodegroup_with_lvm.sh
+./scripts/6_create_system_nodegroup.sh
 
 # 步骤3: 安装集群addons
-./scripts/6_install_eks_addon.sh
+./scripts/7_install_eks_addon.sh
 ```
 
 **更新说明（2025-12-28）:**
-- ✅ 系统节点组创建逻辑分离为独立脚本 4.5
-- ✅ 脚本4仅创建控制平面，提供更高灵活性
-- ✅ 脚本4.5专门创建带LVM配置的系统节点组
+- ✅ 系统节点组创建逻辑分离为独立脚本6
+- ✅ 脚本5仅创建控制平面，提供更高灵活性
+- ✅ 脚本6专门创建带LVM配置的系统节点组
 - ✅ 支持灵活的部署流程，可按需跳过或重新运行
 
 ### 方式 2: Launch Template 部署 ⭐ 推荐生产
@@ -159,7 +159,7 @@ VPC (10.0.0.0/16)
 
 **命令:**
 ```bash
-./scripts/6_install_eks_with_custom_nodegroup.sh
+./scripts/8_install_eks_with_custom_nodegroup.sh
 ```
 
 ### 对比表格
@@ -174,7 +174,7 @@ VPC (10.0.0.0/16)
 | 系统优化 | ✅ 基础配置 | ✅ 完全自定义 |
 | 部署时间 | 15-20分钟 | 20-25分钟 |
 
-**说明:** 标准部署（脚本4）现在会自动为系统节点组配置LVM（m7i.2xlarge + 100GB数据卷），无需额外操作。
+**说明:** 标准部署（脚本6）现在会自动为系统节点组配置LVM（m7i.2xlarge + 100GB数据卷），无需额外操作。
 
 ---
 
@@ -262,19 +262,19 @@ AWS_DEFAULT_REGION=ap-southeast-1
 chmod +x scripts/*.sh
 
 # 步骤1: 创建集群控制平面
-./scripts/4_install_eks_cluster.sh
+./scripts/5_install_eks_cluster.sh
 
 # 步骤2: 创建系统节点组（带LVM配置）
-./scripts/5_create_system_nodegroup_with_lvm.sh
+./scripts/6_create_system_nodegroup.sh
 
 # 步骤3: 安装集群addons
-./scripts/6_install_eks_addon.sh
+./scripts/7_install_eks_addon.sh
 ```
 
 **自动执行:**
-1. 脚本4: 创建 EKS 集群控制平面（8-10分钟）
-2. 脚本4.5: 创建系统节点组，配置LVM（8-12分钟）
-3. 脚本5: 部署 Cluster Autoscaler 和其他addons
+1. 脚本5: 创建 EKS 集群控制平面（8-10分钟）
+2. 脚本6: 创建系统节点组，配置LVM（8-12分钟）
+3. 脚本7: 部署 Cluster Autoscaler 和其他addons
 3. 安装 AWS Load Balancer Controller
 4. 迁移到 Pod Identity
 
@@ -369,7 +369,7 @@ EOT
 
 ```bash
 cd ../..
-./scripts/6_install_eks_with_custom_nodegroup.sh
+./scripts/8_install_eks_with_custom_nodegroup.sh
 ```
 
 **执行流程:**
@@ -1041,17 +1041,17 @@ nano .env  # 或使用 vi
 chmod +x scripts/*.sh
 
 # 标准部署流程
-./scripts/4_install_eks_cluster.sh                 # 创建集群控制平面
-./scripts/5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组（LVM）
-./scripts/6_install_eks_addon.sh                   # 安装addons
+./scripts/5_install_eks_cluster.sh                 # 创建集群控制平面
+./scripts/6_create_system_nodegroup.sh  # 创建系统节点组（LVM）
+./scripts/7_install_eks_addon.sh                   # 安装addons
 
 # 或者包含网络配置的完整部署
 ./scripts/1_enable_vpc_dns.sh
 ./scripts/2_validate_network_environment.sh
 ./scripts/3_create_vpc_endpoints.sh
-./scripts/4_install_eks_cluster.sh
-./scripts/5_create_system_nodegroup_with_lvm.sh
-./scripts/6_install_eks_addon.sh
+./scripts/5_install_eks_cluster.sh
+./scripts/6_create_system_nodegroup.sh
+./scripts/7_install_eks_addon.sh
 ```
 
 **部署时间**：约 20-25 分钟（3个核心步骤）
@@ -1190,9 +1190,9 @@ cp .env.example .env
 nano .env
 
 # 运行安装
-./scripts/4_install_eks_cluster.sh                 # 创建集群控制平面
-./scripts/5_create_system_nodegroup_with_lvm.sh  # 创建系统节点组
-./scripts/6_install_eks_addon.sh                   # 安装addons
+./scripts/5_install_eks_cluster.sh                 # 创建集群控制平面
+./scripts/6_create_system_nodegroup.sh  # 创建系统节点组
+./scripts/7_install_eks_addon.sh                   # 安装addons
 ```
 
 **步骤 3：部署完成后禁用公网访问**
@@ -1433,10 +1433,11 @@ eks-cluster-deployment/
 │
 ├── scripts/
 │   ├── 0_setup_env.sh                          # 环境变量加载
-│   ├── 4_install_eks_cluster.sh                # 创建集群控制平面
-│   ├── 5_create_system_nodegroup_with_lvm.sh # 创建系统节点组（LVM）
-│   ├── 6_install_eks_addon.sh                  # 安装集群addons
-│   └── 6_install_eks_with_custom_nodegroup.sh  # Launch Template部署（应用节点组）
+│   ├── 4_create_bastion.sh                     # 创建堡垒机
+│   ├── 5_install_eks_cluster.sh                # 创建集群控制平面
+│   ├── 6_create_system_nodegroup.sh # 创建系统节点组（LVM）
+│   ├── 7_install_eks_addon.sh                  # 安装集群addons
+│   └── 8_install_eks_with_custom_nodegroup.sh  # Launch Template部署（应用节点组）
 │
 ├── manifests/
 │   ├── cluster/

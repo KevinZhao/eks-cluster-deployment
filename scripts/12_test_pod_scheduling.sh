@@ -11,6 +11,10 @@ echo "=== Verifying Karpenter Controller Scheduling ==="
 # 1. 设置环境变量
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
+# 1.1 验证 kubectl context
+verify_kubectl_context
+echo ""
+
 # 2. 检查当前 Karpenter Controller 的调度位置
 echo ""
 echo "Step 1: Checking current Karpenter controller pods..."

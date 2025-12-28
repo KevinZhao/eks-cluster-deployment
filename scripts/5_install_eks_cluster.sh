@@ -48,8 +48,16 @@ echo ""
 
 # 2. 创建EKS集群（控制平面）
 echo "Step 2: Creating EKS cluster control plane..."
-envsubst < "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
-eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
+
+# 检查集群是否已存在
+if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
+    echo "⚠️  Cluster '${CLUSTER_NAME}' already exists"
+    echo "Skipping cluster creation..."
+else
+    echo "Creating new cluster..."
+    envsubst < "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
+    eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
+fi
 
 # 3. 等待集群控制平面就绪
 echo ""
@@ -71,8 +79,8 @@ echo "⚠️  IMPORTANT: System nodegroup NOT created yet"
 echo ""
 echo "Next steps:"
 echo "  1. Create system nodegroup with LVM (REQUIRED):"
-echo "     ./scripts/5_create_system_nodegroup_with_lvm.sh"
+echo "     ./scripts/6_create_system_nodegroup.sh"
 echo ""
 echo "  2. After nodegroup is ready, install addons:"
-echo "     ./scripts/6_install_eks_addon.sh"
+echo "     ./scripts/7_install_eks_addon.sh"
 echo ""
