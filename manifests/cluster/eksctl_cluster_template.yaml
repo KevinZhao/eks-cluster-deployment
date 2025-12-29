@@ -43,12 +43,15 @@ iam:
 
 # 节点组配置
 # 系统节点组将在集群创建后立即创建（带LVM配置）
-# 参见脚本4的 create_system_nodegroup_with_lvm() 函数
 managedNodeGroups: []
 
 addons:
   - name: vpc-cni
     version: latest
+    configurationValues: |
+      env:
+        AWS_VPC_K8S_CNI_EXTERNALSNAT: "false"
+        ENABLE_PREFIX_DELEGATION: "false"
   - name: coredns
     version: latest
     configurationValues: |
