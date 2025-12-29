@@ -84,10 +84,20 @@ done
 if [ "$NEEDS_RESTART" = true ]; then
     echo "  ⚠ Some Karpenter pods are NOT on system nodes"
     echo ""
-    echo "Do you want to restart Karpenter pods to reschedule them? (yes/no)"
-    read -r RESPONSE
 
-    if [ "$RESPONSE" = "yes" ] || [ "$RESPONSE" = "y" ]; then
+    # 支持非交互模式: AUTO_RESTART_KARPENTER=yes|no
+    RESTART_KARPENTER="${AUTO_RESTART_KARPENTER:-}"
+
+    if [ -z "$RESTART_KARPENTER" ]; then
+        echo "Do you want to restart Karpenter pods to reschedule them? (yes/no)"
+        echo "For non-interactive mode, set AUTO_RESTART_KARPENTER=yes or AUTO_RESTART_KARPENTER=no"
+        read -r RESPONSE
+        RESTART_KARPENTER="$RESPONSE"
+    else
+        echo "AUTO_RESTART_KARPENTER is set to: $RESTART_KARPENTER"
+    fi
+
+    if [ "$RESTART_KARPENTER" = "yes" ] || [ "$RESTART_KARPENTER" = "y" ]; then
         echo ""
         echo "Step 5: Restarting Karpenter pods..."
         kubectl rollout restart deployment karpenter -n kube-system

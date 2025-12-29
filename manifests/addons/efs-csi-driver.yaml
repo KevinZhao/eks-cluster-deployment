@@ -22,7 +22,7 @@ spec:
         app: efs-csi-controller
     spec:
       nodeSelector:
-        app: eks-utils
+        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
       serviceAccountName: efs-csi-controller-sa
       priorityClassName: system-cluster-critical
       tolerations:

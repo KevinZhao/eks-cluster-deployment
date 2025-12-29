@@ -23,7 +23,7 @@ spec:
           type: RuntimeDefault
       serviceAccountName: cluster-autoscaler
       nodeSelector:
-        app: eks-utils
+        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
       containers:
       - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.2
         name: cluster-autoscaler

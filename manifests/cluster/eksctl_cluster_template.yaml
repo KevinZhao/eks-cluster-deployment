@@ -53,7 +53,7 @@ addons:
     version: latest
     configurationValues: |
       nodeSelector:
-        app: eks-utils
+        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
   - name: kube-proxy
     version: latest
   - name: eks-pod-identity-agent

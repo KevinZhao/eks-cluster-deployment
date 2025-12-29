@@ -252,14 +252,27 @@ EXISTING_INSTANCE=$(aws ec2 describe-instances \
 
 if [ -n "${EXISTING_INSTANCE}" ] && [ "${EXISTING_INSTANCE}" != "None" ]; then
     echo -e "${YELLOW}Found existing instance: ${EXISTING_INSTANCE}${NC}"
-    echo -e "${YELLOW}Do you want to use this instance? (y/n)${NC}"
-    read -r response
-    if [[ "$response" =~ ^[Yy]$ ]]; then
-        INSTANCE_ID="${EXISTING_INSTANCE}"
-        echo -e "${GREEN}Using existing instance: ${INSTANCE_ID}${NC}"
+
+    # 支持非交互模式: REUSE_BASTION=yes|no
+    if [ -n "${REUSE_BASTION}" ]; then
+        if [[ "${REUSE_BASTION}" =~ ^[Yy] ]]; then
+            INSTANCE_ID="${EXISTING_INSTANCE}"
+            echo -e "${GREEN}Using existing instance: ${INSTANCE_ID}${NC}"
+        else
+            echo "Creating new instance..."
+            INSTANCE_ID=""
+        fi
     else
-        echo "Creating new instance..."
-        INSTANCE_ID=""
+        echo -e "${YELLOW}Do you want to use this instance? (y/n)${NC}"
+        echo "For non-interactive mode, set REUSE_BASTION=yes or REUSE_BASTION=no"
+        read -r response
+        if [[ "$response" =~ ^[Yy]$ ]]; then
+            INSTANCE_ID="${EXISTING_INSTANCE}"
+            echo -e "${GREEN}Using existing instance: ${INSTANCE_ID}${NC}"
+        else
+            echo "Creating new instance..."
+            INSTANCE_ID=""
+        fi
     fi
 else
     echo "No existing instance found"

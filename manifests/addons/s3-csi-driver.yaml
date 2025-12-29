@@ -22,7 +22,7 @@ spec:
         app: s3-csi-controller
     spec:
       nodeSelector:
-        app: eks-utils
+        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
       serviceAccountName: s3-csi-driver-sa
       priorityClassName: system-cluster-critical
       tolerations:

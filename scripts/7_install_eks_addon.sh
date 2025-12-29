@@ -1,3 +1,5 @@
+#!/bin/bash
+
 set -e
 
 # 获取脚本所在目录的父目录（项目根目录）
@@ -102,7 +104,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set vpcId=${VPC_ID} \
     --set region=${AWS_REGION} \
     --set serviceAccount.name=aws-load-balancer-controller \
-    --set nodeSelector.app=eks-utils \
+    --set "nodeSelector.${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}" \
     --version 1.13.0
 
 # 5.2 验证 Load Balancer Controller
@@ -119,6 +121,19 @@ setup_ebs_csi_pod_identity
 echo "Installing EBS CSI Driver addon..."
 EBS_CSI_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${CLUSTER_NAME}-ebs-csi-driver-role"
 
+# 创建 addon 配置 - 确保 controller 运行在系统节点上
+cat > /tmp/ebs-csi-addon-config.json <<EOF
+{
+  "controller": {
+    "nodeSelector": {
+      "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
+    }
+  }
+}
+EOF
+
+echo "EBS CSI Driver will be configured to run on system nodes (${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE})"
+
 # 检查 addon 是否已存在
 if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name aws-ebs-csi-driver --region ${AWS_REGION} &>/dev/null; then
     echo "EBS CSI Driver addon already exists, updating..."
@@ -126,6 +141,7 @@ if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name aws-ebs-cs
         --cluster-name ${CLUSTER_NAME} \
         --addon-name aws-ebs-csi-driver \
         --service-account-role-arn ${EBS_CSI_ROLE_ARN} \
+        --configuration-values file:///tmp/ebs-csi-addon-config.json \
         --region ${AWS_REGION} \
         --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
 else
@@ -134,9 +150,13 @@ else
         --cluster-name ${CLUSTER_NAME} \
         --addon-name aws-ebs-csi-driver \
         --service-account-role-arn ${EBS_CSI_ROLE_ARN} \
+        --configuration-values file:///tmp/ebs-csi-addon-config.json \
         --region ${AWS_REGION} \
         --resolve-conflicts OVERWRITE
 fi
+
+# 清理临时文件
+rm -f /tmp/ebs-csi-addon-config.json
 
 # 6.2 等待 addon 就绪
 echo "Waiting for EBS CSI Driver addon to be active..."

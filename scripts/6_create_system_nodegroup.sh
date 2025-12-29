@@ -138,7 +138,7 @@ echo ""
 
 # 创建EKS节点IAM Role和Instance Profile
 create_eks_node_iam_role() {
-    NODE_ROLE_NAME="EKSNodeRole-eks-frankfurt"
+    NODE_ROLE_NAME="EKSNodeRole-${CLUSTER_NAME}"
     INSTANCE_PROFILE_NAME="${NODE_ROLE_NAME}"
 
     # 检查 IAM Role 是否已存在（幂等性）
@@ -512,8 +512,15 @@ delete_existing_nodegroup() {
     done
     echo ""
     echo "This will cause a service interruption of 5-8 minutes."
-    echo "Press Ctrl+C to cancel, or Enter to continue..."
-    read
+
+    # 支持非交互模式: AUTO_DELETE_NODEGROUP=yes
+    if [ -n "${AUTO_DELETE_NODEGROUP}" ] && [[ "${AUTO_DELETE_NODEGROUP}" =~ ^[Yy] ]]; then
+        echo "AUTO_DELETE_NODEGROUP is set, proceeding automatically..."
+    else
+        echo "Press Ctrl+C to cancel, or Enter to continue..."
+        echo "For non-interactive mode, set AUTO_DELETE_NODEGROUP=yes"
+        read
+    fi
 
     # 删除找到的节点组
     for NG_NAME in "${NODEGROUPS_TO_DELETE[@]}"; do
@@ -609,7 +616,7 @@ wait_for_nodes_ready() {
     MAX_RETRIES=60
 
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        READY_NODES=$(kubectl get nodes -l app=eks-utils --no-headers 2>/dev/null | grep -c "Ready" || echo "0")
+        READY_NODES=$(kubectl get nodes -l ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE} --no-headers 2>/dev/null | grep -c "Ready" || echo "0")
         READY_NODES=${READY_NODES//[^0-9]/}
         READY_NODES=${READY_NODES:-0}
 
@@ -623,7 +630,7 @@ wait_for_nodes_ready() {
         RETRY_COUNT=$((RETRY_COUNT + 1))
         if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
             echo "❌ ERROR: Timeout waiting for nodes"
-            kubectl get nodes -l app=eks-utils
+            kubectl get nodes -l ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}
             exit 1
         fi
 
@@ -635,7 +642,7 @@ wait_for_nodes_ready() {
 verify_lvm_configuration() {
     echo "Verifying LVM configuration on nodes..."
 
-    local NODE_NAME=$(kubectl get nodes -l app=eks-utils -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    local NODE_NAME=$(kubectl get nodes -l ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 
     if [ -z "$NODE_NAME" ]; then
         echo "⚠ WARNING: Cannot verify LVM - no nodes found"

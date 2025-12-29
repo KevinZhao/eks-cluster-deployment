@@ -30,16 +30,38 @@ fi
 verify_kubectl_context
 echo ""
 
-echo "This script installs optional CSI drivers for your EKS cluster."
-echo ""
-echo "Available drivers:"
-echo "  1. EFS CSI Driver - Shared file system (multi-AZ, multi-Pod access)"
-echo "  2. S3 CSI Driver - Object storage mounting via Mountpoint for S3 (v2.2.1)"
-echo "  3. Both EFS and S3"
-echo "  4. Exit"
-echo ""
+# 支持非交互模式: INSTALL_DRIVERS=efs|s3|both S3_BUCKET_ARNS=arn:aws:s3:::bucket1,arn:aws:s3:::bucket2
+INSTALL_DRIVERS="${INSTALL_DRIVERS:-}"
+S3_BUCKET_ARNS="${S3_BUCKET_ARNS:-}"
 
-read -p "Select option (1-4): " choice
+if [ -z "$INSTALL_DRIVERS" ]; then
+    echo "This script installs optional CSI drivers for your EKS cluster."
+    echo ""
+    echo "For non-interactive mode, set environment variables:"
+    echo "  INSTALL_DRIVERS=efs|s3|both"
+    echo "  S3_BUCKET_ARNS='arn:aws:s3:::bucket1,arn:aws:s3:::bucket2' (for S3 driver)"
+    echo ""
+    echo "Available drivers:"
+    echo "  1. EFS CSI Driver - Shared file system (multi-AZ, multi-Pod access)"
+    echo "  2. S3 CSI Driver - Object storage mounting via Mountpoint for S3 (v2.2.1)"
+    echo "  3. Both EFS and S3"
+    echo "  4. Exit"
+    echo ""
+
+    read -p "Select option (1-4): " choice
+else
+    case "$INSTALL_DRIVERS" in
+        efs) choice=1 ;;
+        s3) choice=2 ;;
+        both) choice=3 ;;
+        *)
+            echo "❌ ERROR: Invalid INSTALL_DRIVERS value: $INSTALL_DRIVERS"
+            echo "Valid values: efs, s3, both"
+            exit 1
+            ;;
+    esac
+    echo "Running in non-interactive mode: INSTALL_DRIVERS=$INSTALL_DRIVERS"
+fi
 
 case $choice in
     1)
@@ -82,20 +104,25 @@ case $choice in
         echo "=========================================="
         echo ""
 
-        echo "S3 CSI Driver requires S3 bucket permissions."
-        echo ""
-        echo "IMPORTANT: You need to specify S3 bucket ARNs for access."
-        echo "Format: arn:aws:s3:::bucket-name"
-        echo ""
-        echo "Examples:"
-        echo "  - Single bucket: arn:aws:s3:::my-data-bucket"
-        echo "  - Multiple buckets: arn:aws:s3:::bucket1,arn:aws:s3:::bucket2"
-        echo ""
+        if [ -z "$S3_BUCKET_ARNS" ]; then
+            echo "S3 CSI Driver requires S3 bucket permissions."
+            echo ""
+            echo "IMPORTANT: You need to specify S3 bucket ARNs for access."
+            echo "Format: arn:aws:s3:::bucket-name"
+            echo ""
+            echo "Examples:"
+            echo "  - Single bucket: arn:aws:s3:::my-data-bucket"
+            echo "  - Multiple buckets: arn:aws:s3:::bucket1,arn:aws:s3:::bucket2"
+            echo ""
 
-        read -p "Enter S3 bucket ARN(s) (comma-separated if multiple): " BUCKET_ARNS
+            read -p "Enter S3 bucket ARN(s) (comma-separated if multiple): " BUCKET_ARNS
+        else
+            BUCKET_ARNS="$S3_BUCKET_ARNS"
+            echo "Using S3 bucket ARNs from environment: $BUCKET_ARNS"
+        fi
 
         if [ -z "$BUCKET_ARNS" ]; then
-            echo "Error: No bucket ARNs provided. Exiting."
+            echo "❌ ERROR: No bucket ARNs provided. Exiting."
             exit 1
         fi
 
@@ -148,8 +175,14 @@ case $choice in
         echo ""
         echo "Step 2/2: Installing S3 CSI Driver..."
         echo ""
-        echo "Enter S3 bucket ARN(s) for the S3 CSI Driver:"
-        read -p "Bucket ARN(s) (comma-separated): " BUCKET_ARNS
+
+        if [ -z "$S3_BUCKET_ARNS" ]; then
+            echo "Enter S3 bucket ARN(s) for the S3 CSI Driver:"
+            read -p "Bucket ARN(s) (comma-separated): " BUCKET_ARNS
+        else
+            BUCKET_ARNS="$S3_BUCKET_ARNS"
+            echo "Using S3 bucket ARNs from environment: $BUCKET_ARNS"
+        fi
 
         if [ -z "$BUCKET_ARNS" ]; then
             echo "Warning: No bucket ARNs provided. Skipping S3 CSI Driver."

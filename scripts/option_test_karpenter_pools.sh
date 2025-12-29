@@ -169,10 +169,20 @@ kubectl get pods -l app=inflate-x86 -o json | jq -r '.items[] | "\(.metadata.nam
 echo ""
 echo "=== Test Complete ==="
 echo ""
-echo "Do you want to clean up test deployments? (yes/no)"
-read -r RESPONSE
 
-if [ "$RESPONSE" = "yes" ] || [ "$RESPONSE" = "y" ]; then
+# 支持非交互模式: AUTO_CLEANUP_TEST=yes|no
+CLEANUP_TEST="${AUTO_CLEANUP_TEST:-}"
+
+if [ -z "$CLEANUP_TEST" ]; then
+    echo "Do you want to clean up test deployments? (yes/no)"
+    echo "For non-interactive mode, set AUTO_CLEANUP_TEST=yes or AUTO_CLEANUP_TEST=no"
+    read -r RESPONSE
+    CLEANUP_TEST="$RESPONSE"
+else
+    echo "AUTO_CLEANUP_TEST is set to: $CLEANUP_TEST"
+fi
+
+if [ "$CLEANUP_TEST" = "yes" ] || [ "$CLEANUP_TEST" = "y" ]; then
     echo ""
     echo "Cleaning up test deployments..."
     kubectl delete deployment inflate-graviton inflate-x86 --ignore-not-found=true
