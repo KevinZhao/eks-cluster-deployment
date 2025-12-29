@@ -206,6 +206,19 @@ fi
 echo "Checking EBS CSI Driver pods..."
 kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
 
+# 6.6 创建自定义 StorageClass
+echo ""
+echo "Step 6.6: Creating custom StorageClasses (gp3, io2)..."
+kubectl apply -f "${PROJECT_ROOT}/manifests/storage/storageclass.yaml"
+
+# 6.7 将 gp3 设为默认 StorageClass
+echo "Setting gp3 as default StorageClass..."
+# 移除 gp2 的默认标记（如果存在）
+kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || echo "Note: gp2 StorageClass not found or already not default"
+
+echo "✓ StorageClasses configured:"
+kubectl get storageclass
+
 # 7. 最终验证
 echo ""
 echo "Step 7: Verifying all Pod Identity Associations..."
@@ -216,6 +229,7 @@ echo "=== EKS Addons Installation Complete ==="
 echo "✓ Cluster Autoscaler installed and configured"
 echo "✓ AWS Load Balancer Controller installed and configured"
 echo "✓ EBS CSI Driver addon installed and configured"
+echo "✓ StorageClasses created: gp3 (default), io2"
 echo "✓ All components use Pod Identity for AWS authentication"
 echo ""
 echo "Next steps:"
