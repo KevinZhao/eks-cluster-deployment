@@ -1,0 +1,113 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lustre-client-installer
+  namespace: kube-system
+  labels:
+    app: lustre-client-installer
+spec:
+  selector:
+    matchLabels:
+      app: lustre-client-installer
+  template:
+    metadata:
+      labels:
+        app: lustre-client-installer
+    spec:
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+      initContainers:
+      - name: install-lustre-client
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "=== Installing Lustre Client on AL2023 ==="
+
+          # Install nsenter and other utilities first
+          dnf install -y util-linux procps-ng
+
+          # Check if already installed on host
+          if nsenter --target 1 --mount --uts --ipc --net --pid -- bash -c "modprobe -n lustre" 2>/dev/null; then
+            echo "✓ Lustre client already installed on host"
+            exit 0
+          fi
+
+          echo "Attempting to install Lustre client on host..."
+
+          # Enter host namespace and attempt installation
+          nsenter --target 1 --mount --uts --ipc --net --pid -- bash -c '
+            set -ex
+
+            # Get kernel version
+            KERNEL_VERSION=$(uname -r)
+            echo "Kernel version: $KERNEL_VERSION"
+
+            # Check OS version
+            if grep -q "Amazon Linux 2023" /etc/os-release; then
+              echo "Detected Amazon Linux 2023"
+
+              # Install Lustre client for AL2023
+              dnf install -y lustre-client
+
+              # Load Lustre module
+              modprobe lustre
+
+              # Verify installation
+              if lsmod | grep -q lustre; then
+                echo "✓ Lustre client installed successfully on AL2023"
+                modinfo lustre | grep version
+              else
+                echo "✗ Lustre module not loaded"
+                exit 1
+              fi
+            elif grep -q "Amazon Linux 2" /etc/os-release; then
+              echo "Detected Amazon Linux 2"
+
+              # Install Lustre client
+              amazon-linux-extras install -y lustre
+
+              # Load Lustre module
+              modprobe lustre
+
+              # Verify installation
+              if lsmod | grep -q lustre; then
+                echo "✓ Lustre client installed successfully"
+              else
+                echo "✗ Lustre module not loaded"
+                exit 1
+              fi
+            else
+              echo "Unsupported OS for automatic Lustre installation"
+              exit 1
+            fi
+          '
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+          mountPropagation: Bidirectional
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            cpu: 10m
+            memory: 10Mi
+          limits:
+            cpu: 100m
+            memory: 50Mi
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory

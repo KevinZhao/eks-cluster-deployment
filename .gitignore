@@ -58,3 +58,4 @@ __pycache__/
 *.pyc
 dist/
 build/
+.env.oregon

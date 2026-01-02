@@ -396,9 +396,42 @@ setup_efs_csi_pod_identity() {
     log "✓ EFS CSI Driver Pod Identity setup complete"
 }
 
+# 设置 FSx CSI Driver Pod Identity
+setup_fsx_csi_pod_identity() {
+    log "=========================================="
+    log "Setting up FSx CSI Driver with Pod Identity"
+    log "=========================================="
+
+    local role_name="${CLUSTER_NAME}-fsx-csi-driver-role"
+    local policy_name="${CLUSTER_NAME}-FSxCSIDriverPolicy"
+    local namespace="kube-system"
+    local service_account="fsx-csi-controller-sa"
+
+    # 1. 创建 IAM 角色
+    create_pod_identity_role "${role_name}"
+
+    # 2. 创建和附加自定义策略
+    local policy_file="${PROJECT_ROOT}/iam-policies/fsx-csi-policy.json"
+    if [ ! -f "${policy_file}" ]; then
+        error "FSx CSI policy file not found: ${policy_file}"
+    fi
+    attach_custom_policy "${role_name}" "${policy_name}" "file://${policy_file}"
+
+    # 3. 创建 ServiceAccount
+    create_service_account "${namespace}" "${service_account}"
+
+    # 4. 创建 Pod Identity Association
+    create_pod_identity_association "${namespace}" "${service_account}" "${role_name}"
+
+    log "✓ FSx CSI Driver Pod Identity setup complete"
+}
+
 # 设置 S3 CSI Driver Pod Identity
 # 参数: $1 = bucket_arns (逗号分隔的 S3 bucket ARNs)
-# 注意: 需要 Mountpoint for Amazon S3 CSI Driver v2.x+
+# 注意:
+#   - 需要 Mountpoint for Amazon S3 CSI Driver v2.x+
+#   - 支持 S3 Express One Zone (directory buckets)
+#   - Directory bucket format: bucket-name--zone-id--x-s3
 setup_s3_csi_pod_identity() {
     log "=========================================="
     log "Setting up S3 CSI Driver with Pod Identity"
@@ -414,28 +447,41 @@ setup_s3_csi_pod_identity() {
         error "S3 bucket ARNs are required for S3 CSI Driver setup"
     fi
 
-    # 转换逗号分隔的 ARNs 为 JSON 数组
+    # 转换逗号分隔的 ARNs 为 JSON 数组，并检测 S3 Express One Zone buckets
     local bucket_resources=""
     local object_resources=""
+    local s3express_resources=""
+    local has_s3express=false
+
     IFS=',' read -ra ARNS <<< "$bucket_arns"
     for arn in "${ARNS[@]}"; do
         arn=$(echo "$arn" | xargs) # trim whitespace
-        bucket_resources="${bucket_resources}\"${arn}\","
-        object_resources="${object_resources}\"${arn}/*\","
-    done
-    bucket_resources=${bucket_resources%,} # remove trailing comma
-    object_resources=${object_resources%,}
 
-    # 创建 S3 CSI Driver 策略
-    local policy_doc=$(cat <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
+        # 检测是否为 S3 Express One Zone bucket (directory bucket)
+        if [[ "$arn" == *"s3express"* ]] || [[ "$arn" == *"--x-s3"* ]]; then
+            log "Detected S3 Express One Zone bucket: ${arn}"
+            s3express_resources="${s3express_resources}\"${arn}\","
+            has_s3express=true
+        else
+            bucket_resources="${bucket_resources}\"${arn}\","
+            object_resources="${object_resources}\"${arn}/*\","
+        fi
+    done
+    bucket_resources=${bucket_resources%,}
+    object_resources=${object_resources%,}
+    s3express_resources=${s3express_resources%,}
+
+    # 构建策略文档
+    local policy_statements=""
+
+    # 标准 S3 权限
+    if [ -n "$bucket_resources" ]; then
+        policy_statements+='
     {
       "Sid": "MountpointListBuckets",
       "Effect": "Allow",
       "Action": ["s3:ListBucket"],
-      "Resource": [${bucket_resources}]
+      "Resource": ['"${bucket_resources}"']
     },
     {
       "Sid": "MountpointObjectAccess",
@@ -446,8 +492,45 @@ setup_s3_csi_pod_identity() {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload"
       ],
-      "Resource": [${object_resources}]
-    }
+      "Resource": ['"${object_resources}"']
+    }'
+    fi
+
+    # S3 Express One Zone 权限
+    if [ "$has_s3express" = true ]; then
+        [ -n "$policy_statements" ] && policy_statements+=","
+        policy_statements+='
+    {
+      "Sid": "S3ExpressCreateSession",
+      "Effect": "Allow",
+      "Action": ["s3express:CreateSession"],
+      "Resource": ['"${s3express_resources}"']
+    },
+    {
+      "Sid": "S3ExpressListBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ['"${s3express_resources}"']
+    },
+    {
+      "Sid": "S3ExpressObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": ['"${s3express_resources}/*"']
+    }'
+        log "✓ Added S3 Express One Zone (CreateSession + Object Access) permissions"
+    fi
+
+    # 创建完整策略文档
+    local policy_doc=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [${policy_statements}
   ]
 }
 EOF
@@ -468,6 +551,63 @@ EOF
     create_pod_identity_association "${namespace}" "${service_account}" "${role_name}"
 
     log "✓ S3 CSI Driver Pod Identity setup complete"
+}
+
+# ============================================
+# Metrics Server Setup (No IAM required)
+# ============================================
+
+# 设置 Metrics Server（无需 Pod Identity，纯 Kubernetes 内置功能）
+setup_metrics_server() {
+    log "=========================================="
+    log "Setting up Metrics Server"
+    log "=========================================="
+
+    local manifest_file="${PROJECT_ROOT}/manifests/addons/metrics-server.yaml"
+
+    if [ ! -f "$manifest_file" ]; then
+        error "Metrics Server manifest not found: ${manifest_file}"
+    fi
+
+    log "Checking if Metrics Server is already installed"
+    if kubectl get deployment metrics-server -n kube-system &>/dev/null; then
+        log "Metrics Server already exists, checking if it's from EKS addon..."
+        # Check if selector labels match our manifest
+        CURRENT_SELECTOR=$(kubectl get deployment metrics-server -n kube-system -o jsonpath='{.spec.selector.matchLabels}')
+        if echo "$CURRENT_SELECTOR" | grep -q "app.kubernetes.io/instance"; then
+            log "Detected EKS-managed Metrics Server with incompatible selector, deleting..."
+            kubectl delete deployment metrics-server -n kube-system --ignore-not-found=true
+            log "Installing custom Metrics Server..."
+            kubectl apply -f "${manifest_file}"
+        else
+            log "Updating existing Metrics Server..."
+            kubectl apply -f "${manifest_file}"
+        fi
+    else
+        log "Installing Metrics Server..."
+        kubectl apply -f "${manifest_file}"
+    fi
+
+    log "Waiting for Metrics Server to be ready..."
+    if kubectl wait --for=condition=available --timeout=180s \
+        deployment/metrics-server -n kube-system &>/dev/null; then
+        log "✓ Metrics Server is ready"
+    else
+        warn "Metrics Server deployment timeout, checking status..."
+        kubectl get pods -n kube-system -l k8s-app=metrics-server
+    fi
+
+    log "Verifying Metrics Server functionality..."
+    sleep 10
+    if kubectl top nodes &>/dev/null; then
+        log "✓ Metrics Server is working correctly"
+        kubectl top nodes
+    else
+        warn "Metrics Server may need more time to collect metrics (this is normal on first install)"
+        log "You can verify later with: kubectl top nodes"
+    fi
+
+    log "✓ Metrics Server setup complete"
 }
 
 # ============================================
@@ -593,7 +733,9 @@ Functions:
     - setup_ebs_csi_pod_identity
     - setup_alb_controller_pod_identity
     - setup_efs_csi_pod_identity
+    - setup_fsx_csi_pod_identity
     - setup_s3_csi_pod_identity <bucket_arns>
+    - setup_metrics_server (no IAM required)
 
   Utility Functions:
     - list_pod_identity_associations

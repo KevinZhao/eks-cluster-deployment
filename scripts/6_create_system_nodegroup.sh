@@ -315,6 +315,36 @@ systemctl start containerd
 echo "=== LVM Setup Complete ==="
 
 --==BOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+# Install FSx Lustre client on Amazon Linux 2023
+set -ex
+
+echo "=== Installing Lustre Client on AL2023 ==="
+
+# Check kernel version
+KERNEL_VERSION=\$(uname -r)
+echo "Kernel version: \$KERNEL_VERSION"
+
+# Install Lustre client for Amazon Linux 2023
+dnf install -y lustre-client
+
+# Load Lustre kernel module
+modprobe lustre
+
+# Verify installation
+if lsmod | grep -q lustre; then
+  echo "✓ Lustre client installed successfully"
+  lsmod | grep lustre
+  modinfo lustre | grep version
+else
+  echo "⚠ WARNING: Lustre module not loaded"
+fi
+
+echo "=== Lustre Client Installation Complete ==="
+
+--==BOUNDARY==
 Content-Type: application/node.eks.aws
 
 ---
@@ -695,15 +725,30 @@ echo ""
 echo "Step 2: Creating IAM Role and Instance Profile..."
 create_eks_node_iam_role
 
+# Validate IAM role and instance profile were created successfully
+validate_iam_role_exists "${NODE_ROLE_NAME}"
+validate_instance_profile_exists "${INSTANCE_PROFILE_NAME}"
+
 # 步骤3：获取最新的EKS optimized AMI
 echo ""
 echo "Step 3: Getting latest EKS optimized AMI..."
+# Use Amazon Linux 2023 with FSx Lustre support
 AMI_ID=$(aws ssm get-parameter \
     --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id" \
     --region "${AWS_REGION}" \
     --query 'Parameter.Value' \
     --output text)
-echo "AMI ID: ${AMI_ID}"
+
+if [ -z "${AMI_ID}" ] || [ "${AMI_ID}" = "None" ]; then
+    echo "❌ ERROR: Could not retrieve AMI ID from SSM parameter"
+    echo "   Parameter: /aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id"
+    exit 1
+fi
+
+echo "AMI ID: ${AMI_ID} (Amazon Linux 2023 with FSx Lustre support)"
+
+# Validate AMI exists and is available
+validate_ami_exists "${AMI_ID}" "${AWS_REGION}"
 
 # 步骤4：创建user-data（包含LVM setup和NodeConfig）
 echo ""

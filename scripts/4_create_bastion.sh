@@ -43,6 +43,12 @@ echo "Region: ${AWS_REGION}"
 echo "Cluster: ${CLUSTER_NAME}"
 echo ""
 
+# Validate VPC and subnet exist
+echo -e "${YELLOW}Validating AWS resources...${NC}"
+validate_vpc_exists "${VPC_ID}" "${AWS_REGION}"
+validate_subnet_exists "${PRIVATE_SUBNET_A}" "${VPC_ID}" "${AWS_REGION}"
+echo ""
+
 # Get VPC endpoint security group ID
 echo -e "${YELLOW}Looking for VPC endpoint security group...${NC}"
 VPC_ENDPOINT_SG=$(aws ec2 describe-security-groups \
@@ -57,14 +63,17 @@ if [ -z "${VPC_ENDPOINT_SG}" ] || [ "${VPC_ENDPOINT_SG}" = "None" ]; then
     exit 1
 fi
 
+# Validate security group exists and belongs to correct VPC
+validate_security_group_exists "${VPC_ENDPOINT_SG}" "${VPC_ID}" "${AWS_REGION}"
+
 echo "VPC Endpoint Security Group: ${VPC_ENDPOINT_SG}"
 echo ""
 
-# Get latest Amazon Linux 2023 AMI
-echo -e "${YELLOW}Getting latest Amazon Linux 2023 AMI...${NC}"
+# Get latest Amazon Linux 2023 ARM64 AMI (for t4g instances)
+echo -e "${YELLOW}Getting latest Amazon Linux 2023 ARM64 AMI...${NC}"
 AMI_ID=$(aws ec2 describe-images \
     --owners amazon \
-    --filters "Name=name,Values=al2023-ami-2023.*-x86_64" \
+    --filters "Name=name,Values=al2023-ami-2023.*-arm64" \
               "Name=state,Values=available" \
     --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
     --output text \
@@ -285,7 +294,7 @@ if [ -z "${INSTANCE_ID}" ]; then
 
     INSTANCE_ID=$(aws ec2 run-instances \
         --image-id ${AMI_ID} \
-        --instance-type t3.micro \
+        --instance-type t4g.micro \
         --subnet-id ${PRIVATE_SUBNET_A} \
         --security-group-ids ${VPC_ENDPOINT_SG} \
         --iam-instance-profile Name=EKS-Deploy-Profile \
@@ -369,15 +378,15 @@ else
         --document-name "AWS-RunShellScript" \
         --timeout-seconds 600 \
         --parameters 'commands=[
-            "echo Installing kubectl...",
-            "curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl",
+            "echo Installing kubectl for ARM64...",
+            "curl -LO https://dl.k8s.io/release/v1.31.0/bin/linux/arm64/kubectl",
             "sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl",
             "rm kubectl",
-            "echo Installing eksctl...",
-            "curl -sLO https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz",
-            "tar -xzf eksctl_Linux_amd64.tar.gz",
+            "echo Installing eksctl for ARM64...",
+            "curl -sLO https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_arm64.tar.gz",
+            "tar -xzf eksctl_Linux_arm64.tar.gz",
             "sudo mv eksctl /usr/local/bin/",
-            "rm eksctl_Linux_amd64.tar.gz",
+            "rm eksctl_Linux_arm64.tar.gz",
             "echo Installing helm...",
             "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
             "echo Installing additional tools...",

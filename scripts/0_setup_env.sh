@@ -39,7 +39,7 @@ else
     export AWS_DEFAULT_REGION
 fi
 
-# 4. 验证必需的环境变量
+# 4. 验证必需的环境变量 (支持3-4个AZ)
 REQUIRED_VARS=(
     "CLUSTER_NAME"
     "VPC_ID"
@@ -49,6 +49,12 @@ REQUIRED_VARS=(
     "PUBLIC_SUBNET_A"
     "PUBLIC_SUBNET_B"
     "PUBLIC_SUBNET_C"
+)
+
+# 第4个 AZ 是可选的 (Oregon等区域有4个AZ)
+OPTIONAL_4TH_AZ_VARS=(
+    "PRIVATE_SUBNET_D"
+    "PUBLIC_SUBNET_D"
 )
 
 MISSING_VARS=()
@@ -66,12 +72,23 @@ fi
 export K8S_VERSION="${K8S_VERSION:-1.34}"
 export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 
-# 6. 自动推导 AZ（基于子网 ID 模式）
+# 6. 自动推导 AZ（基于子网 ID 模式，支持3-4个AZ）
 if [ -z "$AZ_A" ] || [ -z "$AZ_B" ] || [ -z "$AZ_C" ]; then
     log "Availability zones not set, deriving from region..."
     export AZ_A="${AWS_REGION}a"
     export AZ_B="${AWS_REGION}b"
     export AZ_C="${AWS_REGION}c"
+fi
+
+# 检测是否使用第4个AZ (如果定义了 PRIVATE_SUBNET_D 或 PUBLIC_SUBNET_D)
+if [ -n "$PRIVATE_SUBNET_D" ] || [ -n "$PUBLIC_SUBNET_D" ]; then
+    log "Detected 4th availability zone configuration"
+    if [ -z "$AZ_D" ]; then
+        export AZ_D="${AWS_REGION}d"
+    fi
+    export USE_4_AZS=true
+else
+    export USE_4_AZS=false
 fi
 
 # 7. 验证配置
@@ -106,19 +123,61 @@ if [ "$SYSTEM_NODE_DATA_VOLUME_SIZE" -lt 50 ]; then
     export SYSTEM_NODE_DATA_VOLUME_SIZE=50
 fi
 
-# 9. 显示配置摘要
+# 9. 可选组件配置（默认值）
+normalize_bool() {
+    local val="${1,,}"  # 转换为小写
+    case "$val" in
+        true|1|yes|y) echo "true" ;;
+        *) echo "false" ;;
+    esac
+}
+
+# Storage (gp3/io2 always installed, only IOPS is configurable)
+export IO2_IOPS="${IO2_IOPS:-10000}"
+
+# Auto-scaling
+export INSTALL_KARPENTER=$(normalize_bool "${INSTALL_KARPENTER:-false}")
+export KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
+
+# File Systems (Optional)
+export INSTALL_EFS_CSI=$(normalize_bool "${INSTALL_EFS_CSI:-false}")
+export INSTALL_FSX_CSI=$(normalize_bool "${INSTALL_FSX_CSI:-false}")
+
+# 验证 IO2 IOPS 范围
+if [ "$IO2_IOPS" -lt 100 ] || [ "$IO2_IOPS" -gt 64000 ]; then
+    echo "⚠ WARNING: IO2_IOPS out of range (100-64000), using default: 10000"
+    export IO2_IOPS=10000
+fi
+
+# 10. 显示配置摘要
 log "=== Configuration Summary ==="
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 echo "AWS_REGION: $AWS_REGION"
 echo "CLUSTER_NAME: $CLUSTER_NAME"
 echo "K8S_VERSION: $K8S_VERSION"
 echo "VPC_ID: $VPC_ID"
-echo "AZ: $AZ_A, $AZ_B, $AZ_C"
-echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"
-echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
+
+if [ "$USE_4_AZS" = "true" ]; then
+    echo "AZ: $AZ_A, $AZ_B, $AZ_C, $AZ_D (4 Availability Zones)"
+    echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C, $PRIVATE_SUBNET_D"
+    echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C, $PUBLIC_SUBNET_D"
+else
+    echo "AZ: $AZ_A, $AZ_B, $AZ_C (3 Availability Zones)"
+    echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"
+    echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
+fi
 echo "SYSTEM_NODE_INSTANCE_TYPE: $SYSTEM_NODE_INSTANCE_TYPE"
 echo "SYSTEM_NODE_DATA_VOLUME_SIZE: ${SYSTEM_NODE_DATA_VOLUME_SIZE}GB"
 echo "SYSTEM_NODE_LABEL: ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}"
+echo ""
+echo "Storage Configuration:"
+echo "  - gp3 StorageClass: Always installed (default)"
+echo "  - io2 StorageClass: Always installed (${IO2_IOPS} IOPS)"
+echo ""
+echo "Optional Components:"
+echo "  - Karpenter: $INSTALL_KARPENTER $([ "$INSTALL_KARPENTER" = "true" ] && echo "(v${KARPENTER_VERSION})" || echo "")"
+echo "  - EFS CSI: $INSTALL_EFS_CSI"
+echo "  - FSx CSI: $INSTALL_FSX_CSI"
 log "============================"
 
 # ============================================================
@@ -175,4 +234,206 @@ Please ensure you are operating on the correct cluster."
     log "✓ kubectl verified - connected to cluster '${cluster_name}'"
     log "  Context: ${current_context}"
     log "  Endpoint: ${current_endpoint}"
+}
+
+# ============================================
+# Resource Validation Functions
+# ============================================
+
+# Validate VPC exists
+validate_vpc_exists() {
+    local vpc_id="${1}"
+    local region="${2:-${AWS_REGION}}"
+
+    if [ -z "${vpc_id}" ]; then
+        error "VPC ID is required"
+    fi
+
+    log "Validating VPC ${vpc_id}..."
+    if ! aws ec2 describe-vpcs \
+        --vpc-ids "${vpc_id}" \
+        --region "${region}" \
+        --query 'Vpcs[0].VpcId' \
+        --output text &>/dev/null; then
+        error "VPC '${vpc_id}' not found in region '${region}'"
+    fi
+    log "✓ VPC ${vpc_id} validated"
+}
+
+# Validate subnet exists and belongs to VPC
+validate_subnet_exists() {
+    local subnet_id="${1}"
+    local expected_vpc_id="${2:-}"
+    local region="${3:-${AWS_REGION}}"
+
+    if [ -z "${subnet_id}" ]; then
+        error "Subnet ID is required"
+    fi
+
+    log "Validating subnet ${subnet_id}..."
+    local subnet_info
+    subnet_info=$(aws ec2 describe-subnets \
+        --subnet-ids "${subnet_id}" \
+        --region "${region}" \
+        --query 'Subnets[0].[SubnetId,VpcId,AvailabilityZone]' \
+        --output text 2>/dev/null)
+
+    if [ -z "${subnet_info}" ]; then
+        error "Subnet '${subnet_id}' not found in region '${region}'"
+    fi
+
+    local actual_vpc_id=$(echo "${subnet_info}" | awk '{print $2}')
+    local az=$(echo "${subnet_info}" | awk '{print $3}')
+
+    if [ -n "${expected_vpc_id}" ] && [ "${actual_vpc_id}" != "${expected_vpc_id}" ]; then
+        error "Subnet '${subnet_id}' belongs to VPC '${actual_vpc_id}', expected '${expected_vpc_id}'"
+    fi
+
+    log "✓ Subnet ${subnet_id} validated (VPC: ${actual_vpc_id}, AZ: ${az})"
+}
+
+# Validate multiple subnets
+validate_subnets() {
+    local subnet_list="${1}"
+    local vpc_id="${2:-}"
+    local region="${3:-${AWS_REGION}}"
+
+    if [ -z "${subnet_list}" ]; then
+        error "Subnet list is required"
+    fi
+
+    IFS=',' read -ra SUBNETS <<< "${subnet_list}"
+    for subnet_id in "${SUBNETS[@]}"; do
+        subnet_id=$(echo "${subnet_id}" | xargs)  # Trim whitespace
+        validate_subnet_exists "${subnet_id}" "${vpc_id}" "${region}"
+    done
+}
+
+# Validate AMI exists
+validate_ami_exists() {
+    local ami_id="${1}"
+    local region="${2:-${AWS_REGION}}"
+
+    if [ -z "${ami_id}" ]; then
+        error "AMI ID is required"
+    fi
+
+    log "Validating AMI ${ami_id}..."
+    local ami_info
+    ami_info=$(aws ec2 describe-images \
+        --image-ids "${ami_id}" \
+        --region "${region}" \
+        --query 'Images[0].[ImageId,State,Name]' \
+        --output text 2>/dev/null)
+
+    if [ -z "${ami_info}" ]; then
+        error "AMI '${ami_id}' not found in region '${region}'"
+    fi
+
+    local ami_state=$(echo "${ami_info}" | awk '{print $2}')
+    local ami_name=$(echo "${ami_info}" | awk '{$1=$2=""; print $0}' | xargs)
+
+    if [ "${ami_state}" != "available" ]; then
+        error "AMI '${ami_id}' is not available (state: ${ami_state})"
+    fi
+
+    log "✓ AMI ${ami_id} validated (${ami_name})"
+}
+
+# Validate security group exists
+validate_security_group_exists() {
+    local sg_id="${1}"
+    local expected_vpc_id="${2:-}"
+    local region="${3:-${AWS_REGION}}"
+
+    if [ -z "${sg_id}" ]; then
+        error "Security Group ID is required"
+    fi
+
+    log "Validating security group ${sg_id}..."
+    local sg_info
+    sg_info=$(aws ec2 describe-security-groups \
+        --group-ids "${sg_id}" \
+        --region "${region}" \
+        --query 'SecurityGroups[0].[GroupId,VpcId,GroupName]' \
+        --output text 2>/dev/null)
+
+    if [ -z "${sg_info}" ]; then
+        error "Security Group '${sg_id}' not found in region '${region}'"
+    fi
+
+    local actual_vpc_id=$(echo "${sg_info}" | awk '{print $2}')
+    local sg_name=$(echo "${sg_info}" | awk '{print $3}')
+
+    if [ -n "${expected_vpc_id}" ] && [ "${actual_vpc_id}" != "${expected_vpc_id}" ]; then
+        error "Security Group '${sg_id}' belongs to VPC '${actual_vpc_id}', expected '${expected_vpc_id}'"
+    fi
+
+    log "✓ Security Group ${sg_id} validated (${sg_name}, VPC: ${actual_vpc_id})"
+}
+
+# Validate IAM role exists
+validate_iam_role_exists() {
+    local role_name="${1}"
+
+    if [ -z "${role_name}" ]; then
+        error "IAM role name is required"
+    fi
+
+    log "Validating IAM role ${role_name}..."
+    if ! aws iam get-role \
+        --role-name "${role_name}" \
+        --query 'Role.RoleName' \
+        --output text &>/dev/null; then
+        error "IAM role '${role_name}' not found"
+    fi
+
+    log "✓ IAM role ${role_name} validated"
+}
+
+# Validate IAM instance profile exists
+validate_instance_profile_exists() {
+    local profile_name="${1}"
+
+    if [ -z "${profile_name}" ]; then
+        error "Instance profile name is required"
+    fi
+
+    log "Validating instance profile ${profile_name}..."
+    if ! aws iam get-instance-profile \
+        --instance-profile-name "${profile_name}" \
+        --query 'InstanceProfile.InstanceProfileName' \
+        --output text &>/dev/null; then
+        error "Instance profile '${profile_name}' not found"
+    fi
+
+    log "✓ Instance profile ${profile_name} validated"
+}
+
+# Validate EKS cluster exists
+validate_eks_cluster_exists() {
+    local cluster_name="${1}"
+    local region="${2:-${AWS_REGION}}"
+
+    if [ -z "${cluster_name}" ]; then
+        error "Cluster name is required"
+    fi
+
+    log "Validating EKS cluster ${cluster_name}..."
+    local cluster_status
+    cluster_status=$(aws eks describe-cluster \
+        --name "${cluster_name}" \
+        --region "${region}" \
+        --query 'cluster.status' \
+        --output text 2>/dev/null)
+
+    if [ -z "${cluster_status}" ]; then
+        error "EKS cluster '${cluster_name}' not found in region '${region}'"
+    fi
+
+    if [ "${cluster_status}" != "ACTIVE" ]; then
+        warn "EKS cluster '${cluster_name}' is not ACTIVE (status: ${cluster_status})"
+    fi
+
+    log "✓ EKS cluster ${cluster_name} validated (status: ${cluster_status})"
 }

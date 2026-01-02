@@ -24,6 +24,7 @@ reclaimPolicy: Delete
 ---
 # io2 - 高性能存储（数据库/高 IOPS 应用）
 # 适用于: MySQL, PostgreSQL, MongoDB 等需要低延迟和高 IOPS 的应用
+# IOPS 可通过 .env 中的 IO2_IOPS 配置（范围: 100-64000）
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -35,7 +36,7 @@ provisioner: ebs.csi.aws.com
 parameters:
   type: io2
   fsType: ext4
-  iops: "10000"             # 10000 IOPS（可根据需求调整 100-64000）
+  iops: "${IO2_IOPS}"       # 由环境变量控制（默认 10000 IOPS）
   encrypted: "true"         # 启用加密
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true

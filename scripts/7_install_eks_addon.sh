@@ -41,11 +41,7 @@ echo ""
 
 # 2. 验证集群存在并更新 kubeconfig
 echo "Verifying EKS cluster exists and updating kubeconfig..."
-if ! aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} &>/dev/null; then
-    echo "❌ ERROR: EKS cluster '${CLUSTER_NAME}' not found in region '${AWS_REGION}'"
-    echo "Please run script 5_install_eks_cluster.sh first to create the cluster."
-    exit 1
-fi
+validate_eks_cluster_exists "${CLUSTER_NAME}" "${AWS_REGION}"
 
 # 验证 kubectl context（使用统一函数）
 verify_kubectl_context
@@ -76,7 +72,9 @@ kubectl apply -f "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler-rbac.yaml"
 
 # 4.2 部署Cluster Autoscaler Deployment
 echo "Deploying Cluster Autoscaler..."
-envsubst < "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
+sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+    -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+    "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
 
 # 4.3 验证Cluster Autoscaler
 echo "Checking Cluster Autoscaler status..."
@@ -209,7 +207,9 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
 # 6.6 创建自定义 StorageClass
 echo ""
 echo "Step 6.6: Creating custom StorageClasses (gp3, io2)..."
-kubectl apply -f "${PROJECT_ROOT}/manifests/storage/storageclass.yaml"
+echo "Applying gp3 and io2 StorageClasses with IO2_IOPS=${IO2_IOPS}..."
+sed -e "s/\${IO2_IOPS}/$IO2_IOPS/g" \
+    "${PROJECT_ROOT}/manifests/storage/storageclass.yaml" | kubectl apply -f -
 
 # 6.7 将 gp3 设为默认 StorageClass
 echo "Setting gp3 as default StorageClass..."
@@ -218,6 +218,11 @@ kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.ku
 
 echo "✓ StorageClasses configured:"
 kubectl get storageclass
+
+# 6.8 安装 Metrics Server
+echo ""
+echo "Step 6.8: Installing Metrics Server..."
+setup_metrics_server
 
 # 7. 最终验证
 echo ""
@@ -229,12 +234,15 @@ echo "=== EKS Addons Installation Complete ==="
 echo "✓ Cluster Autoscaler installed and configured"
 echo "✓ AWS Load Balancer Controller installed and configured"
 echo "✓ EBS CSI Driver addon installed and configured"
+echo "✓ Metrics Server installed and configured"
 echo "✓ StorageClasses created: gp3 (default), io2"
 echo "✓ All components use Pod Identity for AWS authentication"
 echo ""
 echo "Next steps:"
 echo "  1. Check nodes: kubectl get nodes --show-labels"
 echo "  2. Check all pods: kubectl get pods -A"
-echo "  3. Deploy test app: kubectl apply -f manifests/examples/autoscaler.yaml"
-echo "  4. Optional: Install EFS/S3 CSI drivers with ./scripts/7_install_optional_csi_drivers.sh"
+echo "  3. Verify metrics: kubectl top nodes"
+echo "  4. Deploy test app: kubectl apply -f manifests/examples/autoscaler.yaml"
+echo "  5. Optional: Install EFS/S3 CSI drivers with ./scripts/option_install_csi_drivers.sh"
+echo "  6. Optional: Install Karpenter with ./scripts/option_install_karpenter.sh"
 echo ""

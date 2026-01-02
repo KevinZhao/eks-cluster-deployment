@@ -25,7 +25,6 @@ MISSING_DEPS=()
 command -v kubectl >/dev/null 2>&1 || MISSING_DEPS+=("kubectl")
 command -v eksctl >/dev/null 2>&1 || MISSING_DEPS+=("eksctl")
 command -v helm >/dev/null 2>&1 || MISSING_DEPS+=("helm")
-command -v envsubst >/dev/null 2>&1 || MISSING_DEPS+=("envsubst (from gettext package)")
 command -v jq >/dev/null 2>&1 || MISSING_DEPS+=("jq")
 command -v aws >/dev/null 2>&1 || MISSING_DEPS+=("aws cli")
 
@@ -46,6 +45,12 @@ echo ""
 # 主流程开始
 # ===================================================================
 
+# Validate VPC and subnets before cluster creation
+echo "Validating AWS resources..."
+validate_vpc_exists "${VPC_ID}" "${AWS_REGION}"
+validate_subnets "${PRIVATE_SUBNETS}" "${VPC_ID}" "${AWS_REGION}"
+echo ""
+
 # 2. 创建EKS集群（控制平面）
 echo "Step 2: Creating EKS cluster control plane..."
 
@@ -55,7 +60,23 @@ if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>
     echo "Skipping cluster creation..."
 else
     echo "Creating new cluster..."
-    envsubst < "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_DEFAULT_REGION}/$AWS_DEFAULT_REGION/g" \
+        -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
+        -e "s/\${SERVICE_IPV4_CIDR}/$SERVICE_IPV4_CIDR/g" \
+        -e "s/\${VPC_ID}/$VPC_ID/g" \
+        -e "s/\${AZ_A}/$AZ_A/g" \
+        -e "s/\${AZ_B}/$AZ_B/g" \
+        -e "s/\${AZ_C}/$AZ_C/g" \
+        -e "s/\${PRIVATE_SUBNET_A}/$PRIVATE_SUBNET_A/g" \
+        -e "s/\${PRIVATE_SUBNET_B}/$PRIVATE_SUBNET_B/g" \
+        -e "s/\${PRIVATE_SUBNET_C}/$PRIVATE_SUBNET_C/g" \
+        -e "s/\${PUBLIC_SUBNET_A}/$PUBLIC_SUBNET_A/g" \
+        -e "s/\${PUBLIC_SUBNET_B}/$PUBLIC_SUBNET_B/g" \
+        -e "s/\${PUBLIC_SUBNET_C}/$PUBLIC_SUBNET_C/g" \
+        -e "s/\${SYSTEM_NODE_LABEL_KEY}/$SYSTEM_NODE_LABEL_KEY/g" \
+        -e "s/\${SYSTEM_NODE_LABEL_VALUE}/$SYSTEM_NODE_LABEL_VALUE/g" \
+        "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
     eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
 fi
 
