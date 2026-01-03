@@ -18,13 +18,6 @@
 | [CSI_Drivers_Testing_Summary.md](CSI_Drivers_Testing_Summary.md) | **CSI Drivers 测试总结**<br>所有 CSI Drivers 的测试结果和验证报告 | ✅ 已更新 |
 | [FSx_Lustre_AL2023_Compatibility_Testing.md](FSx_Lustre_AL2023_Compatibility_Testing.md) | **FSx Lustre AL2023 兼容性测试**<br>详细的兼容性测试结果和发现 | ✅ 有效 |
 
-### 🔧 特定组件指南
-
-| 文档 | 描述 | 状态 |
-|------|------|------|
-| [FSx_Lustre_Setup_Guide.md](FSx_Lustre_Setup_Guide.md) | **FSx Lustre 设置指南**<br>FSx Lustre 的多种部署方案 | ℹ️ 参考 |
-| [Node_Lustre_Client_Setup.md](Node_Lustre_Client_Setup.md) | **节点 Lustre 客户端设置**<br>在 EKS 节点上安装 Lustre 客户端 | ℹ️ 参考 |
-
 ---
 
 ## 🎯 快速导航
@@ -187,6 +180,7 @@ FSx Lustre 完整部署流程：
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-01-03 | 移除过时文档，整合文档结构 |
 | 2026-01-02 | 创建文档索引和完整部署指南 |
 | 2026-01-02 | 更新 S3 CSI Driver 到 v2.2.2 |
 | 2026-01-02 | 添加 S3 Express One Zone 完整指南 |
@@ -214,5 +208,5 @@ FSx Lustre 完整部署流程：
 
 ---
 
-**最后更新**: 2026-01-02
-**版本**: 2.0
+**最后更新**: 2026-01-03
+**版本**: 2.1

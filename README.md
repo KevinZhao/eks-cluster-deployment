@@ -54,7 +54,8 @@ kubectl get pods -A
 - ✅ **LVM 存储配置** - 系统节点自动配置 100GB LVM 数据卷
 - ✅ **Pod Identity** - 使用 EKS Pod Identity 替代 IRSA
 - ✅ **自动扩缩容** - Cluster Autoscaler 自动管理节点
-- ✅ **完整 CSI 支持** - EBS/EFS/S3 存储驱动
+- ✅ **完整 CSI 支持** - EBS/EFS/FSx/S3 存储驱动
+- ✅ **GPU 节点支持** - P5/P5en/P6 实例 + EFA 网络
 
 ### 集群架构
 
@@ -88,6 +89,7 @@ EKS Cluster (Kubernetes 1.34)
 | EBS CSI Driver | v1.37.0 | 块存储 |
 | Cluster Autoscaler | v1.34.2 | 自动扩缩容 |
 | AWS LB Controller | v1.13.0 | 负载均衡 |
+| Metrics Server | v0.7.2 | 资源指标 |
 
 ---
 
@@ -121,8 +123,9 @@ EKS Cluster (Kubernetes 1.34)
 
 | 脚本 | 用途 | 执行位置 |
 |------|------|---------|
-| `option_install_csi_drivers.sh` | 安装 EFS/S3 CSI Driver | 堡垒机 |
+| `option_install_csi_drivers.sh` | 安装 EFS/FSx/S3 CSI Driver | 堡垒机 |
 | `option_install_karpenter.sh` | 安装 Karpenter 自动扩缩容 | 堡垒机 |
+| `option_configure_vpc_cni.sh` | 配置 VPC CNI 预热池 | 堡垒机 |
 | `option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | 堡垒机 |
 | `option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | 堡垒机 |
 
@@ -240,6 +243,7 @@ aws ec2 terminate-instances --instance-ids $(cat /tmp/eks-bastion-instance-id.tx
 
 - **[DEPLOYMENT_SOP.md](DEPLOYMENT_SOP.md)** - 完整部署标准操作流程（必读）
 - **[DESIGN.md](DESIGN.md)** - 架构设计和技术决策说明
+- **[docs/](docs/)** - CSI Drivers 部署指南、测试报告、S3 Express 指南
 
 ### 外部参考
 
@@ -262,15 +266,17 @@ eks-cluster-deployment/
 ├── scripts/
 │   ├── 0_setup_env.sh                 # 环境变量加载
 │   ├── 1_enable_vpc_dns.sh            # 启用 VPC DNS
+│   ├── 2_validate_network_environment.sh  # 验证网络配置
 │   ├── 3_create_vpc_endpoints.sh      # 创建 VPC Endpoints
 │   ├── 4_create_bastion.sh            # 创建堡垒机
 │   ├── 5_install_eks_cluster.sh       # 创建集群控制平面
 │   ├── 6_create_system_nodegroup.sh   # 创建系统节点组（LVM）
 │   ├── 7_install_eks_addon.sh         # 安装核心组件
-│   ├── option_install_csi_drivers.sh      # 安装 EFS/S3 CSI（可选）
-│   ├── option_install_karpenter.sh        # 安装 Karpenter（可选）
-│   ├── option_test_pod_scheduling.sh      # 测试 Pod 调度
-│   ├── option_test_karpenter_pools.sh     # 测试 Karpenter 节点池
+│   ├── option_install_csi_drivers.sh  # 安装 EFS/FSx/S3 CSI（可选）
+│   ├── option_install_karpenter.sh    # 安装 Karpenter（可选）
+│   ├── option_configure_vpc_cni.sh    # 配置 VPC CNI（可选）
+│   ├── option_test_pod_scheduling.sh  # 测试 Pod 调度
+│   ├── option_test_karpenter_pools.sh # 测试 Karpenter 节点池
 │   └── pod_identity_helpers.sh        # Pod Identity 辅助函数
 │
 ├── manifests/
@@ -280,8 +286,15 @@ eks-cluster-deployment/
 │   │   ├── cluster-autoscaler-rbac.yaml   # Cluster Autoscaler RBAC
 │   │   ├── cluster-autoscaler.yaml        # Cluster Autoscaler 部署
 │   │   ├── efs-csi-driver.yaml            # EFS CSI Driver
-│   │   └── s3-csi-driver.yaml             # S3 CSI Driver
+│   │   ├── fsx-csi-driver.yaml            # FSx Lustre CSI Driver
+│   │   ├── s3-csi-driver.yaml             # S3 CSI Driver
+│   │   └── metrics-server.yaml            # Metrics Server
 │   └── examples/                          # 示例应用
+│
+├── docs/                                  # 详细文档
+│   ├── CSI_Drivers_Deployment_Guide.md    # CSI 完整部署指南
+│   ├── CSI_Drivers_Testing_Summary.md     # CSI 测试报告
+│   └── s3-express-onezone-guide.md        # S3 Express 指南
 │
 └── terraform/                             # 基础设施代码（VPC 等）
 ```
@@ -307,6 +320,6 @@ eks-cluster-deployment/
 ---
 
 **维护者**: Platform Team
-**最后更新**: 2025-12-29
-**文档版本**: v2.0
+**最后更新**: 2026-01-03
+**文档版本**: v2.1
 **完整部署流程**: [DEPLOYMENT_SOP.md](DEPLOYMENT_SOP.md)

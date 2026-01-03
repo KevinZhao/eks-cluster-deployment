@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-efa-setup
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-efa-setup
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: gpu-efa-setup
+  template:
+    metadata:
+      labels:
+        app: gpu-efa-setup
+    spec:
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: gpu-efa-setup
+      nodeSelector:
+        workload-type: gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: karpenter.sh/spot
+          operator: Exists
+          effect: PreferNoSchedule
+      initContainers:
+        - name: efa-setup
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              #!/bin/bash
+              set -ex
+
+              # Check if already configured
+              if [ -f /host/etc/gpu-efa-configured ]; then
+                echo "EFA already configured"
+                exit 0
+              fi
+
+              # Get instance metadata using IMDSv2
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+              INSTANCE_TYPE=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-type)
+              MAC=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/mac)
+              SUBNET_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}/subnet-id)
+              REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+
+              echo "Instance: $INSTANCE_ID ($INSTANCE_TYPE) in region $REGION"
+
+              # Configure AWS CLI region
+              export AWS_DEFAULT_REGION=$REGION
+
+              # Determine EFA-only count based on instance type
+              # EFA_COUNT = total ENIs - 1 (primary interface)
+              case "$INSTANCE_TYPE" in
+                p5.48xlarge)
+                  EFA_COUNT=31  # 32 ENIs total
+                  ;;
+                p5en.48xlarge)
+                  EFA_COUNT=15  # 16 ENIs total
+                  ;;
+                p6-b200.48xlarge)
+                  EFA_COUNT=7   # 8 ENIs total
+                  ;;
+                *)
+                  echo "Unknown GPU instance type: $INSTANCE_TYPE, skipping EFA setup"
+                  touch /host/etc/gpu-efa-configured
+                  exit 0
+                  ;;
+              esac
+
+              echo "Attaching $EFA_COUNT EFA-only interfaces for $INSTANCE_TYPE"
+
+              # Get security group from primary interface
+              SG_ID=$(aws ec2 describe-instances \
+                --instance-ids $INSTANCE_ID \
+                --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+                --output text)
+
+              echo "Using security group: $SG_ID"
+
+              # Attach EFA-only interfaces (device index 1 to N)
+              for i in $(seq 1 $EFA_COUNT); do
+                echo "[$i/$EFA_COUNT] Creating EFA-only interface..."
+
+                ENI_ID=$(aws ec2 create-network-interface \
+                  --subnet-id "$SUBNET_ID" \
+                  --groups "$SG_ID" \
+                  --interface-type efa \
+                  --tag-specifications "ResourceType=network-interface,Tags=[{Key=Name,Value=gpu-efa-${INSTANCE_ID}-${i}},{Key=Instance,Value=${INSTANCE_ID}},{Key=Type,Value=efa-only}]" \
+                  --query 'NetworkInterface.NetworkInterfaceId' \
+                  --output text 2>&1)
+
+                if [ $? -ne 0 ] || [ -z "$ENI_ID" ] || [[ "$ENI_ID" == *"error"* ]]; then
+                  echo "Failed to create ENI $i: $ENI_ID"
+                  continue
+                fi
+
+                echo "  Created: $ENI_ID"
+
+                # Attach to instance
+                ATTACH_RESULT=$(aws ec2 attach-network-interface \
+                  --network-interface-id "$ENI_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --device-index "$i" 2>&1)
+
+                if [ $? -ne 0 ]; then
+                  echo "  Failed to attach ENI $i: $ATTACH_RESULT"
+                  # Clean up the created ENI
+                  aws ec2 delete-network-interface --network-interface-id "$ENI_ID" 2>&1 || true
+                  continue
+                fi
+
+                echo "  Attached at device index $i"
+                sleep 1
+              done
+
+              # Mark as configured
+              touch /host/etc/gpu-efa-configured
+              echo "=== EFA setup complete for $INSTANCE_TYPE ==="
+          volumeMounts:
+            - name: host-etc
+              mountPath: /host/etc
+          securityContext:
+            privileged: true
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+      volumes:
+        - name: host-etc
+          hostPath:
+            path: /etc
+            type: Directory

@@ -1063,17 +1063,17 @@ aws ec2 start-instances \
 
 **执行位置**：堡垒机
 
-安装 EFS 或 S3 CSI Driver：
+安装 EFS、FSx 或 S3 CSI Driver：
 
 ```bash
 # 非交互模式 - 安装 EFS CSI Driver
 INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
 
+# 非交互模式 - 安装 FSx Lustre CSI Driver
+INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
+
 # 非交互模式 - 安装 S3 CSI Driver
 INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_install_csi_drivers.sh
-
-# 非交互模式 - 安装两个驱动
-INSTALL_DRIVERS=both S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_install_csi_drivers.sh
 
 # 或交互模式（会提示选择）
 ./scripts/option_install_csi_drivers.sh
@@ -1299,8 +1299,9 @@ SYSTEM_NODE_MAX_SIZE=6                 # 最大节点数
 
 | 脚本 | 用途 | 执行位置 |
 |------|------|---------|
-| option_install_csi_drivers.sh | 安装 EFS/S3 CSI Driver | VPC 内 |
+| option_install_csi_drivers.sh | 安装 EFS/FSx/S3 CSI Driver | VPC 内 |
 | option_install_karpenter.sh | 安装 Karpenter 自动扩缩容 | VPC 内 |
+| option_configure_vpc_cni.sh | 配置 VPC CNI 预热池 | VPC 内 |
 | option_test_pod_scheduling.sh | 测试 Pod 调度 | VPC 内 |
 | option_test_karpenter_pools.sh | 测试 Karpenter 节点池 | VPC 内 |
 
@@ -1383,5 +1384,5 @@ SYSTEM_NODE_MAX_SIZE=6                 # 最大节点数
 ---
 
 **文档维护者**: Platform Team
-**最后审核**: 2025-12-29
-**下次审核**: 2026-03-29
+**最后审核**: 2026-01-03
+**下次审核**: 2026-04-03

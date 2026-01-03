@@ -5,6 +5,7 @@ set -e
 # 日志函数
 log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"; }
 error() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
+warn() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] WARN: $*" >&2; }
 
 log "Loading environment configuration..."
 
