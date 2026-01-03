@@ -82,10 +82,9 @@ export ALB_CONTROLLER_CHART_VERSION="${ALB_CONTROLLER_CHART_VERSION:-1.16.0}"
 # Karpenter
 export KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
 
-# CSI Drivers
-export EFS_CSI_VERSION="${EFS_CSI_VERSION:-v2.2.0}"
-export FSX_CSI_VERSION="${FSX_CSI_VERSION:-v1.7.0}"
-export S3_CSI_VERSION="${S3_CSI_VERSION:-v2.2.2}"
+# CSI Drivers (EKS Managed Addons - versions managed by AWS)
+# Note: EFS, FSx, S3 CSI drivers are installed as EKS managed addons
+# Version is automatically selected by AWS based on EKS version compatibility
 
 # Metrics Server
 export METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-v0.7.2}"

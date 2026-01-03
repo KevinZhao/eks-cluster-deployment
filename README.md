@@ -285,10 +285,8 @@ eks-cluster-deployment/
 │   │   └── eksctl_cluster_template.yaml   # EKS 集群配置模板
 │   ├── addons/
 │   │   ├── cluster-autoscaler-rbac.yaml   # Cluster Autoscaler RBAC
-│   │   ├── cluster-autoscaler.yaml        # Cluster Autoscaler 部署
-│   │   ├── efs-csi-driver.yaml            # EFS CSI Driver
-│   │   ├── fsx-csi-driver.yaml            # FSx Lustre CSI Driver
-│   │   └── s3-csi-driver.yaml             # S3 CSI Driver
+│   │   └── cluster-autoscaler.yaml        # Cluster Autoscaler 部署
+│   │   # Note: EFS/FSx/S3 CSI drivers installed as EKS managed addons
 │
 └── docs/                                  # 详细文档
     ├── DEPLOYMENT_SOP.md                  # 完整部署流程

@@ -21,11 +21,10 @@
 
 | 文件 | 用途 |
 |------|------|
-| `manifests/addons/efs-csi-driver.yaml` | EFS CSI Driver 配置 |
-| `manifests/addons/fsx-csi-driver.yaml` | FSx CSI Driver 配置 |
-| `manifests/addons/s3-csi-driver.yaml` | S3 CSI Driver 配置 |
 | `manifests/storage/storageclass.yaml` | StorageClass 定义 |
 | `manifests/iam/fsx-csi-policy.json` | FSx IAM 策略模板 |
+
+> **Note**: EFS/FSx/S3 CSI Drivers 已改为 EKS Managed Addon 方式安装，无需本地 manifest 文件。
 
 ## CSI Drivers 概述
 

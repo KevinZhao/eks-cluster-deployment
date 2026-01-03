@@ -109,7 +109,7 @@ All AWS integrations use **Pod Identity** (not IRSA/OIDC). Helper functions in `
 # Key helper functions
 create_pod_identity_role <role_name>               # Create IAM role with Pod Identity trust policy
 attach_managed_policy <role_name> <policy_arn>     # Attach AWS managed policy
-attach_inline_policy <role_name> <policy_name> <policy_json>  # Attach inline policy
+attach_custom_policy <role_name> <policy_name> <policy_document>  # Attach custom policy
 create_pod_identity_association <namespace> <sa> <role_arn>   # Associate role with K8s SA
 ```
 
