@@ -126,7 +126,68 @@ kubectl exec test-pod -- df -h
 
 ---
 
-## 7. 参考资料
+## 7. CSI Driver 托管化优化
+
+**状态**: 待验证
+
+### 7.1 背景
+
+当前 EFS 和 S3 CSI Driver 使用自定义方式安装，可改为 EKS Managed Addon 以简化管理。
+
+### 7.2 当前实现 vs 目标
+
+| Driver | 当前方式 | 目标方式 | EKS Addon 名称 |
+|--------|----------|----------|----------------|
+| EFS CSI | 本地 manifest | EKS Managed Addon | `aws-efs-csi-driver` |
+| S3 CSI | 官方 kustomize | EKS Managed Addon | `aws-mountpoint-s3-csi-driver` |
+| FSx CSI | 本地 manifest | 保持不变 | 无 (AWS 未提供) |
+
+### 7.3 优势
+
+- 统一管理: 与 EBS CSI、Metrics Server 等一致
+- 自动更新: EKS 托管版本升级
+- 简化配置: 支持 `--configuration-values` 设置 nodeSelector
+
+### 7.4 待验证事项
+
+- [ ] EFS addon 是否支持 Pod Identity (非 IRSA)
+- [ ] S3 addon 是否支持自定义 bucket ARNs 权限配置
+- [ ] nodeSelector 配置格式是否与 EBS CSI 一致
+- [ ] 验证从自定义安装迁移到托管 addon 的平滑过渡
+
+### 7.5 实施步骤 (待验证后执行)
+
+1. 修改 `option_install_csi_drivers.sh`:
+   - EFS: 改用 `aws eks create-addon --addon-name aws-efs-csi-driver`
+   - S3: 改用 `aws eks create-addon --addon-name aws-mountpoint-s3-csi-driver`
+
+2. 更新 Pod Identity 设置:
+   - 确认 addon 使用的 ServiceAccount 名称
+   - 调整 `setup_efs_csi_pod_identity` / `setup_s3_csi_pod_identity`
+
+3. 删除不再需要的本地 manifest:
+   - `manifests/addons/efs-csi-driver.yaml`
+   - `manifests/addons/s3-csi-driver.yaml` (如有)
+
+### 7.6 参考命令
+
+```bash
+# 查看可用 addon 版本
+aws eks describe-addon-versions --addon-name aws-efs-csi-driver
+aws eks describe-addon-versions --addon-name aws-mountpoint-s3-csi-driver
+
+# 安装 EFS CSI addon
+aws eks create-addon \
+    --cluster-name ${CLUSTER_NAME} \
+    --addon-name aws-efs-csi-driver \
+    --configuration-values '{"controller":{"nodeSelector":{"app":"eks-utils"}}}' \
+    --resolve-conflicts OVERWRITE
+```
+
+---
+
+## 8. 参考资料
 
 - [Ephemeral Storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage)
 - [XFS Project Quotas](https://www.kernel.org/doc/html/latest/filesystems/xfs-self-describing-metadata.html)
+- [EKS Managed Addons](https://docs.aws.amazon.com/eks/latest/userguide/eks-add-ons.html)

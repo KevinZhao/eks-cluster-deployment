@@ -132,7 +132,23 @@ attach_custom_policy() {
             error "Failed to create policy ${policy_name}"
         fi
     else
-        log "Policy ${policy_name} already exists"
+        log "Policy ${policy_name} already exists, updating to latest version..."
+        # 删除非默认的旧版本（AWS 限制最多 5 个版本）
+        local old_versions
+        old_versions=$(aws iam list-policy-versions --policy-arn "${policy_arn}" \
+            --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text 2>/dev/null)
+        for version in $old_versions; do
+            aws iam delete-policy-version --policy-arn "${policy_arn}" --version-id "${version}" 2>/dev/null || true
+        done
+        # 创建新版本并设为默认
+        if aws iam create-policy-version \
+            --policy-arn "${policy_arn}" \
+            --policy-document "${policy_document}" \
+            --set-as-default &>/dev/null; then
+            log "✓ Policy ${policy_name} updated"
+        else
+            warn "Failed to update policy ${policy_name}, continuing with existing version"
+        fi
     fi
 
     # 附加策略
@@ -347,9 +363,9 @@ setup_alb_controller_pod_identity() {
     # 1. 下载 IAM policy（如果不存在）
     local policy_file="${PROJECT_ROOT}/manifests/iam/alb-controller-iam-policy.json"
     if [ ! -f "${policy_file}" ]; then
-        log "Downloading AWS Load Balancer Controller IAM policy..."
+        log "Downloading AWS Load Balancer Controller IAM policy (${ALB_CONTROLLER_VERSION})..."
         mkdir -p "${PROJECT_ROOT}/manifests/iam"
-        curl -sS -o "${policy_file}" https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.13.0/docs/install/iam_policy.json
+        curl -sS -o "${policy_file}" "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${ALB_CONTROLLER_VERSION}/docs/install/iam_policy.json"
         log "✓ Policy downloaded to ${policy_file}"
     else
         log "Policy file already exists, using existing file"
@@ -554,65 +570,56 @@ EOF
 }
 
 # ============================================
-# Metrics Server Setup (No IAM required)
-# ============================================
-
-# 设置 Metrics Server（无需 Pod Identity，纯 Kubernetes 内置功能）
-setup_metrics_server() {
-    log "=========================================="
-    log "Setting up Metrics Server"
-    log "=========================================="
-
-    local manifest_file="${PROJECT_ROOT}/manifests/addons/metrics-server.yaml"
-
-    if [ ! -f "$manifest_file" ]; then
-        error "Metrics Server manifest not found: ${manifest_file}"
-    fi
-
-    log "Checking if Metrics Server is already installed"
-    if kubectl get deployment metrics-server -n kube-system &>/dev/null; then
-        log "Metrics Server already exists, checking if it's from EKS addon..."
-        # Check if selector labels match our manifest
-        CURRENT_SELECTOR=$(kubectl get deployment metrics-server -n kube-system -o jsonpath='{.spec.selector.matchLabels}')
-        if echo "$CURRENT_SELECTOR" | grep -q "app.kubernetes.io/instance"; then
-            log "Detected EKS-managed Metrics Server with incompatible selector, deleting..."
-            kubectl delete deployment metrics-server -n kube-system --ignore-not-found=true
-            log "Installing custom Metrics Server..."
-            kubectl apply -f "${manifest_file}"
-        else
-            log "Updating existing Metrics Server..."
-            kubectl apply -f "${manifest_file}"
-        fi
-    else
-        log "Installing Metrics Server..."
-        kubectl apply -f "${manifest_file}"
-    fi
-
-    log "Waiting for Metrics Server to be ready..."
-    if kubectl wait --for=condition=available --timeout=180s \
-        deployment/metrics-server -n kube-system &>/dev/null; then
-        log "✓ Metrics Server is ready"
-    else
-        warn "Metrics Server deployment timeout, checking status..."
-        kubectl get pods -n kube-system -l k8s-app=metrics-server
-    fi
-
-    log "Verifying Metrics Server functionality..."
-    sleep 10
-    if kubectl top nodes &>/dev/null; then
-        log "✓ Metrics Server is working correctly"
-        kubectl top nodes
-    else
-        warn "Metrics Server may need more time to collect metrics (this is normal on first install)"
-        log "You can verify later with: kubectl top nodes"
-    fi
-
-    log "✓ Metrics Server setup complete"
-}
-
-# ============================================
 # 辅助函数
 # ============================================
+
+# 等待 EKS Addon 就绪
+# 参数: $1 = addon_name, $2 = max_attempts (可选，默认60), $3 = interval (可选，默认5)
+wait_for_eks_addon() {
+    local addon_name="$1"
+    local max_attempts="${2:-60}"
+    local interval="${3:-5}"
+
+    if [ -z "$addon_name" ]; then
+        error "Addon name is required"
+    fi
+
+    log "Waiting for ${addon_name} addon to be active..."
+
+    for i in $(seq 1 $max_attempts); do
+        local addon_status
+        addon_status=$(aws eks describe-addon \
+            --cluster-name "${CLUSTER_NAME}" \
+            --addon-name "${addon_name}" \
+            --region "${AWS_REGION}" \
+            --query 'addon.status' \
+            --output text 2>/dev/null)
+
+        case "$addon_status" in
+            ACTIVE)
+                log "✓ ${addon_name} addon is ACTIVE"
+                return 0
+                ;;
+            CREATE_FAILED|UPDATE_FAILED|DEGRADED)
+                warn "${addon_name} addon failed with status: $addon_status"
+                # 获取详细错误信息
+                aws eks describe-addon \
+                    --cluster-name "${CLUSTER_NAME}" \
+                    --addon-name "${addon_name}" \
+                    --region "${AWS_REGION}" \
+                    --query 'addon.health' 2>/dev/null || true
+                return 1
+                ;;
+            *)
+                echo "  Waiting... (Status: $addon_status, attempt $i/$max_attempts)"
+                sleep $interval
+                ;;
+        esac
+    done
+
+    warn "Timeout waiting for ${addon_name} addon (max ${max_attempts} attempts)"
+    return 1
+}
 
 # 列出所有 Pod Identity Associations
 list_pod_identity_associations() {
@@ -735,9 +742,9 @@ Functions:
     - setup_efs_csi_pod_identity
     - setup_fsx_csi_pod_identity
     - setup_s3_csi_pod_identity <bucket_arns>
-    - setup_metrics_server (no IAM required)
 
   Utility Functions:
+    - wait_for_eks_addon <addon_name> [max_attempts] [interval]
     - list_pod_identity_associations
     - verify_pod_identity <namespace> <service_account>
     - cleanup_pod_identity <namespace> <service_account> <role_name>

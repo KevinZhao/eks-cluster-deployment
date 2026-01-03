@@ -63,7 +63,8 @@ addons:
     version: latest
   - name: eks-pod-identity-agent
     version: latest
-  # 注意: aws-ebs-csi-driver 在 7_install_eks_addon.sh 中安装，配合 Pod Identity 使用
+  # 注意: metrics-server 和 aws-ebs-csi-driver 在 7_install_eks_addon.sh 中安装
+  # 因为需要等系统节点组创建后才能配置 nodeSelector
 
 cloudWatch:
   clusterLogging:

@@ -47,7 +47,7 @@ spec:
                 app: cluster-autoscaler
             topologyKey: kubernetes.io/hostname
       containers:
-      - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.2
+      - image: registry.k8s.io/autoscaling/cluster-autoscaler:${CLUSTER_AUTOSCALER_VERSION}
         name: cluster-autoscaler
         resources:
           limits:

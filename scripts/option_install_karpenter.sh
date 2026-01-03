@@ -59,8 +59,7 @@ echo "  Cluster Endpoint: ${CLUSTER_ENDPOINT}"
 echo "  OIDC Endpoint: ${OIDC_ENDPOINT}"
 echo "  AWS Account ID: ${AWS_ACCOUNT_ID}"
 
-# 4. 设置 Karpenter 版本
-KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
+# 4. Karpenter 版本（来自 0_setup_env.sh，可通过 .env 覆盖）
 echo ""
 echo "Step 3: Installing Karpenter version ${KARPENTER_VERSION}..."
 
@@ -247,9 +246,18 @@ EOF
 if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" &>/dev/null; then
     echo "  Policy ${KARPENTER_CONTROLLER_POLICY} already exists, updating to latest version..."
 
+    # 删除非默认的旧版本（AWS 限制最多 5 个版本）
+    POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}"
+    OLD_VERSIONS=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+        --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text)
+    for VERSION in $OLD_VERSIONS; do
+        echo "  Deleting old policy version: ${VERSION}"
+        aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${VERSION}" 2>/dev/null || true
+    done
+
     # 创建新版本并设为默认
     aws iam create-policy-version \
-        --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" \
+        --policy-arn "${POLICY_ARN}" \
         --policy-document "file://${KARPENTER_CONTROLLER_POLICY_FILE}" \
         --set-as-default
 

@@ -42,9 +42,9 @@ if [ -z "$INSTALL_DRIVERS" ]; then
     echo "  S3_BUCKET_ARNS='arn:aws:s3:::bucket1,arn:aws:s3:::bucket2' (for S3 driver)"
     echo ""
     echo "Available drivers:"
-    echo "  1. EFS CSI Driver - Shared file system (multi-AZ, multi-Pod access) [v2.2.0]"
-    echo "  2. FSx CSI Driver - High-performance Lustre/ONTAP for HPC/ML workloads [v1.7.0]"
-    echo "  3. S3 CSI Driver - Object storage mounting via Mountpoint for S3 [v2.2.2]"
+    echo "  1. EFS CSI Driver - Shared file system (multi-AZ, multi-Pod access) [${EFS_CSI_VERSION}]"
+    echo "  2. FSx CSI Driver - High-performance Lustre/ONTAP for HPC/ML workloads [${FSX_CSI_VERSION}]"
+    echo "  3. S3 CSI Driver - Object storage mounting via Mountpoint for S3 [${S3_CSI_VERSION}]"
     echo "  4. Install All (EFS + FSx + S3)"
     echo "  5. Exit"
     echo ""
@@ -175,8 +175,8 @@ case $choice in
         fi
 
         # 部署 S3 CSI Driver (使用官方 kustomize)
-        echo "Deploying S3 CSI Driver v2.2.2 using official manifests..."
-        kubectl apply -k "github.com/awslabs/mountpoint-s3-csi-driver/deploy/kubernetes/overlays/stable/?ref=v2.2.2"
+        echo "Deploying S3 CSI Driver ${S3_CSI_VERSION} using official manifests..."
+        kubectl apply -k "github.com/awslabs/mountpoint-s3-csi-driver/deploy/kubernetes/overlays/stable/?ref=${S3_CSI_VERSION}"
 
         # 等待 CRD 和基础资源就绪
         echo "Waiting for resources to be created..."
@@ -261,8 +261,8 @@ case $choice in
             echo "Warning: No bucket ARNs provided. Skipping S3 CSI Driver."
         else
             # 部署 S3 CSI Driver (使用官方 kustomize)
-            echo "Deploying S3 CSI Driver v2.2.2 using official manifests..."
-            kubectl apply -k "github.com/awslabs/mountpoint-s3-csi-driver/deploy/kubernetes/overlays/stable/?ref=v2.2.2"
+            echo "Deploying S3 CSI Driver ${S3_CSI_VERSION} using official manifests..."
+            kubectl apply -k "github.com/awslabs/mountpoint-s3-csi-driver/deploy/kubernetes/overlays/stable/?ref=${S3_CSI_VERSION}"
 
             # 等待资源创建
             echo "Waiting for resources to be created..."

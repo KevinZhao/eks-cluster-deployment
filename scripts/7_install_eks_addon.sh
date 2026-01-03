@@ -74,6 +74,7 @@ kubectl apply -f "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler-rbac.yaml"
 echo "Deploying Cluster Autoscaler..."
 sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
     -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+    -e "s/\${CLUSTER_AUTOSCALER_VERSION}/$CLUSTER_AUTOSCALER_VERSION/g" \
     "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
 
 # 4.3 验证Cluster Autoscaler
@@ -107,7 +108,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set podDisruptionBudget.minAvailable=1 \
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app\.kubernetes\.io/name=aws-load-balancer-controller" \
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
-    --version 1.16.0
+    --version "${ALB_CONTROLLER_CHART_VERSION}"
 
 # 5.2 验证 Load Balancer Controller
 echo "Testing AWS Load Balancer Controller..."
@@ -164,31 +165,7 @@ fi
 rm -f "${EBS_CSI_CONFIG_FILE}"
 
 # 6.2 等待 addon 就绪
-echo "Waiting for EBS CSI Driver addon to be active..."
-for i in {1..60}; do
-    ADDON_STATUS=$(aws eks describe-addon \
-        --cluster-name ${CLUSTER_NAME} \
-        --addon-name aws-ebs-csi-driver \
-        --region ${AWS_REGION} \
-        --query 'addon.status' \
-        --output text 2>/dev/null)
-
-    if [ "$ADDON_STATUS" = "ACTIVE" ]; then
-        echo "✓ EBS CSI Driver addon is ACTIVE"
-        break
-    elif [ "$ADDON_STATUS" = "CREATE_FAILED" ] || [ "$ADDON_STATUS" = "UPDATE_FAILED" ]; then
-        echo "❌ EBS CSI Driver addon failed with status: $ADDON_STATUS"
-        aws eks describe-addon \
-            --cluster-name ${CLUSTER_NAME} \
-            --addon-name aws-ebs-csi-driver \
-            --region ${AWS_REGION} \
-            --query 'addon.health' || true
-        break
-    else
-        echo "Waiting... (Status: $ADDON_STATUS, attempt $i/60)"
-        sleep 5
-    fi
-done
+wait_for_eks_addon "aws-ebs-csi-driver"
 
 # 6.3 清理 IRSA annotation 避免与 Pod Identity 冲突
 echo "Removing IRSA annotation from service account (if exists)..."
@@ -226,10 +203,54 @@ kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.ku
 echo "✓ StorageClasses configured:"
 kubectl get storageclass
 
-# 6.8 安装 Metrics Server
+# 6.8 安装 Metrics Server (EKS Managed Addon)
 echo ""
-echo "Step 6.8: Installing Metrics Server..."
-setup_metrics_server
+echo "Step 6.8: Installing Metrics Server addon..."
+
+# 创建 metrics-server addon 配置（确保运行在系统节点上）
+METRICS_SERVER_CONFIG_FILE=$(mktemp /tmp/metrics-server-config.XXXXXX.json)
+cat > "${METRICS_SERVER_CONFIG_FILE}" <<EOF
+{
+  "nodeSelector": {
+    "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
+  }
+}
+EOF
+
+# 检查 addon 是否已存在
+if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name metrics-server --region ${AWS_REGION} &>/dev/null; then
+    echo "Metrics Server addon already exists, updating..."
+    aws eks update-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name metrics-server \
+        --configuration-values "file://${METRICS_SERVER_CONFIG_FILE}" \
+        --region ${AWS_REGION} \
+        --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
+else
+    echo "Creating Metrics Server addon..."
+    aws eks create-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name metrics-server \
+        --configuration-values "file://${METRICS_SERVER_CONFIG_FILE}" \
+        --region ${AWS_REGION} \
+        --resolve-conflicts OVERWRITE
+fi
+
+rm -f "${METRICS_SERVER_CONFIG_FILE}"
+
+# 等待 addon 就绪
+wait_for_eks_addon "metrics-server"
+
+# 验证 metrics 功能
+echo "Verifying Metrics Server functionality..."
+sleep 10
+if kubectl top nodes &>/dev/null; then
+    echo "✓ Metrics Server is working correctly"
+    kubectl top nodes
+else
+    echo "Note: Metrics Server may need more time to collect metrics (this is normal on first install)"
+    echo "You can verify later with: kubectl top nodes"
+fi
 
 # 7. 最终验证
 echo ""

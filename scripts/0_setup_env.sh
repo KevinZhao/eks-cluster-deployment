@@ -73,6 +73,27 @@ fi
 export K8S_VERSION="${K8S_VERSION:-1.34}"
 export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 
+# ============================================
+# 组件版本配置（可通过 .env 覆盖）
+# ============================================
+# Cluster Autoscaler - 版本应与 K8S_VERSION 主版本匹配
+export CLUSTER_AUTOSCALER_VERSION="${CLUSTER_AUTOSCALER_VERSION:-v1.34.2}"
+
+# AWS Load Balancer Controller
+export ALB_CONTROLLER_VERSION="${ALB_CONTROLLER_VERSION:-v2.13.0}"
+export ALB_CONTROLLER_CHART_VERSION="${ALB_CONTROLLER_CHART_VERSION:-1.16.0}"
+
+# Karpenter
+export KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
+
+# CSI Drivers
+export EFS_CSI_VERSION="${EFS_CSI_VERSION:-v2.2.0}"
+export FSX_CSI_VERSION="${FSX_CSI_VERSION:-v1.7.0}"
+export S3_CSI_VERSION="${S3_CSI_VERSION:-v2.2.2}"
+
+# Metrics Server
+export METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-v0.7.2}"
+
 # 6. 自动推导 AZ（基于子网 ID 模式，支持3-4个AZ）
 if [ -z "$AZ_A" ] || [ -z "$AZ_B" ] || [ -z "$AZ_C" ]; then
     log "Availability zones not set, deriving from region..."
