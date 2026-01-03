@@ -61,7 +61,7 @@ if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>
 else
     echo "Creating new cluster..."
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-        -e "s/\${AWS_DEFAULT_REGION}/$AWS_DEFAULT_REGION/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
         -e "s/\${SERVICE_IPV4_CIDR}/$SERVICE_IPV4_CIDR/g" \
         -e "s/\${VPC_ID}/$VPC_ID/g" \

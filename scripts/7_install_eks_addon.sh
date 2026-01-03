@@ -103,7 +103,11 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set region=${AWS_REGION} \
     --set serviceAccount.name=aws-load-balancer-controller \
     --set "nodeSelector.${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}" \
-    --version 1.13.0
+    --set replicaCount=2 \
+    --set podDisruptionBudget.minAvailable=1 \
+    --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app\.kubernetes\.io/name=aws-load-balancer-controller" \
+    --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
+    --version 1.16.0
 
 # 5.2 验证 Load Balancer Controller
 echo "Testing AWS Load Balancer Controller..."
@@ -119,8 +123,11 @@ setup_ebs_csi_pod_identity
 echo "Installing EBS CSI Driver addon..."
 EBS_CSI_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${CLUSTER_NAME}-ebs-csi-driver-role"
 
-# 创建 addon 配置 - 确保 controller 运行在系统节点上
-cat > /tmp/ebs-csi-addon-config.json <<EOF
+# 创建 addon 配置 - 确保 controller 运行在系统节点上（使用 mktemp 避免临时文件冲突）
+EBS_CSI_CONFIG_FILE=$(mktemp /tmp/ebs-csi-addon-config.XXXXXX.json)
+trap "rm -f ${EBS_CSI_CONFIG_FILE}" EXIT
+
+cat > "${EBS_CSI_CONFIG_FILE}" <<EOF
 {
   "controller": {
     "nodeSelector": {
@@ -139,7 +146,7 @@ if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name aws-ebs-cs
         --cluster-name ${CLUSTER_NAME} \
         --addon-name aws-ebs-csi-driver \
         --service-account-role-arn ${EBS_CSI_ROLE_ARN} \
-        --configuration-values file:///tmp/ebs-csi-addon-config.json \
+        --configuration-values "file://${EBS_CSI_CONFIG_FILE}" \
         --region ${AWS_REGION} \
         --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
 else
@@ -148,13 +155,13 @@ else
         --cluster-name ${CLUSTER_NAME} \
         --addon-name aws-ebs-csi-driver \
         --service-account-role-arn ${EBS_CSI_ROLE_ARN} \
-        --configuration-values file:///tmp/ebs-csi-addon-config.json \
+        --configuration-values "file://${EBS_CSI_CONFIG_FILE}" \
         --region ${AWS_REGION} \
         --resolve-conflicts OVERWRITE
 fi
 
 # 清理临时文件
-rm -f /tmp/ebs-csi-addon-config.json
+rm -f "${EBS_CSI_CONFIG_FILE}"
 
 # 6.2 等待 addon 就绪
 echo "Waiting for EBS CSI Driver addon to be active..."

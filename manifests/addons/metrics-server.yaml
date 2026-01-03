@@ -87,6 +87,20 @@ subjects:
   namespace: kube-system
 
 ---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: metrics-server-pdb
+  namespace: kube-system
+  labels:
+    k8s-app: metrics-server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      k8s-app: metrics-server
+
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -131,6 +145,13 @@ spec:
         operator: Equal
         value: ${SYSTEM_NODE_LABEL_VALUE}
         effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                k8s-app: metrics-server
+            topologyKey: kubernetes.io/hostname
       containers:
       - name: metrics-server
         image: registry.k8s.io/metrics-server/metrics-server:v0.8.0

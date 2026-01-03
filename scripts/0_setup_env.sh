@@ -102,6 +102,7 @@ aws sts get-caller-identity >/dev/null 2>&1 || \
 log "Configuration validation completed successfully!"
 
 # 8. 系统节点组配置（高级选项）
+# 注意: 默认使用 x86_64 架构实例，与 6_create_system_nodegroup.sh 中的 AMI 查询一致
 export SYSTEM_NODE_INSTANCE_TYPE="${SYSTEM_NODE_INSTANCE_TYPE:-m7i.2xlarge}"
 export SYSTEM_NODE_ROOT_VOLUME_SIZE="${SYSTEM_NODE_ROOT_VOLUME_SIZE:-50}"
 export SYSTEM_NODE_DATA_VOLUME_SIZE="${SYSTEM_NODE_DATA_VOLUME_SIZE:-100}"
@@ -114,7 +115,7 @@ export SYSTEM_NODE_LABEL_KEY="${SYSTEM_NODE_LABEL_KEY:-app}"
 export SYSTEM_NODE_LABEL_VALUE="${SYSTEM_NODE_LABEL_VALUE:-eks-utils}"
 
 # 配置验证
-if [[ ! "$SYSTEM_NODE_INSTANCE_TYPE" =~ ^[a-z][0-9][a-z]?\.[a-z0-9]+$ ]]; then
+if [[ ! "$SYSTEM_NODE_INSTANCE_TYPE" =~ ^[a-z][0-9]+[a-z]*\.[a-z0-9]+$ ]]; then
     echo "⚠ WARNING: Invalid SYSTEM_NODE_INSTANCE_TYPE format, using default: m7i.2xlarge"
     export SYSTEM_NODE_INSTANCE_TYPE="m7i.2xlarge"
 fi

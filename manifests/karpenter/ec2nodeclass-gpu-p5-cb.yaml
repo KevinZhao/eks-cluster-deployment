@@ -3,10 +3,10 @@ kind: EC2NodeClass
 metadata:
   name: gpu-p5-cb
 spec:
-  # AMI Selection - Deep Learning AMI AL2023
-  amiSelectorTerms:
-    - alias: al2023@latest
+  # AMI Selection - EKS-optimized AL2023 GPU AMI (pinned to K8s version for stability)
   amiFamily: AL2023
+  amiSelectorTerms:
+    - name: "amazon-eks-node-al2023-x86_64-nvidia-1.34-*"
 
   # Block Device Mappings
   blockDeviceMappings:

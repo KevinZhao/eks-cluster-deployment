@@ -147,8 +147,12 @@ create_eks_node_iam_role() {
     else
         echo "Creating IAM Role: ${NODE_ROLE_NAME}"
 
-        # 创建信任策略
-        cat > /tmp/node-trust-policy.json <<'EOF'
+        # 创建信任策略（使用 mktemp 避免临时文件冲突）
+        local TRUST_POLICY_FILE
+        TRUST_POLICY_FILE=$(mktemp /tmp/node-trust-policy.XXXXXX.json)
+        trap "rm -f ${TRUST_POLICY_FILE}" RETURN
+
+        cat > "${TRUST_POLICY_FILE}" <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -165,7 +169,7 @@ EOF
 
         aws iam create-role \
             --role-name "${NODE_ROLE_NAME}" \
-            --assume-role-policy-document file:///tmp/node-trust-policy.json \
+            --assume-role-policy-document "file://${TRUST_POLICY_FILE}" \
             --tags \
                 Key=Cluster,Value="${CLUSTER_NAME}" \
                 Key=ManagedBy,Value=script \
@@ -189,7 +193,7 @@ EOF
             --role-name "${NODE_ROLE_NAME}" \
             --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 
-        rm -f /tmp/node-trust-policy.json
+        rm -f "${TRUST_POLICY_FILE}"
         echo "✓ IAM Role created"
     fi
 
@@ -262,9 +266,9 @@ for i in {1..60}; do
 done
 
 if [ -z "\$DISK" ]; then
-  echo "ERROR: No data disk found after 60 seconds"
+  echo "ERROR: No data disk found after 60 seconds - check Launch Template EBS configuration"
   systemctl start containerd
-  exit 0
+  exit 1
 fi
 
 # Check if LVM already configured

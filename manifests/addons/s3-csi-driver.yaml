@@ -58,6 +58,20 @@ roleRef:
   name: s3-csi-driver-role
   apiGroup: rbac.authorization.k8s.io
 ---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: s3-csi-controller-pdb
+  namespace: kube-system
+  labels:
+    app: s3-csi-controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: s3-csi-controller
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -82,6 +96,13 @@ spec:
       tolerations:
         - key: CriticalAddonsOnly
           operator: Exists
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: s3-csi-controller
+            topologyKey: kubernetes.io/hostname
       containers:
         - name: s3-csi-controller
           image: public.ecr.aws/mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver:v2.2.2
@@ -98,6 +119,13 @@ spec:
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 40Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -162,6 +190,13 @@ spec:
             timeoutSeconds: 3
             periodSeconds: 2
             failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 40Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
         - name: csi-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.16.0
           args:
@@ -178,6 +213,13 @@ spec:
               mountPath: /csi
             - name: registration-dir
               mountPath: /registration
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 128Mi
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.17.0
           args:
@@ -186,6 +228,13 @@ spec:
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 128Mi
       volumes:
         - name: kubelet-dir
           hostPath:

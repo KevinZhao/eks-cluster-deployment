@@ -55,10 +55,13 @@ if [ "$CONFIRM" != "yes" ]; then
     exit 0
 fi
 
-# 5. 创建配置文件
+# 5. 创建配置文件（使用 mktemp 避免临时文件冲突）
 echo ""
 echo "Step 3: Creating VPC CNI configuration..."
-cat > /tmp/vpc-cni-config.json <<EOF
+VPC_CNI_CONFIG_FILE=$(mktemp /tmp/vpc-cni-config.XXXXXX.json)
+trap "rm -f ${VPC_CNI_CONFIG_FILE}" EXIT
+
+cat > "${VPC_CNI_CONFIG_FILE}" <<EOF
 {
   "env": {
     "AWS_VPC_K8S_CNI_EXTERNALSNAT": "false",
@@ -70,7 +73,7 @@ cat > /tmp/vpc-cni-config.json <<EOF
 EOF
 
 echo "Configuration file created:"
-cat /tmp/vpc-cni-config.json | jq .
+cat "${VPC_CNI_CONFIG_FILE}" | jq .
 
 # 6. 更新 VPC CNI addon
 echo ""
@@ -78,7 +81,7 @@ echo "Step 4: Updating VPC CNI addon..."
 aws eks update-addon \
     --cluster-name ${CLUSTER_NAME} \
     --addon-name vpc-cni \
-    --configuration-values file:///tmp/vpc-cni-config.json \
+    --configuration-values "file://${VPC_CNI_CONFIG_FILE}" \
     --resolve-conflicts OVERWRITE \
     --region ${AWS_REGION}
 

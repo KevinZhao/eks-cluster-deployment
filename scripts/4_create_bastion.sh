@@ -89,8 +89,10 @@ if aws iam get-role --role-name EKS-Deploy-Role >/dev/null 2>&1; then
 else
     echo "Creating IAM role..."
 
-    # Create trust policy
-    cat > /tmp/trust-policy.json <<'EOF'
+    # Create trust policy（使用 mktemp 避免临时文件冲突）
+    BASTION_TRUST_POLICY_FILE=$(mktemp /tmp/trust-policy.XXXXXX.json)
+
+    cat > "${BASTION_TRUST_POLICY_FILE}" <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -108,9 +110,11 @@ EOF
     # Create role
     aws iam create-role \
         --role-name EKS-Deploy-Role \
-        --assume-role-policy-document file:///tmp/trust-policy.json \
+        --assume-role-policy-document "file://${BASTION_TRUST_POLICY_FILE}" \
         --description "Role for EKS deployment bastion instance" \
         --no-cli-pager
+
+    rm -f "${BASTION_TRUST_POLICY_FILE}"
 
     # Attach policies
     echo "Attaching policies..."
@@ -127,7 +131,10 @@ EOF
     POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='${POLICY_NAME}'].Arn" --output text)
 
     if [ -z "${POLICY_ARN}" ]; then
-        cat > /tmp/eks-bastion-policy.json <<'POLICYEOF'
+        # 使用 mktemp 避免临时文件冲突
+        BASTION_IAM_POLICY_FILE=$(mktemp /tmp/eks-bastion-policy.XXXXXX.json)
+
+        cat > "${BASTION_IAM_POLICY_FILE}" <<'POLICYEOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -216,12 +223,12 @@ POLICYEOF
 
         POLICY_ARN=$(aws iam create-policy \
             --policy-name ${POLICY_NAME} \
-            --policy-document file:///tmp/eks-bastion-policy.json \
+            --policy-document "file://${BASTION_IAM_POLICY_FILE}" \
             --description "Least-privilege policy for EKS deployment from bastion" \
             --query 'Policy.Arn' \
             --output text)
 
-        rm -f /tmp/eks-bastion-policy.json
+        rm -f "${BASTION_IAM_POLICY_FILE}"
         echo "✓ Custom policy created: ${POLICY_ARN}"
     else
         echo "✓ Using existing policy: ${POLICY_ARN}"

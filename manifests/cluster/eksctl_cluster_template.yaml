@@ -3,7 +3,7 @@ kind: ClusterConfig
 
 metadata:
   name: ${CLUSTER_NAME}
-  region: ${AWS_DEFAULT_REGION}
+  region: ${AWS_REGION}
   version: "${K8S_VERSION}"
   tags:
     cluster-autoscaler: enabled
@@ -63,8 +63,7 @@ addons:
     version: latest
   - name: eks-pod-identity-agent
     version: latest
-  - name: aws-ebs-csi-driver
-    version: latest
+  # 注意: aws-ebs-csi-driver 在 7_install_eks_addon.sh 中安装，配合 Pod Identity 使用
 
 cloudWatch:
   clusterLogging:

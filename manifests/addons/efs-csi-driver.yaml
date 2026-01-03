@@ -46,6 +46,20 @@ roleRef:
   name: efs-csi-external-provisioner-role
   apiGroup: rbac.authorization.k8s.io
 ---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: efs-csi-controller-pdb
+  namespace: kube-system
+  labels:
+    app: efs-csi-controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: efs-csi-controller
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,6 +84,13 @@ spec:
       tolerations:
         - key: CriticalAddonsOnly
           operator: Exists
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: efs-csi-controller
+            topologyKey: kubernetes.io/hostname
       containers:
         - name: efs-plugin
           image: public.ecr.aws/efs-csi-driver/amazon/aws-efs-csi-driver:v2.2.0
@@ -100,6 +121,13 @@ spec:
             timeoutSeconds: 3
             periodSeconds: 10
             failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 40Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
         - name: csi-provisioner
           image: public.ecr.aws/csi-components/csi-provisioner:v5.3.0-eksbuild.5
           args:
@@ -113,6 +141,13 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /var/lib/csi/sockets/pluginproxy/
+          resources:
+            requests:
+              cpu: 10m
+              memory: 40Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
         - name: liveness-probe
           image: public.ecr.aws/csi-components/livenessprobe:v2.17.0-eksbuild.2
           args:
@@ -121,6 +156,13 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 128Mi
       volumes:
         - name: socket-dir
           emptyDir: {}
@@ -185,6 +227,13 @@ spec:
             timeoutSeconds: 3
             periodSeconds: 2
             failureThreshold: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 40Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
         - name: csi-driver-registrar
           image: public.ecr.aws/csi-components/csi-node-driver-registrar:v2.15.0-eksbuild.2
           args:
@@ -205,6 +254,13 @@ spec:
               mountPath: /csi
             - name: registration-dir
               mountPath: /registration
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 128Mi
         - name: liveness-probe
           image: public.ecr.aws/csi-components/livenessprobe:v2.17.0-eksbuild.2
           args:
@@ -213,6 +269,13 @@ spec:
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 128Mi
       volumes:
         - name: kubelet-dir
           hostPath:

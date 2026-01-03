@@ -76,8 +76,10 @@ if aws iam get-role --role-name "${KARPENTER_NODE_ROLE}" &>/dev/null; then
 else
     echo "  Creating IAM role ${KARPENTER_NODE_ROLE}..."
 
-    # 创建信任策略
-    cat > /tmp/karpenter-node-trust-policy.json <<EOF
+    # 创建信任策略（使用 mktemp 避免临时文件冲突）
+    KARPENTER_NODE_TRUST_FILE=$(mktemp /tmp/karpenter-node-trust-policy.XXXXXX.json)
+
+    cat > "${KARPENTER_NODE_TRUST_FILE}" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -94,12 +96,14 @@ EOF
 
     aws iam create-role \
         --role-name "${KARPENTER_NODE_ROLE}" \
-        --assume-role-policy-document file:///tmp/karpenter-node-trust-policy.json \
+        --assume-role-policy-document "file://${KARPENTER_NODE_TRUST_FILE}" \
         --tags \
             Key=ManagedBy,Value=karpenter \
             Key=Cluster,Value="${CLUSTER_NAME}" \
             Key=business,Value=middleware \
             Key=resource,Value=eks
+
+    rm -f "${KARPENTER_NODE_TRUST_FILE}"
 
     # 附加必需的策略
     aws iam attach-role-policy \
@@ -147,8 +151,10 @@ echo "Step 5: Creating Karpenter Controller IAM Policy..."
 
 KARPENTER_CONTROLLER_POLICY="KarpenterControllerPolicy-${CLUSTER_NAME}"
 
-# 生成策略文档
-cat > /tmp/karpenter-controller-policy.json <<EOF
+# 生成策略文档（使用 mktemp 避免临时文件冲突）
+KARPENTER_CONTROLLER_POLICY_FILE=$(mktemp /tmp/karpenter-controller-policy.XXXXXX.json)
+
+cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -244,7 +250,7 @@ if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARP
     # 创建新版本并设为默认
     aws iam create-policy-version \
         --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" \
-        --policy-document file:///tmp/karpenter-controller-policy.json \
+        --policy-document "file://${KARPENTER_CONTROLLER_POLICY_FILE}" \
         --set-as-default
 
     echo "  ✓ IAM policy updated to new version"
@@ -253,11 +259,13 @@ else
 
     aws iam create-policy \
         --policy-name "${KARPENTER_CONTROLLER_POLICY}" \
-        --policy-document file:///tmp/karpenter-controller-policy.json \
+        --policy-document "file://${KARPENTER_CONTROLLER_POLICY_FILE}" \
         --tags Key=ManagedBy,Value=karpenter Key=Cluster,Value="${CLUSTER_NAME}"
 
     echo "  ✓ IAM policy ${KARPENTER_CONTROLLER_POLICY} created successfully"
 fi
+
+rm -f "${KARPENTER_CONTROLLER_POLICY_FILE}"
 
 # 7. 创建 Karpenter Controller IAM Role
 echo ""
@@ -271,8 +279,10 @@ if aws iam get-role --role-name "${KARPENTER_CONTROLLER_ROLE}" &>/dev/null; then
 else
     echo "  Creating IAM role ${KARPENTER_CONTROLLER_ROLE}..."
 
-    # 创建信任策略 (Pod Identity)
-    cat > /tmp/karpenter-controller-trust-policy.json <<EOF
+    # 创建信任策略 (Pod Identity) - 使用 mktemp 避免临时文件冲突
+    KARPENTER_CONTROLLER_TRUST_FILE=$(mktemp /tmp/karpenter-controller-trust-policy.XXXXXX.json)
+
+    cat > "${KARPENTER_CONTROLLER_TRUST_FILE}" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -292,8 +302,10 @@ EOF
 
     aws iam create-role \
         --role-name "${KARPENTER_CONTROLLER_ROLE}" \
-        --assume-role-policy-document file:///tmp/karpenter-controller-trust-policy.json \
+        --assume-role-policy-document "file://${KARPENTER_CONTROLLER_TRUST_FILE}" \
         --tags Key=ManagedBy,Value=karpenter Key=Cluster,Value="${CLUSTER_NAME}"
+
+    rm -f "${KARPENTER_CONTROLLER_TRUST_FILE}"
 
     # 附加 Karpenter Controller Policy
     aws iam attach-role-policy \
@@ -386,6 +398,9 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
     --set "tolerations[1].effect=NoExecute" \
     --set "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=karpenter.sh/nodepool" \
     --set "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=DoesNotExist" \
+    --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app\.kubernetes\.io/name=karpenter" \
+    --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
+    --set "podDisruptionBudget.minAvailable=1" \
     --timeout 10m \
     --wait
 
