@@ -427,7 +427,7 @@ setup_fsx_csi_pod_identity() {
     create_pod_identity_role "${role_name}"
 
     # 2. 创建和附加自定义策略
-    local policy_file="${PROJECT_ROOT}/iam-policies/fsx-csi-policy.json"
+    local policy_file="${PROJECT_ROOT}/manifests/iam/fsx-csi-policy.json"
     if [ ! -f "${policy_file}" ]; then
         error "FSx CSI policy file not found: ${policy_file}"
     fi

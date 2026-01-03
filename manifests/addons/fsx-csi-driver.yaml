@@ -6,8 +6,6 @@ metadata:
   namespace: kube-system
   labels:
     app.kubernetes.io/name: aws-fsx-csi-driver
-  annotations:
-    eks.amazonaws.com/sts-regional-endpoints: "true"
 
 ---
 kind: ClusterRole

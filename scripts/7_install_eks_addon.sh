@@ -61,6 +61,57 @@ echo ""
 echo "Step 3.1: Waiting for Pod Identity Agent..."
 wait_for_pod_identity_agent
 
+# 3.2. 安装 CoreDNS addon（配置 nodeSelector 到系统节点）
+echo ""
+echo "Step 3.2: Installing CoreDNS addon..."
+
+COREDNS_CONFIG_FILE=$(mktemp /tmp/coredns-config.XXXXXX.json)
+cat > "${COREDNS_CONFIG_FILE}" <<EOF
+{
+  "replicaCount": 2,
+  "nodeSelector": {
+    "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
+  },
+  "affinity": {
+    "podAntiAffinity": {
+      "requiredDuringSchedulingIgnoredDuringExecution": [
+        {
+          "labelSelector": {
+            "matchLabels": {
+              "k8s-app": "kube-dns"
+            }
+          },
+          "topologyKey": "kubernetes.io/hostname"
+        }
+      ]
+    }
+  }
+}
+EOF
+
+if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name coredns --region ${AWS_REGION} &>/dev/null; then
+    echo "CoreDNS addon already exists, updating..."
+    aws eks update-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name coredns \
+        --configuration-values "file://${COREDNS_CONFIG_FILE}" \
+        --region ${AWS_REGION} \
+        --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
+else
+    echo "Creating CoreDNS addon..."
+    aws eks create-addon \
+        --cluster-name ${CLUSTER_NAME} \
+        --addon-name coredns \
+        --configuration-values "file://${COREDNS_CONFIG_FILE}" \
+        --region ${AWS_REGION} \
+        --resolve-conflicts OVERWRITE
+fi
+
+rm -f "${COREDNS_CONFIG_FILE}"
+
+wait_for_eks_addon "coredns"
+echo "✓ CoreDNS addon installed"
+
 # 4. 设置 Cluster Autoscaler with Pod Identity
 echo ""
 echo "Step 4: Setting up Cluster Autoscaler with Pod Identity..."
@@ -136,8 +187,23 @@ trap "rm -f ${EBS_CSI_CONFIG_FILE}" EXIT
 cat > "${EBS_CSI_CONFIG_FILE}" <<EOF
 {
   "controller": {
+    "replicaCount": 2,
     "nodeSelector": {
       "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
+    },
+    "affinity": {
+      "podAntiAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": [
+          {
+            "labelSelector": {
+              "matchLabels": {
+                "app": "ebs-csi-controller"
+              }
+            },
+            "topologyKey": "kubernetes.io/hostname"
+          }
+        ]
+      }
     }
   }
 }
@@ -217,12 +283,27 @@ kubectl get storageclass
 echo ""
 echo "Step 6.8: Installing Metrics Server addon..."
 
-# 创建 metrics-server addon 配置（确保运行在系统节点上）
+# 创建 metrics-server addon 配置（确保运行在系统节点上，高可用）
 METRICS_SERVER_CONFIG_FILE=$(mktemp /tmp/metrics-server-config.XXXXXX.json)
 cat > "${METRICS_SERVER_CONFIG_FILE}" <<EOF
 {
+  "replicas": 2,
   "nodeSelector": {
     "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
+  },
+  "affinity": {
+    "podAntiAffinity": {
+      "requiredDuringSchedulingIgnoredDuringExecution": [
+        {
+          "labelSelector": {
+            "matchLabels": {
+              "k8s-app": "metrics-server"
+            }
+          },
+          "topologyKey": "kubernetes.io/hostname"
+        }
+      ]
+    }
   }
 }
 EOF
@@ -269,6 +350,7 @@ list_pod_identity_associations
 
 echo ""
 echo "=== EKS Addons Installation Complete ==="
+echo "✓ CoreDNS addon installed and configured"
 echo "✓ Cluster Autoscaler installed and configured"
 echo "✓ AWS Load Balancer Controller installed and configured"
 echo "✓ EBS CSI Driver addon installed and configured"
@@ -280,7 +362,7 @@ echo "Next steps:"
 echo "  1. Check nodes: kubectl get nodes --show-labels"
 echo "  2. Check all pods: kubectl get pods -A"
 echo "  3. Verify metrics: kubectl top nodes"
-echo "  4. Deploy test app: kubectl apply -f manifests/examples/autoscaler.yaml"
+echo "  4. Deploy test app: kubectl apply -f examples/autoscaler.yaml"
 echo "  5. Optional: Install EFS/S3 CSI drivers with ./scripts/option_install_csi_drivers.sh"
 echo "  6. Optional: Install Karpenter with ./scripts/option_install_karpenter.sh"
 echo ""

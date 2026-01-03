@@ -9,7 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 echo "=== Verifying Karpenter Controller Scheduling ==="
 
 # 1. 设置环境变量
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${PROJECT_ROOT}/scripts/0_setup_env.sh"
 
 # 1.1 验证 kubectl context
 verify_kubectl_context

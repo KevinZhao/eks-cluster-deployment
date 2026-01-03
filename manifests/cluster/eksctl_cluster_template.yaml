@@ -57,16 +57,11 @@ addons:
         WARM_ENI_TARGET: "0"
         WARM_IP_TARGET: "5"
         MINIMUM_IP_TARGET: "3"
-  - name: coredns
-    version: latest
-    configurationValues: |
-      nodeSelector:
-        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
   - name: kube-proxy
     version: latest
   - name: eks-pod-identity-agent
     version: latest
-  # 注意: metrics-server 和 aws-ebs-csi-driver 在 7_install_eks_addon.sh 中安装
+  # 注意: coredns, metrics-server, aws-ebs-csi-driver 在 7_install_eks_addon.sh 中安装
   # 因为需要等系统节点组创建后才能配置 nodeSelector
 
 cloudWatch:

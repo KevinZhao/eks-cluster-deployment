@@ -1099,10 +1099,10 @@ INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_inst
 
 ```bash
 # 非交互模式（自动重启 Karpenter）
-AUTO_RESTART_KARPENTER=yes ./example/option_test_pod_scheduling.sh
+AUTO_RESTART_KARPENTER=yes ./examples/option_test_pod_scheduling.sh
 
 # 或交互模式
-./example/option_test_pod_scheduling.sh
+./examples/option_test_pod_scheduling.sh
 ```
 
 #### 测试 Karpenter 节点池
@@ -1111,10 +1111,10 @@ AUTO_RESTART_KARPENTER=yes ./example/option_test_pod_scheduling.sh
 
 ```bash
 # 非交互模式（自动清理测试资源）
-AUTO_CLEANUP_TEST=yes ./example/option_test_karpenter_pools.sh
+AUTO_CLEANUP_TEST=yes ./examples/option_test_karpenter_pools.sh
 
 # 或交互模式
-./example/option_test_karpenter_pools.sh
+./examples/option_test_karpenter_pools.sh
 ```
 
 ---
@@ -1301,8 +1301,8 @@ SYSTEM_NODE_MAX_SIZE=6                 # 最大节点数
 |------|------|---------|
 | option_install_csi_drivers.sh | 安装 EFS/FSx/S3 CSI Driver | VPC 内 |
 | option_install_karpenter.sh | 安装 Karpenter 自动扩缩容 | VPC 内 |
-| example/option_test_pod_scheduling.sh | 测试 Pod 调度 | VPC 内 |
-| example/option_test_karpenter_pools.sh | 测试 Karpenter 节点池 | VPC 内 |
+| examples/option_test_pod_scheduling.sh | 测试 Pod 调度 | VPC 内 |
+| examples/option_test_karpenter_pools.sh | 测试 Karpenter 节点池 | VPC 内 |
 
 ### C. 端口和协议要求
 

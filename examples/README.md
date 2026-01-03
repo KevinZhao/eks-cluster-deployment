@@ -18,7 +18,7 @@
 
 1. **部署单个Pod**:
 ```bash
-kubectl apply -f manifests/test/test-graviton-pod.yaml
+kubectl apply -f examples/test-graviton-pod.yaml
 ```
 
 2. **查看Pod状态**:
@@ -43,14 +43,14 @@ kubectl get node <node-name> -o json | jq '.metadata.labels'
 
 6. **清理**:
 ```bash
-kubectl delete -f manifests/test/test-graviton-pod.yaml
+kubectl delete -f examples/test-graviton-pod.yaml
 ```
 
 ### 测试 x86 NodePool (r7i.8xlarge)
 
 1. **部署单个Pod**:
 ```bash
-kubectl apply -f manifests/test/test-x86-pod.yaml
+kubectl apply -f examples/test-x86-pod.yaml
 ```
 
 2. **查看Pod状态**:
@@ -75,7 +75,7 @@ kubectl get node <node-name> -o json | jq '.metadata.labels'
 
 6. **清理**:
 ```bash
-kubectl delete -f manifests/test/test-x86-pod.yaml
+kubectl delete -f examples/test-x86-pod.yaml
 ```
 
 ### 测试自动扩缩容 (Deployment)
@@ -84,7 +84,7 @@ kubectl delete -f manifests/test/test-x86-pod.yaml
 
 1. **部署Deployment (3副本)**:
 ```bash
-kubectl apply -f manifests/test/test-deployment-graviton.yaml
+kubectl apply -f examples/test-deployment-graviton.yaml
 ```
 
 2. **观察节点创建**:
@@ -115,14 +115,14 @@ watch kubectl get nodes -l node-type=graviton
 
 7. **清理**:
 ```bash
-kubectl delete -f manifests/test/test-deployment-graviton.yaml
+kubectl delete -f examples/test-deployment-graviton.yaml
 ```
 
 #### 测试 x86 扩缩容
 
 1. **部署Deployment (3副本)**:
 ```bash
-kubectl apply -f manifests/test/test-deployment-x86.yaml
+kubectl apply -f examples/test-deployment-x86.yaml
 ```
 
 2. **观察节点创建**:
@@ -153,7 +153,7 @@ watch kubectl get nodes -l node-type=x86
 
 7. **清理**:
 ```bash
-kubectl delete -f manifests/test/test-deployment-x86.yaml
+kubectl delete -f examples/test-deployment-x86.yaml
 ```
 
 ## 预期行为

@@ -97,7 +97,7 @@ case $choice in
         echo "Next steps:"
         echo "  1. Create an EFS file system: aws efs create-file-system --region ${AWS_REGION}"
         echo "  2. Create mount targets in your VPC subnets"
-        echo "  3. Create a StorageClass and PVC (see manifests/examples/efs-app.yaml)"
+        echo "  3. Create a StorageClass and PVC (see examples/efs-app.yaml)"
         echo ""
         ;;
 
@@ -217,7 +217,7 @@ case $choice in
         echo "Next steps:"
         echo "  1. Create a PersistentVolume pointing to your S3 bucket"
         echo "  2. Create a PVC and mount it in your Pod"
-        echo "  3. See manifests/examples/s3-app.yaml for examples"
+        echo "  3. See examples/s3-app.yaml for examples"
         echo ""
         ;;
 
@@ -314,7 +314,7 @@ case $choice in
         echo "  1. For EFS: Create EFS file system and mount targets"
         echo "  2. For FSx: Create FSx for Lustre or ONTAP file system"
         echo "  3. For S3: Use the configured bucket ARNs"
-        echo "  4. See manifests/examples/ for usage examples"
+        echo "  4. See examples/ for usage examples"
         echo ""
         ;;
 

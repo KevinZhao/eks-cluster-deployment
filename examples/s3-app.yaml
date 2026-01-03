@@ -1,0 +1,155 @@
+---
+# S3 CSI Driver Examples
+# Supports both Standard S3 and S3 Express One Zone (Directory Buckets)
+#
+# Prerequisites:
+#   1. Install S3 CSI Driver: ./scripts/option_install_csi_drivers.sh s3 <bucket-arns>
+#   2. Replace ${S3_BUCKET_NAME} with your bucket name
+#
+# S3 Express One Zone bucket naming: <name>--<az-id>--x-s3
+# Example: my-bucket--usw2-az1--x-s3
+
+# ============================================
+# Example 1: Standard S3 Bucket (Static Provisioning)
+# ============================================
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: s3-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  csi:
+    driver: s3.csi.aws.com
+    volumeHandle: s3-csi-volume-standard
+    volumeAttributes:
+      bucketName: ${S3_BUCKET_NAME}
+      authenticationSource: driver
+  mountOptions:
+    - allow-delete
+    - region ${AWS_REGION}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-claim
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: s3-pv
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: s3-app
+  template:
+    metadata:
+      labels:
+        app: s3-app
+    spec:
+      nodeSelector:
+        app: eks-utils
+      containers:
+      - name: app
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        command: ["/bin/sh"]
+        args: ["-c", "echo 'Testing S3 CSI Driver' > /data/test.txt && tail -f /dev/null"]
+        volumeMounts:
+        - name: s3-storage
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      volumes:
+      - name: s3-storage
+        persistentVolumeClaim:
+          claimName: s3-claim
+
+# ============================================
+# Example 2: S3 Express One Zone (Directory Bucket)
+# ============================================
+# S3 Express One Zone provides single-digit millisecond latency
+# Bucket must be created with: aws s3api create-bucket --bucket <name>--<az-id>--x-s3 \
+#   --create-bucket-configuration '{"Location":{"Type":"AvailabilityZone","Name":"<az-id>"},"Bucket":{"DataRedundancy":"SingleAvailabilityZone","Type":"Directory"}}'
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: s3-express-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  csi:
+    driver: s3.csi.aws.com
+    volumeHandle: s3-csi-volume-express
+    volumeAttributes:
+      bucketName: ${S3_EXPRESS_BUCKET_NAME}
+      authenticationSource: driver
+  mountOptions:
+    - allow-delete
+    - region ${AWS_REGION}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-express-claim
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: s3-express-pv
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-express-test
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Testing S3 Express One Zone mount..."
+        echo "Timestamp: $(date)"
+        echo "Hello from S3 Express One Zone! $(date)" > /data/test-$(date +%s).txt
+        ls -la /data/
+        echo "Test complete. Sleeping..."
+        sleep infinity
+    volumeMounts:
+    - name: s3-storage
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  volumes:
+  - name: s3-storage
+    persistentVolumeClaim:
+      claimName: s3-express-claim

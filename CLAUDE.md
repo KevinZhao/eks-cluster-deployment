@@ -57,10 +57,10 @@ source scripts/0_setup_env.sh
 ./scripts/option_install_csi_drivers.sh s3 <bucket-arns>  # S3 CSI Driver
 
 # Test Karpenter node provisioning (example)
-./example/option_test_karpenter_pools.sh
+./examples/option_test_karpenter_pools.sh
 
 # Test pod scheduling on system nodes (example)
-./example/option_test_pod_scheduling.sh
+./examples/option_test_pod_scheduling.sh
 ```
 
 ### Cluster Verification
@@ -93,9 +93,9 @@ kubectl top pods -A
 **Numbered Scripts (0-7)**: Core deployment sequence that must run in order
 - `0_setup_env.sh`: Environment configuration loader and validation functions (always source this first)
 - `1-3`: Network infrastructure setup
-- `4`: Bastion host provisioning
+- `4`: Local environment check (alternative to bastion)
 - `5-6`: EKS cluster and system nodegroup creation
-- `7`: Core addon installation
+- `7`: Core addon installation (CoreDNS, Cluster Autoscaler, ALB Controller, EBS CSI, Metrics Server)
 
 **option_* Scripts**: Optional features that can be installed after core deployment
 - Can run independently after core setup completes
@@ -129,17 +129,17 @@ scripts/                    # Bash scripts for deployment
 ├── option_*.sh            # Optional feature scripts
 └── pod_identity_helpers.sh # Pod Identity helper functions
 
-example/                    # Example/test scripts
+examples/                   # Example/test scripts and manifests
 ├── option_test_pod_scheduling.sh   # Test pod scheduling
-└── option_test_karpenter_pools.sh  # Test Karpenter node pools
+├── option_test_karpenter_pools.sh  # Test Karpenter node pools
+└── *.yaml                 # Example workload manifests
 
 manifests/                  # Kubernetes manifests
 ├── cluster/               # eksctl cluster templates
 ├── addons/                # Core addons (autoscaler, LB controller, CSI drivers)
 ├── storage/               # StorageClass definitions
 ├── karpenter/             # Karpenter EC2NodeClass and NodePool configs
-├── iam/                   # IAM policy templates
-└── test/                  # Test workload manifests
+└── iam/                   # IAM policy templates
 
 terraform/                  # Terraform modules
 ├── vpc/                   # VPC infrastructure (if creating new VPC)
@@ -242,10 +242,10 @@ GPU nodes support P5/P5en/P6 instances with EFA networking:
 
 ## Testing and Validation
 
-Test manifests in `manifests/test/`:
-- `pod-on-system-nodes.yaml`: Test system node scheduling
-- Various storage test pods (EBS, EFS, FSx, S3)
-- GPU test workloads
+Test manifests in `examples/`:
+- Test pod scheduling (Graviton/x86)
+- Various storage test pods (EBS, EFS, S3)
+- Karpenter scaling tests
 
 ## Important Notes
 
@@ -255,4 +255,4 @@ Test manifests in `manifests/test/`:
 - **System node labels**: `app=eks-utils` label critical for addon scheduling
 - **Multi-AZ support**: Supports 3 or 4 availability zones (set `PRIVATE_SUBNET_D` and `PUBLIC_SUBNET_D` for 4 AZs)
 - **Terraform modules**: Used for VPC endpoints and launch templates, but most deployment is bash-driven
-- **Documentation**: See `DEPLOYMENT_SOP.md` for detailed step-by-step procedures, `DESIGN.md` for future features
+- **Documentation**: See `docs/DEPLOYMENT_SOP.md` for detailed step-by-step procedures, `docs/DESIGN.md` for future features

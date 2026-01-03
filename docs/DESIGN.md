@@ -52,7 +52,7 @@ resources:
 
 ### 3.1 待办任务
 
-- [ ] 创建示例 manifest: `manifests/examples/pod-with-storage-limit.yaml`
+- [ ] 创建示例 manifest: `examples/pod-with-storage-limit.yaml`
 - [ ] 添加使用文档
 
 ---
@@ -113,7 +113,7 @@ featureGates:
 
 ### 6.1 Ephemeral Storage 测试
 ```bash
-kubectl apply -f manifests/examples/pod-with-storage-limit.yaml
+kubectl apply -f examples/pod-with-storage-limit.yaml
 kubectl exec pod -- dd if=/dev/zero of=/data/file bs=1M count=15000
 # 应该失败，超过配额
 ```
