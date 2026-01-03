@@ -368,8 +368,9 @@ echo "Step 8: Tagging subnets and security groups for Karpenter discovery..."
 # 获取集群的安全组
 CLUSTER_SG=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query "cluster.resourcesVpcConfig.clusterSecurityGroupId" --output text)
 
-# 标记子网
-for SUBNET in ${PRIVATE_SUBNET_A} ${PRIVATE_SUBNET_B} ${PRIVATE_SUBNET_C}; do
+# 标记子网 (supports 2-4 AZs using PRIVATE_SUBNETS from 0_setup_env.sh)
+IFS=',' read -ra SUBNET_ARRAY <<< "${PRIVATE_SUBNETS}"
+for SUBNET in "${SUBNET_ARRAY[@]}"; do
     aws ec2 create-tags \
         --resources "${SUBNET}" \
         --tags Key=karpenter.sh/discovery,Value="${CLUSTER_NAME}" \

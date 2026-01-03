@@ -141,12 +141,10 @@ manifests/                  # Kubernetes manifests
 ├── karpenter/             # Karpenter EC2NodeClass and NodePool configs
 └── iam/                   # IAM policy templates
 
-terraform/                  # Terraform modules
-├── vpc/                   # VPC infrastructure (if creating new VPC)
-├── vpc-endpoints/         # VPC endpoint creation
-└── launch-template/       # EC2 launch template for custom nodes
-
 docs/                      # Additional documentation
+
+# Note: VPC creation uses external terraform-aws-modules/vpc module
+# See docs/VPC_SETUP.md for recommended configuration
 ```
 
 ### Configuration Files
@@ -159,8 +157,10 @@ docs/                      # Additional documentation
 **Environment Variables:**
 - `CLUSTER_NAME`: EKS cluster name
 - `VPC_ID`: Target VPC
-- `PRIVATE_SUBNET_A/B/C(/D)`: Private subnets (3 or 4 AZs)
-- `PUBLIC_SUBNET_A/B/C(/D)`: Public subnets
+- `PRIVATE_SUBNET_A/B`: Private subnets (required, minimum 2 AZs)
+- `PRIVATE_SUBNET_C/D`: Private subnets (optional, for 3-4 AZs)
+- `PUBLIC_SUBNET_A/B`: Public subnets (required)
+- `PUBLIC_SUBNET_C/D`: Public subnets (optional)
 - `INSTALL_KARPENTER`: Enable Karpenter (true/false)
 - `INSTALL_EFS_CSI`: Enable EFS CSI driver (true/false)
 - `INSTALL_FSX_CSI`: Enable FSx CSI driver (true/false)
@@ -253,6 +253,6 @@ Test manifests in `examples/`:
 - **Source 0_setup_env.sh first**: Provides environment variables and helper functions
 - **Check kubectl context**: Use `verify_kubectl_context` before kubectl operations
 - **System node labels**: `app=eks-utils` label critical for addon scheduling
-- **Multi-AZ support**: Supports 3 or 4 availability zones (set `PRIVATE_SUBNET_D` and `PUBLIC_SUBNET_D` for 4 AZs)
+- **Multi-AZ support**: Supports 2-4 availability zones (minimum: A/B, optional: C, D)
 - **Terraform modules**: Used for VPC endpoints and launch templates, but most deployment is bash-driven
 - **Documentation**: See `docs/DEPLOYMENT_SOP.md` for detailed step-by-step procedures, `docs/DESIGN.md` for future features

@@ -21,12 +21,11 @@ echo -e "${GREEN}Creating VPC Endpoints for Private EKS${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# Validate required variables
+# Validate required variables (minimum 2 AZs)
 required_vars=(
     "VPC_ID"
     "PRIVATE_SUBNET_A"
     "PRIVATE_SUBNET_B"
-    "PRIVATE_SUBNET_C"
     "AWS_REGION"
     "CLUSTER_NAME"
 )
@@ -83,8 +82,15 @@ aws ec2 create-tags \
 echo -e "${GREEN}✓ Security group created${NC}"
 echo ""
 
-# Define subnet IDs
-SUBNET_IDS="${PRIVATE_SUBNET_A} ${PRIVATE_SUBNET_B} ${PRIVATE_SUBNET_C}"
+# Define subnet IDs based on AZ_COUNT (supports 2-4 AZs)
+SUBNET_IDS="${PRIVATE_SUBNET_A} ${PRIVATE_SUBNET_B}"
+if [ "${AZ_COUNT}" -ge 3 ] && [ -n "${PRIVATE_SUBNET_C}" ]; then
+    SUBNET_IDS="${SUBNET_IDS} ${PRIVATE_SUBNET_C}"
+fi
+if [ "${AZ_COUNT}" -ge 4 ] && [ -n "${PRIVATE_SUBNET_D}" ]; then
+    SUBNET_IDS="${SUBNET_IDS} ${PRIVATE_SUBNET_D}"
+fi
+echo "Using ${AZ_COUNT} AZs for VPC endpoints"
 
 # Define interface endpoints
 declare -a INTERFACE_ENDPOINTS=(
@@ -143,11 +149,11 @@ done
 
 echo ""
 
-# Get private route table IDs
+# Get private route table IDs (using PRIVATE_SUBNETS from 0_setup_env.sh)
 echo -e "${YELLOW}Getting private route table IDs...${NC}"
 ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
-              "Name=association.subnet-id,Values=${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C}" \
+              "Name=association.subnet-id,Values=${PRIVATE_SUBNETS}" \
     --query 'RouteTables[*].RouteTableId' \
     --output text)
 

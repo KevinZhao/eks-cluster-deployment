@@ -70,24 +70,95 @@ else
         SECRETS_ENCRYPTION_CONFIG=""
     fi
 
-    sed -e "s|\${CLUSTER_NAME}|$CLUSTER_NAME|g" \
-        -e "s|\${AWS_REGION}|$AWS_REGION|g" \
-        -e "s|\${K8S_VERSION}|$K8S_VERSION|g" \
-        -e "s|\${SERVICE_IPV4_CIDR}|$SERVICE_IPV4_CIDR|g" \
-        -e "s|\${VPC_ID}|$VPC_ID|g" \
-        -e "s|\${AZ_A}|$AZ_A|g" \
-        -e "s|\${AZ_B}|$AZ_B|g" \
-        -e "s|\${AZ_C}|$AZ_C|g" \
-        -e "s|\${PRIVATE_SUBNET_A}|$PRIVATE_SUBNET_A|g" \
-        -e "s|\${PRIVATE_SUBNET_B}|$PRIVATE_SUBNET_B|g" \
-        -e "s|\${PRIVATE_SUBNET_C}|$PRIVATE_SUBNET_C|g" \
-        -e "s|\${PUBLIC_SUBNET_A}|$PUBLIC_SUBNET_A|g" \
-        -e "s|\${PUBLIC_SUBNET_B}|$PUBLIC_SUBNET_B|g" \
-        -e "s|\${PUBLIC_SUBNET_C}|$PUBLIC_SUBNET_C|g" \
-        -e "s|\${SYSTEM_NODE_LABEL_KEY}|$SYSTEM_NODE_LABEL_KEY|g" \
-        -e "s|\${SYSTEM_NODE_LABEL_VALUE}|$SYSTEM_NODE_LABEL_VALUE|g" \
-        -e "s|# SECRETS_ENCRYPTION_PLACEHOLDER|${SECRETS_ENCRYPTION_CONFIG}|g" \
-        "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
+    # Build dynamic subnet configuration based on AZ_COUNT (supports 2-4 AZs)
+    PRIVATE_SUBNETS_YAML="      ${AZ_A}:
+        id: \"${PRIVATE_SUBNET_A}\"
+      ${AZ_B}:
+        id: \"${PRIVATE_SUBNET_B}\""
+    PUBLIC_SUBNETS_YAML="      ${AZ_A}:
+        id: \"${PUBLIC_SUBNET_A}\"
+      ${AZ_B}:
+        id: \"${PUBLIC_SUBNET_B}\""
+
+    if [ "${AZ_COUNT}" -ge 3 ] && [ -n "${PRIVATE_SUBNET_C}" ]; then
+        PRIVATE_SUBNETS_YAML="${PRIVATE_SUBNETS_YAML}
+      ${AZ_C}:
+        id: \"${PRIVATE_SUBNET_C}\""
+        PUBLIC_SUBNETS_YAML="${PUBLIC_SUBNETS_YAML}
+      ${AZ_C}:
+        id: \"${PUBLIC_SUBNET_C}\""
+    fi
+    if [ "${AZ_COUNT}" -ge 4 ] && [ -n "${PRIVATE_SUBNET_D}" ]; then
+        PRIVATE_SUBNETS_YAML="${PRIVATE_SUBNETS_YAML}
+      ${AZ_D}:
+        id: \"${PRIVATE_SUBNET_D}\""
+        PUBLIC_SUBNETS_YAML="${PUBLIC_SUBNETS_YAML}
+      ${AZ_D}:
+        id: \"${PUBLIC_SUBNET_D}\""
+    fi
+
+    # Generate cluster config dynamically
+    cat > "${PROJECT_ROOT}/eksctl_cluster_final.yaml" <<EOF
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "${K8S_VERSION}"
+  tags:
+    cluster-autoscaler: enabled
+
+${SECRETS_ENCRYPTION_CONFIG}
+
+kubernetesNetworkConfig:
+  serviceIPv4CIDR: "${SERVICE_IPV4_CIDR}"
+
+vpc:
+  id: "${VPC_ID}"
+  subnets:
+    private:
+${PRIVATE_SUBNETS_YAML}
+    public:
+${PUBLIC_SUBNETS_YAML}
+  clusterEndpoints:
+    privateAccess: true
+    publicAccess: false
+
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
+
+iam:
+  withOIDC: false
+
+managedNodeGroups: []
+
+addons:
+  - name: vpc-cni
+    version: latest
+    configurationValues: |
+      env:
+        AWS_VPC_K8S_CNI_EXTERNALSNAT: "false"
+        WARM_ENI_TARGET: "0"
+        WARM_IP_TARGET: "5"
+        MINIMUM_IP_TARGET: "3"
+  - name: kube-proxy
+    version: latest
+  - name: eks-pod-identity-agent
+    version: latest
+
+cloudWatch:
+  clusterLogging:
+    logRetentionInDays: 30
+    enableTypes:
+      - "api"
+      - "audit"
+      - "authenticator"
+      - "controllerManager"
+      - "scheduler"
+EOF
+
+    echo "Generated cluster config with ${AZ_COUNT} AZs"
     eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
 fi
 

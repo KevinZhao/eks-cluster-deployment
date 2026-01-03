@@ -40,23 +40,19 @@ else
     export AWS_DEFAULT_REGION
 fi
 
-# 4. 验证必需的环境变量 (支持3-4个AZ)
+# 4. 验证必需的环境变量 (最少需要2个AZ)
 REQUIRED_VARS=(
     "CLUSTER_NAME"
     "VPC_ID"
     "PRIVATE_SUBNET_A"
     "PRIVATE_SUBNET_B"
-    "PRIVATE_SUBNET_C"
     "PUBLIC_SUBNET_A"
     "PUBLIC_SUBNET_B"
-    "PUBLIC_SUBNET_C"
 )
 
-# 第4个 AZ 是可选的 (Oregon等区域有4个AZ)
-OPTIONAL_4TH_AZ_VARS=(
-    "PRIVATE_SUBNET_D"
-    "PUBLIC_SUBNET_D"
-)
+# 第3和第4个 AZ 是可选的
+# C: 大多数区域有3个AZ
+# D: Oregon等区域有4个AZ
 
 MISSING_VARS=()
 for var in "${REQUIRED_VARS[@]}"; do
@@ -94,23 +90,24 @@ export S3_CSI_VERSION="${S3_CSI_VERSION:-v2.2.2}"
 # Metrics Server
 export METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-v0.7.2}"
 
-# 6. 自动推导 AZ（基于子网 ID 模式，支持3-4个AZ）
-if [ -z "$AZ_A" ] || [ -z "$AZ_B" ] || [ -z "$AZ_C" ]; then
-    log "Availability zones not set, deriving from region..."
-    export AZ_A="${AWS_REGION}a"
-    export AZ_B="${AWS_REGION}b"
-    export AZ_C="${AWS_REGION}c"
-fi
+# 6. 检测 AZ 数量并自动推导 AZ（支持2-4个AZ）
+# 始终设置 A 和 B（必需）
+if [ -z "$AZ_A" ]; then export AZ_A="${AWS_REGION}a"; fi
+if [ -z "$AZ_B" ]; then export AZ_B="${AWS_REGION}b"; fi
 
-# 检测是否使用第4个AZ (如果定义了 PRIVATE_SUBNET_D 或 PUBLIC_SUBNET_D)
-if [ -n "$PRIVATE_SUBNET_D" ] || [ -n "$PUBLIC_SUBNET_D" ]; then
-    log "Detected 4th availability zone configuration"
-    if [ -z "$AZ_D" ]; then
-        export AZ_D="${AWS_REGION}d"
-    fi
-    export USE_4_AZS=true
+# 检测 AZ 数量
+if [ -n "$PRIVATE_SUBNET_D" ] && [ -n "$PUBLIC_SUBNET_D" ]; then
+    export AZ_COUNT=4
+    if [ -z "$AZ_C" ]; then export AZ_C="${AWS_REGION}c"; fi
+    if [ -z "$AZ_D" ]; then export AZ_D="${AWS_REGION}d"; fi
+    log "Detected 4 availability zones configuration"
+elif [ -n "$PRIVATE_SUBNET_C" ] && [ -n "$PUBLIC_SUBNET_C" ]; then
+    export AZ_COUNT=3
+    if [ -z "$AZ_C" ]; then export AZ_C="${AWS_REGION}c"; fi
+    log "Detected 3 availability zones configuration"
 else
-    export USE_4_AZS=false
+    export AZ_COUNT=2
+    log "Detected 2 availability zones configuration"
 fi
 
 # 7. 验证配置
@@ -172,14 +169,21 @@ if [ "$IO2_IOPS" -lt 100 ] || [ "$IO2_IOPS" -gt 64000 ]; then
     export IO2_IOPS=10000
 fi
 
-# 10. 构建子网列表变量（供其他脚本使用）
-if [ "$USE_4_AZS" = "true" ]; then
-    export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C},${PRIVATE_SUBNET_D}"
-    export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B},${PUBLIC_SUBNET_C},${PUBLIC_SUBNET_D}"
-else
-    export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C}"
-    export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B},${PUBLIC_SUBNET_C}"
-fi
+# 10. 构建子网列表变量（供其他脚本使用，支持2-4个AZ）
+case "$AZ_COUNT" in
+    4)
+        export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C},${PRIVATE_SUBNET_D}"
+        export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B},${PUBLIC_SUBNET_C},${PUBLIC_SUBNET_D}"
+        ;;
+    3)
+        export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C}"
+        export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B},${PUBLIC_SUBNET_C}"
+        ;;
+    2)
+        export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B}"
+        export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B}"
+        ;;
+esac
 
 # 11. 显示配置摘要
 log "=== Configuration Summary ==="
@@ -189,15 +193,23 @@ echo "CLUSTER_NAME: $CLUSTER_NAME"
 echo "K8S_VERSION: $K8S_VERSION"
 echo "VPC_ID: $VPC_ID"
 
-if [ "$USE_4_AZS" = "true" ]; then
-    echo "AZ: $AZ_A, $AZ_B, $AZ_C, $AZ_D (4 Availability Zones)"
-    echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C, $PRIVATE_SUBNET_D"
-    echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C, $PUBLIC_SUBNET_D"
-else
-    echo "AZ: $AZ_A, $AZ_B, $AZ_C (3 Availability Zones)"
-    echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"
-    echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
-fi
+case "$AZ_COUNT" in
+    4)
+        echo "AZ: $AZ_A, $AZ_B, $AZ_C, $AZ_D (4 Availability Zones)"
+        echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C, $PRIVATE_SUBNET_D"
+        echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C, $PUBLIC_SUBNET_D"
+        ;;
+    3)
+        echo "AZ: $AZ_A, $AZ_B, $AZ_C (3 Availability Zones)"
+        echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B, $PRIVATE_SUBNET_C"
+        echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B, $PUBLIC_SUBNET_C"
+        ;;
+    2)
+        echo "AZ: $AZ_A, $AZ_B (2 Availability Zones)"
+        echo "PRIVATE_SUBNETS: $PRIVATE_SUBNET_A, $PRIVATE_SUBNET_B"
+        echo "PUBLIC_SUBNETS: $PUBLIC_SUBNET_A, $PUBLIC_SUBNET_B"
+        ;;
+esac
 echo "SYSTEM_NODE_INSTANCE_TYPE: $SYSTEM_NODE_INSTANCE_TYPE"
 echo "SYSTEM_NODE_DATA_VOLUME_SIZE: ${SYSTEM_NODE_DATA_VOLUME_SIZE}GB"
 echo "SYSTEM_NODE_LABEL: ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}"

@@ -168,10 +168,16 @@ if [[ -f "${SCRIPT_DIR}/../.env" ]]; then
         check_warn "VPC_ID not set in .env"
     fi
 
-    if [[ -n "$PRIVATE_SUBNET_A" ]] && [[ -n "$PRIVATE_SUBNET_B" ]] && [[ -n "$PRIVATE_SUBNET_C" ]]; then
-        check_pass "Private subnets configured (3+ AZs)"
+    if [[ -n "$PRIVATE_SUBNET_A" ]] && [[ -n "$PRIVATE_SUBNET_B" ]]; then
+        if [[ -n "$PRIVATE_SUBNET_D" ]]; then
+            check_pass "Private subnets configured (4 AZs)"
+        elif [[ -n "$PRIVATE_SUBNET_C" ]]; then
+            check_pass "Private subnets configured (3 AZs)"
+        else
+            check_pass "Private subnets configured (2 AZs)"
+        fi
     else
-        check_warn "Private subnets not fully configured in .env"
+        check_warn "Private subnets not fully configured in .env (minimum 2 required)"
     fi
 else
     check_warn ".env file not found (copy from .env.example)"

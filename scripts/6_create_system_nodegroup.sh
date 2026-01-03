@@ -621,6 +621,29 @@ create_nodegroup_with_lt() {
 
     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
+    # Build dynamic subnet configuration based on AZ_COUNT (supports 2-4 AZs)
+    VPC_SUBNETS_YAML="      ${AZ_A}:
+        id: \"${PRIVATE_SUBNET_A}\"
+      ${AZ_B}:
+        id: \"${PRIVATE_SUBNET_B}\""
+    NG_SUBNETS_YAML="      - ${PRIVATE_SUBNET_A}
+      - ${PRIVATE_SUBNET_B}"
+
+    if [ "${AZ_COUNT}" -ge 3 ] && [ -n "${PRIVATE_SUBNET_C}" ]; then
+        VPC_SUBNETS_YAML="${VPC_SUBNETS_YAML}
+      ${AZ_C}:
+        id: \"${PRIVATE_SUBNET_C}\""
+        NG_SUBNETS_YAML="${NG_SUBNETS_YAML}
+      - ${PRIVATE_SUBNET_C}"
+    fi
+    if [ "${AZ_COUNT}" -ge 4 ] && [ -n "${PRIVATE_SUBNET_D}" ]; then
+        VPC_SUBNETS_YAML="${VPC_SUBNETS_YAML}
+      ${AZ_D}:
+        id: \"${PRIVATE_SUBNET_D}\""
+        NG_SUBNETS_YAML="${NG_SUBNETS_YAML}
+      - ${PRIVATE_SUBNET_D}"
+    fi
+
     TEMP_CONFIG="/tmp/eksctl_ng_$$.yaml"
     cat > "${TEMP_CONFIG}" <<EOF
 apiVersion: eksctl.io/v1alpha5
@@ -635,12 +658,7 @@ vpc:
   id: "${VPC_ID}"
   subnets:
     private:
-      ${AZ_A}:
-        id: "${PRIVATE_SUBNET_A}"
-      ${AZ_B}:
-        id: "${PRIVATE_SUBNET_B}"
-      ${AZ_C}:
-        id: "${PRIVATE_SUBNET_C}"
+${VPC_SUBNETS_YAML}
 
 managedNodeGroups:
   - name: eks-utils
@@ -654,9 +672,7 @@ managedNodeGroups:
     maxSize: ${SYSTEM_NODE_MAX_SIZE}
     privateNetworking: true
     subnets:
-      - ${PRIVATE_SUBNET_A}
-      - ${PRIVATE_SUBNET_B}
-      - ${PRIVATE_SUBNET_C}
+${NG_SUBNETS_YAML}
     labels:
       app: "eks-utils"
       arch: "${NODE_ARCH}"

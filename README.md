@@ -290,13 +290,14 @@ eks-cluster-deployment/
 │   │   ├── fsx-csi-driver.yaml            # FSx Lustre CSI Driver
 │   │   └── s3-csi-driver.yaml             # S3 CSI Driver
 │
-├── docs/                                  # 详细文档
-│   ├── DEPLOYMENT_SOP.md                  # 完整部署流程
-│   ├── DESIGN.md                          # 架构设计
-│   └── COLLABORATION.md                   # 协作指南
-│
-└── terraform/                             # 基础设施代码（VPC 等）
+└── docs/                                  # 详细文档
+    ├── DEPLOYMENT_SOP.md                  # 完整部署流程
+    ├── DESIGN.md                          # 架构设计
+    ├── VPC_SETUP.md                       # VPC 创建指南
+    └── COLLABORATION.md                   # 协作指南
 ```
+
+> **Note**: VPC 创建请参考 [terraform-aws-modules/vpc](https://github.com/terraform-aws-modules/terraform-aws-vpc)，详见 [docs/VPC_SETUP.md](docs/VPC_SETUP.md)
 
 ---
 

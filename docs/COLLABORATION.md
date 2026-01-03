@@ -245,9 +245,8 @@ eks-cluster-deployment/
 ├── manifests/
 │   ├── cluster/                    # 集群配置
 │   └── addons/                     # 组件配置
-├── terraform/
-│   ├── vpc/                        # VPC 模块
-│   └── launch-template/            # Launch Template 模块
+├── docs/
+│   └── VPC_SETUP.md               # VPC 创建指南（引用外部模块）
 └── README.md                       # 主文档
 ```
 

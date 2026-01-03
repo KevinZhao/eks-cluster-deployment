@@ -89,10 +89,8 @@ required_vars=(
     "VPC_ID"
     "PRIVATE_SUBNET_A"
     "PRIVATE_SUBNET_B"
-    "PRIVATE_SUBNET_C"
     "PUBLIC_SUBNET_A"
     "PUBLIC_SUBNET_B"
-    "PUBLIC_SUBNET_C"
     "AWS_REGION"
     "CLUSTER_NAME"
 )
@@ -138,14 +136,22 @@ fi
 # Validate Subnets
 print_section "3. Validating Subnets"
 
-# Private subnets
-PRIVATE_SUBNETS=("${PRIVATE_SUBNET_A}" "${PRIVATE_SUBNET_B}" "${PRIVATE_SUBNET_C}")
-AZS=("${AZ_A}" "${AZ_B}" "${AZ_C}")
+# Build subnet arrays based on AZ_COUNT (supports 2-4 AZs)
+PRIVATE_SUBNET_LIST=("${PRIVATE_SUBNET_A}" "${PRIVATE_SUBNET_B}")
+AZ_LIST=("${AZ_A}" "${AZ_B}")
+if [ "${AZ_COUNT}" -ge 3 ] && [ -n "${PRIVATE_SUBNET_C}" ]; then
+    PRIVATE_SUBNET_LIST+=("${PRIVATE_SUBNET_C}")
+    AZ_LIST+=("${AZ_C}")
+fi
+if [ "${AZ_COUNT}" -ge 4 ] && [ -n "${PRIVATE_SUBNET_D}" ]; then
+    PRIVATE_SUBNET_LIST+=("${PRIVATE_SUBNET_D}")
+    AZ_LIST+=("${AZ_D}")
+fi
 
 echo -e "${BLUE}Private Subnets:${NC}"
-for i in "${!PRIVATE_SUBNETS[@]}"; do
-    SUBNET_ID="${PRIVATE_SUBNETS[$i]}"
-    EXPECTED_AZ="${AZS[$i]}"
+for i in "${!PRIVATE_SUBNET_LIST[@]}"; do
+    SUBNET_ID="${PRIVATE_SUBNET_LIST[$i]}"
+    EXPECTED_AZ="${AZ_LIST[$i]}"
 
     SUBNET_INFO=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --output json 2>&1)
     if [ $? -eq 0 ]; then
@@ -171,11 +177,18 @@ done
 
 echo ""
 echo -e "${BLUE}Public Subnets:${NC}"
-PUBLIC_SUBNETS=("${PUBLIC_SUBNET_A}" "${PUBLIC_SUBNET_B}" "${PUBLIC_SUBNET_C}")
+# Build public subnet array based on AZ_COUNT
+PUBLIC_SUBNET_LIST=("${PUBLIC_SUBNET_A}" "${PUBLIC_SUBNET_B}")
+if [ "${AZ_COUNT}" -ge 3 ] && [ -n "${PUBLIC_SUBNET_C}" ]; then
+    PUBLIC_SUBNET_LIST+=("${PUBLIC_SUBNET_C}")
+fi
+if [ "${AZ_COUNT}" -ge 4 ] && [ -n "${PUBLIC_SUBNET_D}" ]; then
+    PUBLIC_SUBNET_LIST+=("${PUBLIC_SUBNET_D}")
+fi
 
-for i in "${!PUBLIC_SUBNETS[@]}"; do
-    SUBNET_ID="${PUBLIC_SUBNETS[$i]}"
-    EXPECTED_AZ="${AZS[$i]}"
+for i in "${!PUBLIC_SUBNET_LIST[@]}"; do
+    SUBNET_ID="${PUBLIC_SUBNET_LIST[$i]}"
+    EXPECTED_AZ="${AZ_LIST[$i]}"
 
     SUBNET_INFO=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --output json 2>&1)
     if [ $? -eq 0 ]; then
@@ -249,7 +262,7 @@ fi
 
 echo ""
 echo -e "${BLUE}Private Subnet Route Tables:${NC}"
-for SUBNET_ID in "${PRIVATE_SUBNETS[@]}"; do
+for SUBNET_ID in "${PRIVATE_SUBNET_LIST[@]}"; do
     RT_INFO=$(aws ec2 describe-route-tables \
         --filters "Name=association.subnet-id,Values=${SUBNET_ID}" \
         --output json 2>&1)

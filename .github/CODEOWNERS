@@ -10,9 +10,6 @@
 # Kubernetes manifests
 /manifests/ @KevinZhao
 
-# Terraform 配置
-/terraform/ @KevinZhao
-
 # 文档
 *.md @KevinZhao
 /docs/ @KevinZhao
