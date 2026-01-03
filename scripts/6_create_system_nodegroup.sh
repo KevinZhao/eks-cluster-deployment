@@ -63,8 +63,9 @@ fi
 verify_kubectl_context
 echo ""
 
-# 2.1 配置安全组以允许堡垒机访问集群 API (针对私有集群)
-echo "Configuring security group for bastion access to EKS API..."
+# 2.1 配置安全组以允许访问集群 API (针对私有集群)
+# 支持两种场景：1) 同VPC堡垒机 2) 跨VPC/VPC Peering
+echo "Configuring security group for API access..."
 
 # 获取集群安全组
 CLUSTER_SG=$(aws eks describe-cluster \
@@ -80,56 +81,91 @@ fi
 
 echo "Cluster Security Group: ${CLUSTER_SG}"
 
-# 获取当前堡垒机的安全组（使用IMDSv2）
-echo "Detecting current bastion security group..."
-TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" -s 2>/dev/null || echo "")
+# 尝试获取EC2元数据（使用IMDSv2）
+echo "Detecting execution environment..."
+TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" -s --connect-timeout 2 2>/dev/null || echo "")
+
 if [ -n "${TOKEN}" ]; then
-    INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
+    INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id --connect-timeout 2 2>/dev/null || echo "")
+    INSTANCE_VPC_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/mac --connect-timeout 2)/vpc-id --connect-timeout 2 2>/dev/null || echo "")
+fi
+
+# 获取集群VPC ID
+CLUSTER_VPC_ID=$(aws eks describe-cluster \
+    --name ${CLUSTER_NAME} \
+    --region ${AWS_REGION} \
+    --query 'cluster.resourcesVpcConfig.vpcId' \
+    --output text 2>/dev/null)
+
+echo "Cluster VPC: ${CLUSTER_VPC_ID}"
+
+if [ -n "${INSTANCE_ID}" ] && [ -n "${INSTANCE_VPC_ID}" ]; then
+    echo "Running on EC2 instance: ${INSTANCE_ID}"
+    echo "Instance VPC: ${INSTANCE_VPC_ID}"
+
+    if [ "${INSTANCE_VPC_ID}" = "${CLUSTER_VPC_ID}" ]; then
+        # 场景1：同VPC堡垒机 - 使用安全组规则
+        echo "Mode: Same VPC (bastion mode)"
+
+        BASTION_SG=$(aws ec2 describe-instances \
+            --instance-ids ${INSTANCE_ID} \
+            --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
+            --output text \
+            --region ${AWS_REGION} 2>/dev/null)
+
+        if [ -n "${BASTION_SG}" ] && [ "${BASTION_SG}" != "None" ]; then
+            echo "Bastion Security Group: ${BASTION_SG}"
+            echo "Adding security group rule..."
+            if aws ec2 authorize-security-group-ingress \
+                --group-id ${CLUSTER_SG} \
+                --protocol tcp \
+                --port 443 \
+                --source-group ${BASTION_SG} \
+                --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
+                echo "✓ Security group rule already exists"
+            else
+                echo "✓ Security group rule added successfully"
+            fi
+        fi
+    else
+        # 场景2：跨VPC (VPC Peering) - 使用CIDR规则
+        echo "Mode: Cross-VPC (VPC Peering mode)"
+
+        # 获取当前实例所在VPC的CIDR
+        # 需要查询实例所在区域的VPC
+        INSTANCE_REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/placement/region --connect-timeout 2 2>/dev/null || echo "")
+
+        if [ -n "${INSTANCE_REGION}" ]; then
+            INSTANCE_VPC_CIDR=$(aws ec2 describe-vpcs \
+                --vpc-ids ${INSTANCE_VPC_ID} \
+                --region ${INSTANCE_REGION} \
+                --query 'Vpcs[0].CidrBlock' \
+                --output text 2>/dev/null)
+
+            if [ -n "${INSTANCE_VPC_CIDR}" ] && [ "${INSTANCE_VPC_CIDR}" != "None" ]; then
+                echo "Instance VPC CIDR: ${INSTANCE_VPC_CIDR}"
+                echo "Adding CIDR-based security group rule..."
+                if aws ec2 authorize-security-group-ingress \
+                    --group-id ${CLUSTER_SG} \
+                    --protocol tcp \
+                    --port 443 \
+                    --cidr ${INSTANCE_VPC_CIDR} \
+                    --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
+                    echo "✓ Security group rule already exists"
+                else
+                    echo "✓ Security group rule added for VPC CIDR ${INSTANCE_VPC_CIDR}"
+                fi
+            fi
+        fi
+    fi
 else
-    echo "❌ ERROR: Cannot get EC2 metadata token. This script must be run from inside an EC2 instance"
-    echo ""
-    echo "Expected deployment order:"
-    echo "  1. Create VPC (Terraform)"
-    echo "  2. Create bastion instance (scripts/4_create_bastion.sh)"
-    echo "  3. SSH into bastion via AWS SSM"
-    echo "  4. Run scripts 5, 6, and 7 from bastion"
-    echo ""
-    exit 1
+    # 非EC2环境或无法获取元数据 - 跳过安全组配置
+    echo "⚠ WARNING: Not running on EC2 or cannot detect environment"
+    echo "  Skipping automatic security group configuration"
+    echo "  Please ensure EKS API is accessible from your network"
 fi
 
-if [ -z "${INSTANCE_ID}" ]; then
-    echo "❌ ERROR: Could not get instance ID. This script must be run from inside an EC2 instance"
-    exit 1
-fi
-
-BASTION_SG=$(aws ec2 describe-instances \
-    --instance-ids ${INSTANCE_ID} \
-    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' \
-    --output text \
-    --region ${AWS_REGION} 2>/dev/null)
-
-if [ -z "${BASTION_SG}" ] || [ "${BASTION_SG}" = "None" ]; then
-    echo "❌ ERROR: Could not detect bastion security group"
-    exit 1
-fi
-
-echo "Bastion Instance ID: ${INSTANCE_ID}"
-echo "Bastion Security Group: ${BASTION_SG}"
-
-# 添加入站规则允许堡垒机访问集群API端口443
-echo "Adding security group rule..."
-if aws ec2 authorize-security-group-ingress \
-    --group-id ${CLUSTER_SG} \
-    --protocol tcp \
-    --port 443 \
-    --source-group ${BASTION_SG} \
-    --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
-    echo "✓ Security group rule already exists"
-else
-    echo "✓ Security group rule added successfully"
-fi
-
-echo "✓ Bastion can now access EKS API Server"
+echo "✓ Security group configuration complete"
 echo ""
 
 # ===================================================================
@@ -623,7 +659,7 @@ managedNodeGroups:
       - ${PRIVATE_SUBNET_C}
     labels:
       app: "eks-utils"
-      arch: "x86_64"
+      arch: "${NODE_ARCH}"
       node-group-type: "system"
     tags:
       k8s.io/cluster-autoscaler/enabled: "true"
@@ -736,20 +772,34 @@ validate_instance_profile_exists "${INSTANCE_PROFILE_NAME}"
 # 步骤3：获取最新的EKS optimized AMI
 echo ""
 echo "Step 3: Getting latest EKS optimized AMI..."
+
+# 根据实例类型自动检测架构
+# Graviton实例类型包含'g'后缀（如m6g, m7g, m8g, c6g, r6g, t4g等）
+if [[ "${SYSTEM_NODE_INSTANCE_TYPE}" =~ ^[a-z][0-9]+g ]]; then
+    AMI_ARCH="arm64"
+    NODE_ARCH="arm64"
+else
+    AMI_ARCH="x86_64"
+    NODE_ARCH="amd64"
+fi
+
+echo "Instance Type: ${SYSTEM_NODE_INSTANCE_TYPE}"
+echo "Detected Architecture: ${AMI_ARCH}"
+
 # Use Amazon Linux 2023 with FSx Lustre support
 AMI_ID=$(aws ssm get-parameter \
-    --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id" \
+    --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/${AMI_ARCH}/standard/recommended/image_id" \
     --region "${AWS_REGION}" \
     --query 'Parameter.Value' \
     --output text)
 
 if [ -z "${AMI_ID}" ] || [ "${AMI_ID}" = "None" ]; then
     echo "❌ ERROR: Could not retrieve AMI ID from SSM parameter"
-    echo "   Parameter: /aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id"
+    echo "   Parameter: /aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/${AMI_ARCH}/standard/recommended/image_id"
     exit 1
 fi
 
-echo "AMI ID: ${AMI_ID} (Amazon Linux 2023 with FSx Lustre support)"
+echo "AMI ID: ${AMI_ID} (Amazon Linux 2023 ${AMI_ARCH} with FSx Lustre support)"
 
 # Validate AMI exists and is available
 validate_ami_exists "${AMI_ID}" "${AWS_REGION}"

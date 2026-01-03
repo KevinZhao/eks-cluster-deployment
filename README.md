@@ -114,7 +114,7 @@ EKS Cluster (Kubernetes 1.34)
 | `1_enable_vpc_dns.sh` | 启用 VPC DNS | 任意 | <1分钟 |
 | `2_validate_network_environment.sh` | 验证网络配置（可选） | 任意 | <1分钟 |
 | `3_create_vpc_endpoints.sh` | 创建 VPC Endpoints | 任意 | 2-3分钟 |
-| `4_create_bastion.sh` | 创建堡垒机 | VPC 外 | 2-3分钟 |
+| `option_create_bastion.sh` | 创建堡垒机 | VPC 外 | 2-3分钟 |
 | `5_install_eks_cluster.sh` | 创建集群控制平面 | 堡垒机 | 8-10分钟 |
 | `6_create_system_nodegroup.sh` | 创建系统节点组（LVM） | 堡垒机 | 8-12分钟 |
 | `7_install_eks_addon.sh` | 安装核心组件 | 堡垒机 | 5-8分钟 |
@@ -125,9 +125,8 @@ EKS Cluster (Kubernetes 1.34)
 |------|------|---------|
 | `option_install_csi_drivers.sh` | 安装 EFS/FSx/S3 CSI Driver | 堡垒机 |
 | `option_install_karpenter.sh` | 安装 Karpenter 自动扩缩容 | 堡垒机 |
-| `option_configure_vpc_cni.sh` | 配置 VPC CNI 预热池 | 堡垒机 |
-| `option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | 堡垒机 |
-| `option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | 堡垒机 |
+| `example/option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | 堡垒机 |
+| `example/option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | 堡垒机 |
 
 ---
 
@@ -137,7 +136,7 @@ EKS Cluster (Kubernetes 1.34)
 
 ```bash
 # 创建堡垒机
-REUSE_BASTION=no ./scripts/4_create_bastion.sh
+REUSE_BASTION=no ./scripts/option_create_bastion.sh
 
 # 创建节点组（自动删除旧节点组）
 AUTO_DELETE_NODEGROUP=yes ./scripts/6_create_system_nodegroup.sh
@@ -147,8 +146,8 @@ INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
 INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_install_csi_drivers.sh
 
 # 测试脚本
-AUTO_RESTART_KARPENTER=yes ./scripts/option_test_pod_scheduling.sh
-AUTO_CLEANUP_TEST=yes ./scripts/option_test_karpenter_pools.sh
+AUTO_RESTART_KARPENTER=yes ./example/option_test_pod_scheduling.sh
+AUTO_CLEANUP_TEST=yes ./example/option_test_karpenter_pools.sh
 ```
 
 ---
@@ -268,16 +267,17 @@ eks-cluster-deployment/
 │   ├── 1_enable_vpc_dns.sh            # 启用 VPC DNS
 │   ├── 2_validate_network_environment.sh  # 验证网络配置
 │   ├── 3_create_vpc_endpoints.sh      # 创建 VPC Endpoints
-│   ├── 4_create_bastion.sh            # 创建堡垒机
+│   ├── option_create_bastion.sh            # 创建堡垒机
 │   ├── 5_install_eks_cluster.sh       # 创建集群控制平面
 │   ├── 6_create_system_nodegroup.sh   # 创建系统节点组（LVM）
 │   ├── 7_install_eks_addon.sh         # 安装核心组件
 │   ├── option_install_csi_drivers.sh  # 安装 EFS/FSx/S3 CSI（可选）
 │   ├── option_install_karpenter.sh    # 安装 Karpenter（可选）
-│   ├── option_configure_vpc_cni.sh    # 配置 VPC CNI（可选）
-│   ├── option_test_pod_scheduling.sh  # 测试 Pod 调度
-│   ├── option_test_karpenter_pools.sh # 测试 Karpenter 节点池
 │   └── pod_identity_helpers.sh        # Pod Identity 辅助函数
+│
+├── example/
+│   ├── option_test_pod_scheduling.sh  # 测试 Pod 调度
+│   └── option_test_karpenter_pools.sh # 测试 Karpenter 节点池
 │
 ├── manifests/
 │   ├── cluster/

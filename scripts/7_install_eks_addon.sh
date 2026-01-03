@@ -72,9 +72,11 @@ kubectl apply -f "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler-rbac.yaml"
 
 # 4.2 部署Cluster Autoscaler Deployment
 echo "Deploying Cluster Autoscaler..."
-sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-    -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-    -e "s/\${CLUSTER_AUTOSCALER_VERSION}/$CLUSTER_AUTOSCALER_VERSION/g" \
+sed -e "s|\${CLUSTER_NAME}|$CLUSTER_NAME|g" \
+    -e "s|\${AWS_REGION}|$AWS_REGION|g" \
+    -e "s|\${CLUSTER_AUTOSCALER_VERSION}|$CLUSTER_AUTOSCALER_VERSION|g" \
+    -e "s|\${SYSTEM_NODE_LABEL_KEY}|$SYSTEM_NODE_LABEL_KEY|g" \
+    -e "s|\${SYSTEM_NODE_LABEL_VALUE}|$SYSTEM_NODE_LABEL_VALUE|g" \
     "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
 
 # 4.3 验证Cluster Autoscaler
@@ -106,6 +108,9 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set "nodeSelector.${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}" \
     --set replicaCount=2 \
     --set podDisruptionBudget.minAvailable=1 \
+    --set resources.requests.cpu=100m \
+    --set resources.requests.memory=128Mi \
+    --set resources.limits.memory=256Mi \
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app\.kubernetes\.io/name=aws-load-balancer-controller" \
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
     --version "${ALB_CONTROLLER_CHART_VERSION}"
@@ -195,10 +200,15 @@ echo "Applying gp3 and io2 StorageClasses with IO2_IOPS=${IO2_IOPS}..."
 sed -e "s/\${IO2_IOPS}/$IO2_IOPS/g" \
     "${PROJECT_ROOT}/manifests/storage/storageclass.yaml" | kubectl apply -f -
 
-# 6.7 将 gp3 设为默认 StorageClass
+# 6.7 将 gp3 设为默认 StorageClass 并清理旧的 gp2
 echo "Setting gp3 as default StorageClass..."
-# 移除 gp2 的默认标记（如果存在）
-kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || echo "Note: gp2 StorageClass not found or already not default"
+
+# 删除旧的 gp2 StorageClass (in-tree provisioner, 已废弃)
+if kubectl get storageclass gp2 &>/dev/null; then
+    echo "Removing deprecated gp2 StorageClass (in-tree provisioner)..."
+    kubectl delete storageclass gp2 || echo "Warning: Failed to delete gp2, may have PVs using it"
+    echo "✓ Deprecated gp2 StorageClass removed"
+fi
 
 echo "✓ StorageClasses configured:"
 kubectl get storageclass
@@ -263,7 +273,7 @@ echo "✓ Cluster Autoscaler installed and configured"
 echo "✓ AWS Load Balancer Controller installed and configured"
 echo "✓ EBS CSI Driver addon installed and configured"
 echo "✓ Metrics Server installed and configured"
-echo "✓ StorageClasses created: gp3 (default), io2"
+echo "✓ StorageClasses configured: gp3 (default), io2 (deprecated gp2 removed)"
 echo "✓ All components use Pod Identity for AWS authentication"
 echo ""
 echo "Next steps:"

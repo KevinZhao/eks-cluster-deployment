@@ -123,8 +123,8 @@ aws sts get-caller-identity >/dev/null 2>&1 || \
 log "Configuration validation completed successfully!"
 
 # 8. 系统节点组配置（高级选项）
-# 注意: 默认使用 x86_64 架构实例，与 6_create_system_nodegroup.sh 中的 AMI 查询一致
-export SYSTEM_NODE_INSTANCE_TYPE="${SYSTEM_NODE_INSTANCE_TYPE:-m7i.2xlarge}"
+# 注意: 默认使用 Graviton4 (ARM64) 实例，脚本会自动选择对应架构的 AMI
+export SYSTEM_NODE_INSTANCE_TYPE="${SYSTEM_NODE_INSTANCE_TYPE:-m8g.xlarge}"
 export SYSTEM_NODE_ROOT_VOLUME_SIZE="${SYSTEM_NODE_ROOT_VOLUME_SIZE:-50}"
 export SYSTEM_NODE_DATA_VOLUME_SIZE="${SYSTEM_NODE_DATA_VOLUME_SIZE:-100}"
 export SYSTEM_NODE_DESIRED_CAPACITY="${SYSTEM_NODE_DESIRED_CAPACITY:-3}"
@@ -137,8 +137,8 @@ export SYSTEM_NODE_LABEL_VALUE="${SYSTEM_NODE_LABEL_VALUE:-eks-utils}"
 
 # 配置验证
 if [[ ! "$SYSTEM_NODE_INSTANCE_TYPE" =~ ^[a-z][0-9]+[a-z]*\.[a-z0-9]+$ ]]; then
-    echo "⚠ WARNING: Invalid SYSTEM_NODE_INSTANCE_TYPE format, using default: m7i.2xlarge"
-    export SYSTEM_NODE_INSTANCE_TYPE="m7i.2xlarge"
+    echo "⚠ WARNING: Invalid SYSTEM_NODE_INSTANCE_TYPE format, using default: m8g.xlarge"
+    export SYSTEM_NODE_INSTANCE_TYPE="m8g.xlarge"
 fi
 
 if [ "$SYSTEM_NODE_DATA_VOLUME_SIZE" -lt 50 ]; then
@@ -172,7 +172,16 @@ if [ "$IO2_IOPS" -lt 100 ] || [ "$IO2_IOPS" -gt 64000 ]; then
     export IO2_IOPS=10000
 fi
 
-# 10. 显示配置摘要
+# 10. 构建子网列表变量（供其他脚本使用）
+if [ "$USE_4_AZS" = "true" ]; then
+    export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C},${PRIVATE_SUBNET_D}"
+    export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B},${PUBLIC_SUBNET_C},${PUBLIC_SUBNET_D}"
+else
+    export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C}"
+    export PUBLIC_SUBNETS="${PUBLIC_SUBNET_A},${PUBLIC_SUBNET_B},${PUBLIC_SUBNET_C}"
+fi
+
+# 11. 显示配置摘要
 log "=== Configuration Summary ==="
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 echo "AWS_REGION: $AWS_REGION"

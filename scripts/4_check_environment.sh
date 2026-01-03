@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# check_environment.sh - Check if current environment can replace bastion host
+# 4_check_environment.sh - Check if current environment can replace bastion host
 #
 # This script validates whether the current machine has the necessary
 # tools, network access, and AWS permissions to operate an EKS cluster.

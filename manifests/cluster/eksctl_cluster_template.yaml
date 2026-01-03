@@ -8,6 +8,9 @@ metadata:
   tags:
     cluster-autoscaler: enabled
 
+# Secrets Encryption with KMS (conditionally added by install script)
+# SECRETS_ENCRYPTION_PLACEHOLDER
+
 # Kubernetes 网络配置
 kubernetesNetworkConfig:
   serviceIPv4CIDR: "${SERVICE_IPV4_CIDR}"

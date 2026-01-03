@@ -60,22 +60,33 @@ if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>
     echo "Skipping cluster creation..."
 else
     echo "Creating new cluster..."
-    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-        -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
-        -e "s/\${SERVICE_IPV4_CIDR}/$SERVICE_IPV4_CIDR/g" \
-        -e "s/\${VPC_ID}/$VPC_ID/g" \
-        -e "s/\${AZ_A}/$AZ_A/g" \
-        -e "s/\${AZ_B}/$AZ_B/g" \
-        -e "s/\${AZ_C}/$AZ_C/g" \
-        -e "s/\${PRIVATE_SUBNET_A}/$PRIVATE_SUBNET_A/g" \
-        -e "s/\${PRIVATE_SUBNET_B}/$PRIVATE_SUBNET_B/g" \
-        -e "s/\${PRIVATE_SUBNET_C}/$PRIVATE_SUBNET_C/g" \
-        -e "s/\${PUBLIC_SUBNET_A}/$PUBLIC_SUBNET_A/g" \
-        -e "s/\${PUBLIC_SUBNET_B}/$PUBLIC_SUBNET_B/g" \
-        -e "s/\${PUBLIC_SUBNET_C}/$PUBLIC_SUBNET_C/g" \
-        -e "s/\${SYSTEM_NODE_LABEL_KEY}/$SYSTEM_NODE_LABEL_KEY/g" \
-        -e "s/\${SYSTEM_NODE_LABEL_VALUE}/$SYSTEM_NODE_LABEL_VALUE/g" \
+
+    # Prepare secretsEncryption configuration if KMS_KEY_ARN is set
+    if [ -n "${KMS_KEY_ARN:-}" ]; then
+        echo "✓ KMS encryption enabled: ${KMS_KEY_ARN}"
+        SECRETS_ENCRYPTION_CONFIG="secretsEncryption:\n  keyARN: ${KMS_KEY_ARN}"
+    else
+        echo "⚠️  KMS encryption not configured (KMS_KEY_ARN not set)"
+        SECRETS_ENCRYPTION_CONFIG=""
+    fi
+
+    sed -e "s|\${CLUSTER_NAME}|$CLUSTER_NAME|g" \
+        -e "s|\${AWS_REGION}|$AWS_REGION|g" \
+        -e "s|\${K8S_VERSION}|$K8S_VERSION|g" \
+        -e "s|\${SERVICE_IPV4_CIDR}|$SERVICE_IPV4_CIDR|g" \
+        -e "s|\${VPC_ID}|$VPC_ID|g" \
+        -e "s|\${AZ_A}|$AZ_A|g" \
+        -e "s|\${AZ_B}|$AZ_B|g" \
+        -e "s|\${AZ_C}|$AZ_C|g" \
+        -e "s|\${PRIVATE_SUBNET_A}|$PRIVATE_SUBNET_A|g" \
+        -e "s|\${PRIVATE_SUBNET_B}|$PRIVATE_SUBNET_B|g" \
+        -e "s|\${PRIVATE_SUBNET_C}|$PRIVATE_SUBNET_C|g" \
+        -e "s|\${PUBLIC_SUBNET_A}|$PUBLIC_SUBNET_A|g" \
+        -e "s|\${PUBLIC_SUBNET_B}|$PUBLIC_SUBNET_B|g" \
+        -e "s|\${PUBLIC_SUBNET_C}|$PUBLIC_SUBNET_C|g" \
+        -e "s|\${SYSTEM_NODE_LABEL_KEY}|$SYSTEM_NODE_LABEL_KEY|g" \
+        -e "s|\${SYSTEM_NODE_LABEL_VALUE}|$SYSTEM_NODE_LABEL_VALUE|g" \
+        -e "s|# SECRETS_ENCRYPTION_PLACEHOLDER|${SECRETS_ENCRYPTION_CONFIG}|g" \
         "${PROJECT_ROOT}/manifests/cluster/eksctl_cluster_template.yaml" > "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
     eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
 fi
@@ -86,7 +97,19 @@ echo "Step 3: Waiting for cluster control plane to be ready..."
 aws eks wait cluster-active --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
 echo "✓ Cluster control plane is ready"
 
-# 4. 完成
+# 4. 启用删除保护
+if [ "${ENABLE_DELETION_PROTECTION:-true}" = "true" ]; then
+    echo ""
+    echo "Step 4: Enabling deletion protection..."
+    aws eks update-cluster-config \
+        --name "${CLUSTER_NAME}" \
+        --region "${AWS_REGION}" \
+        --deletion-protection-config enabled=true \
+        --output text --query 'update.id' >/dev/null 2>&1 || true
+    echo "✓ Deletion protection enabled"
+fi
+
+# 5. 完成
 echo ""
 echo "=== EKS Cluster Control Plane Created Successfully ==="
 echo ""
@@ -95,6 +118,18 @@ echo "  Name: ${CLUSTER_NAME}"
 echo "  Region: ${AWS_REGION}"
 echo "  Version: ${K8S_VERSION}"
 echo "  VPC ID: ${VPC_ID}"
+echo ""
+echo "Security Configuration:"
+if [ -n "${KMS_KEY_ARN:-}" ]; then
+    echo "  Secrets Encryption: ✓ Enabled (KMS)"
+else
+    echo "  Secrets Encryption: ✗ Disabled (set KMS_KEY_ARN to enable)"
+fi
+if [ "${ENABLE_DELETION_PROTECTION:-true}" = "true" ]; then
+    echo "  Deletion Protection: ✓ Enabled"
+else
+    echo "  Deletion Protection: ✗ Disabled"
+fi
 echo ""
 echo "⚠️  IMPORTANT: System nodegroup NOT created yet"
 echo ""

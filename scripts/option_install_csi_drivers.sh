@@ -178,6 +178,10 @@ case $choice in
         echo "Deploying S3 CSI Driver ${S3_CSI_VERSION} using official manifests..."
         kubectl apply -k "github.com/awslabs/mountpoint-s3-csi-driver/deploy/kubernetes/overlays/stable/?ref=${S3_CSI_VERSION}"
 
+        # 扩展 controller 到 2 副本（官方默认 1，参考 EBS CSI 最佳实践设为 2）
+        echo "Scaling S3 CSI controller to 2 replicas for HA..."
+        kubectl scale deployment s3-csi-controller -n kube-system --replicas=2
+
         # 等待 CRD 和基础资源就绪
         echo "Waiting for resources to be created..."
         sleep 10
@@ -263,6 +267,10 @@ case $choice in
             # 部署 S3 CSI Driver (使用官方 kustomize)
             echo "Deploying S3 CSI Driver ${S3_CSI_VERSION} using official manifests..."
             kubectl apply -k "github.com/awslabs/mountpoint-s3-csi-driver/deploy/kubernetes/overlays/stable/?ref=${S3_CSI_VERSION}"
+
+            # 扩展 controller 到 2 副本（官方默认 1，参考 EBS CSI 最佳实践设为 2）
+            echo "Scaling S3 CSI controller to 2 replicas for HA..."
+            kubectl scale deployment s3-csi-controller -n kube-system --replicas=2
 
             # 等待资源创建
             echo "Waiting for resources to be created..."
