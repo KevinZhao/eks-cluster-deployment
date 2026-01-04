@@ -215,26 +215,43 @@ EOF
                 Key=business,Value=middleware \
                 Key=resource,Value=eks
 
-        # 附加必需的策略
-        aws iam attach-role-policy \
-            --role-name "${NODE_ROLE_NAME}" \
-            --policy-arn "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-
-        aws iam attach-role-policy \
-            --role-name "${NODE_ROLE_NAME}" \
-            --policy-arn "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-
-        aws iam attach-role-policy \
-            --role-name "${NODE_ROLE_NAME}" \
-            --policy-arn "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-
-        aws iam attach-role-policy \
-            --role-name "${NODE_ROLE_NAME}" \
-            --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-
         rm -f "${TRUST_POLICY_FILE}"
         echo "✓ IAM Role created"
     fi
+
+    # Always ensure required policies are attached (idempotent)
+    echo "Ensuring required policies are attached to ${NODE_ROLE_NAME}..."
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy" 2>/dev/null || true
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy" 2>/dev/null || true
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly" 2>/dev/null || true
+
+    aws iam attach-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" 2>/dev/null || true
+
+    # Add ec2:DescribeInstances permission required by nodeadm (K8s 1.34+)
+    aws iam put-role-policy \
+        --role-name "${NODE_ROLE_NAME}" \
+        --policy-name "NodeadmDescribeInstances" \
+        --policy-document '{
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": ["ec2:DescribeInstances", "ec2:DescribeTags"],
+                "Resource": "*"
+            }]
+        }'
+
+    echo "✓ IAM Role policies verified"
 
     # 检查 Instance Profile 是否已存在（幂等性）
     if aws iam get-instance-profile --instance-profile-name "${INSTANCE_PROFILE_NAME}" &>/dev/null; then
@@ -293,19 +310,28 @@ echo "=== Starting LVM Setup ==="
 systemctl stop containerd || true
 
 # Wait for data disk to be available (max 60 seconds)
+# Find NVMe disk that has NO partitions (the data disk is unpartitioned)
 echo "Waiting for data disk..."
 for i in {1..60}; do
-  DISK=\$(lsblk -dpno NAME | grep nvme | grep -v nvme0n1 | head -1)
-  if [ -n "\$DISK" ]; then
-    echo "Found data disk: \$DISK"
-    break
-  fi
+  # Find all NVMe disks, then filter to those without partitions
+  for dev in \$(lsblk -dpno NAME | grep nvme); do
+    # Check if this disk has any partitions
+    PARTS=\$(lsblk -no NAME "\$dev" 2>/dev/null | wc -l)
+    if [ "\$PARTS" -eq 1 ]; then
+      # Only the disk itself, no partitions - this is our data disk
+      DISK="\$dev"
+      echo "Found unpartitioned data disk: \$DISK"
+      break 2
+    fi
+  done
   echo "Attempt \$i/60: Data disk not found yet, waiting..."
   sleep 1
 done
 
 if [ -z "\$DISK" ]; then
-  echo "ERROR: No data disk found after 60 seconds - check Launch Template EBS configuration"
+  echo "ERROR: No unpartitioned data disk found after 60 seconds"
+  echo "Available disks:"
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
   systemctl start containerd
   exit 1
 fi
