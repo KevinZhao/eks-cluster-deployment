@@ -158,8 +158,8 @@ spec:
     - tags:
         karpenter.sh/discovery: ${CLUSTER_NAME}
 
-  # IAM Instance Profile (reuse existing node profile)
-  instanceProfile: KarpenterNodeRole-${CLUSTER_NAME}
+  # IAM Role (Karpenter will auto-create instance profile)
+  role: KarpenterNodeRole-${CLUSTER_NAME}
 
   # Tags
   tags:

@@ -159,7 +159,7 @@ spec:
         karpenter.sh/discovery: ${CLUSTER_NAME}
 
   # IAM Instance Profile
-  instanceProfile: KarpenterNodeRole-${CLUSTER_NAME}
+  role: KarpenterNodeRole-${CLUSTER_NAME}
 
   # Capacity Reservation Selection - specify CB ID directly
   # Replace ${CAPACITY_BLOCK_ID} with your actual Capacity Block reservation ID (e.g., cr-0abc123456)

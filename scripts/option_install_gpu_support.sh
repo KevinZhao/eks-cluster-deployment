@@ -13,6 +13,7 @@ echo "  • Add EFA permissions to KarpenterNodeRole"
 echo "  • Deploy GPU EC2NodeClass (P5/P5en/P6)"
 echo "  • Deploy GPU NodePools (on-demand, spot, ODCR, capacity-block)"
 echo "  • Deploy EFA multi-NIC setup DaemonSet"
+echo "  • Deploy NVIDIA Device Plugin for GPU resource advertising"
 echo ""
 
 # 1. Load environment variables
@@ -191,9 +192,27 @@ kubectl apply -f "${PROJECT_ROOT}/manifests/karpenter/gpu-efa-setup-daemonset.ya
 
 echo "✓ EFA Setup DaemonSet deployed"
 
-# 7. Verify
+# 7. Deploy NVIDIA Device Plugin
 echo ""
-echo "Step 6: Verifying GPU support installation..."
+echo "Step 6: Deploying NVIDIA Device Plugin..."
+
+# Check if already installed
+if kubectl get daemonset nvidia-device-plugin-daemonset -n kube-system &>/dev/null; then
+    echo "✓ NVIDIA Device Plugin already installed"
+else
+    # Deploy NVIDIA device plugin with GPU node toleration
+    kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml
+
+    # Add toleration for nvidia.com/gpu taint
+    kubectl patch ds nvidia-device-plugin-daemonset -n kube-system --type=json \
+        -p='[{"op": "add", "path": "/spec/template/spec/tolerations/-", "value": {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}}]'
+
+    echo "✓ NVIDIA Device Plugin deployed"
+fi
+
+# 8. Verify
+echo ""
+echo "Step 7: Verifying GPU support installation..."
 
 echo ""
 echo "GPU EC2NodeClasses:"

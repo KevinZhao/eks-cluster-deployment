@@ -158,8 +158,8 @@ spec:
     - tags:
         karpenter.sh/discovery: ${CLUSTER_NAME}
 
-  # IAM Instance Profile (reuse existing node profile)
-  instanceProfile: KarpenterNodeRole-${CLUSTER_NAME}
+  # IAM Role (Karpenter will auto-create instance profile)
+  role: KarpenterNodeRole-${CLUSTER_NAME}
 
   # Capacity Reservation Selection - specify ODCR ID directly
   # Replace ${ODCR_ID} with your actual ODCR reservation ID (e.g., cr-0abc123456)
