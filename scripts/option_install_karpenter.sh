@@ -428,7 +428,6 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=karpenter -n "$
 echo ""
 echo "Step 11: Deploying EC2NodeClass and NodePool..."
 
-# 替换环境变量 - 使用sed而不是envsubst来避免破坏userData中的$$变量
 export CLUSTER_NAME
 export AWS_REGION
 
