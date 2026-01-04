@@ -1,12 +1,12 @@
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
-  name: gpu-p5-odcr
+  name: gpu  # Will be overridden by overlay for CB/ODCR variants
 spec:
   # AMI Selection - EKS-optimized AL2023 GPU AMI (pinned to K8s version for stability)
   amiFamily: AL2023
   amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-x86_64-nvidia-1.34-*"
+    - name: "amazon-eks-node-al2023-x86_64-nvidia-${K8S_VERSION}-*"
 
   # Block Device Mappings
   blockDeviceMappings:
@@ -27,7 +27,7 @@ spec:
         encrypted: true
         deleteOnTermination: true
 
-  # User Data - LVM setup with idempotency (EFA setup handled by DaemonSet)
+  # User Data - LVM setup + Lustre client installation
   userData: |
     #!/bin/bash
     set -ex
@@ -140,7 +140,15 @@ spec:
     systemctl start containerd
 
     echo "=== LVM setup complete ==="
+
+    # Install Lustre client for FSx Lustre support
+    echo "=== Installing Lustre Client ==="
+    dnf install -y lustre-client
+    modprobe lustre || echo "Lustre module will be loaded on first mount"
+    echo "=== Lustre Client Installation Complete ==="
+
     echo "=== Node initialization complete ==="
+
   # Metadata Options (IMDSv2)
   metadataOptions:
     httpEndpoint: enabled
@@ -158,18 +166,10 @@ spec:
     - tags:
         karpenter.sh/discovery: ${CLUSTER_NAME}
 
-  # IAM Instance Profile (reuse existing node profile)
-  instanceProfile: KarpenterNodeRole-${CLUSTER_NAME}
+  # IAM Role (Karpenter will auto-create instance profile)
+  role: KarpenterNodeRole-${CLUSTER_NAME}
 
-  # Capacity Reservation Selection - specify ODCR ID directly
-  # Replace ${ODCR_ID} with your actual ODCR reservation ID (e.g., cr-0abc123456)
-  capacityReservationSelectorTerms:
-    - id: ${ODCR_ID}
-
-  # Tags
+  # Tags - will be extended by overlays
   tags:
-    Name: ${CLUSTER_NAME}-gpu-node-odcr
     karpenter.sh/discovery: ${CLUSTER_NAME}
     node-type: gpu
-    gpu-family: p5
-    purchase-option: odcr

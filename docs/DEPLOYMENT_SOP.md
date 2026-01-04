@@ -113,12 +113,11 @@ EKS Cluster (Kubernetes 1.34)
 | kubectl | v1.31+ | `kubectl version --client` |
 | helm | v3.x | `helm version` |
 | jq | 任意 | `jq --version` |
-| envsubst | 任意 | `envsubst --version` |
 
 **一键安装命令**（Amazon Linux 2023）:
 ```bash
 sudo yum update -y
-sudo yum install -y git unzip tar gzip jq gettext
+sudo yum install -y git unzip tar gzip jq
 
 # kubectl
 curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -294,7 +293,7 @@ aws ssm start-session --target $INSTANCE_ID --region <your-region>
 ```bash
 # 更新系统包
 sudo yum update -y
-sudo yum install -y git unzip tar gzip jq gettext
+sudo yum install -y git unzip tar gzip jq
 
 # 安装 kubectl
 curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"

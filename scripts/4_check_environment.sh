@@ -95,13 +95,6 @@ else
     check_fail "jq not installed"
 fi
 
-# envsubst (gettext)
-if command -v envsubst &> /dev/null; then
-    check_pass "envsubst installed"
-else
-    check_fail "envsubst not installed (install gettext package)"
-fi
-
 # curl
 if command -v curl &> /dev/null; then
     check_pass "curl installed"

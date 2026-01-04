@@ -3,7 +3,6 @@ kind: NodePool
 metadata:
   name: gpu-capacity-block
 spec:
-  weight: 80  # Higher priority than on-demand (already paid for)
   template:
     metadata:
       labels:
@@ -27,7 +26,7 @@ spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: gpu-p5-cb  # References Capacity Block class with reservation
+        name: gpu-cb  # References Capacity Block class with reservation
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule

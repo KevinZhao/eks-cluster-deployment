@@ -3,7 +3,6 @@ kind: NodePool
 metadata:
   name: gpu-ondemand
 spec:
-  weight: 50  # Lower priority than Spot and CB
   template:
     metadata:
       labels:
@@ -27,7 +26,7 @@ spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: gpu-p5
+        name: gpu
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule

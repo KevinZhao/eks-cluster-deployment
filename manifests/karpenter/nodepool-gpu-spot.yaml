@@ -3,7 +3,6 @@ kind: NodePool
 metadata:
   name: gpu-spot
 spec:
-  weight: 100  # Highest priority (cheapest option)
   template:
     metadata:
       labels:
@@ -18,14 +17,16 @@ spec:
         - key: node.kubernetes.io/instance-type
           operator: In
           values:
+            - p5.48xlarge
             - p5en.48xlarge
+            - p6-b200.48xlarge
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: gpu-p5en
+        name: gpu
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule

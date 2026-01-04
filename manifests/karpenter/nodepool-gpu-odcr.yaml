@@ -3,7 +3,6 @@ kind: NodePool
 metadata:
   name: gpu-odcr
 spec:
-  weight: 75  # Medium priority (pre-purchased capacity)
   template:
     metadata:
       labels:
@@ -27,7 +26,7 @@ spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: gpu-p5-odcr  # References ODCR-specific class with capacity reservation
+        name: gpu-odcr  # References ODCR-specific class with capacity reservation
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule

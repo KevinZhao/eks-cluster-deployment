@@ -355,36 +355,6 @@ systemctl start containerd
 echo "=== LVM Setup Complete ==="
 
 --==BOUNDARY==
-Content-Type: text/x-shellscript; charset="us-ascii"
-
-#!/bin/bash
-# Install FSx Lustre client on Amazon Linux 2023
-set -ex
-
-echo "=== Installing Lustre Client on AL2023 ==="
-
-# Check kernel version
-KERNEL_VERSION=\$(uname -r)
-echo "Kernel version: \$KERNEL_VERSION"
-
-# Install Lustre client for Amazon Linux 2023
-dnf install -y lustre-client
-
-# Load Lustre kernel module
-modprobe lustre
-
-# Verify installation
-if lsmod | grep -q lustre; then
-  echo "✓ Lustre client installed successfully"
-  lsmod | grep lustre
-  modinfo lustre | grep version
-else
-  echo "⚠ WARNING: Lustre module not loaded"
-fi
-
-echo "=== Lustre Client Installation Complete ==="
-
---==BOUNDARY==
 Content-Type: application/node.eks.aws
 
 ---

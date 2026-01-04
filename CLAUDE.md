@@ -48,8 +48,11 @@ source scripts/0_setup_env.sh
 # Create bastion host (if needed for VPC internal access)
 ./scripts/option_create_bastion.sh
 
-# Install Karpenter for advanced auto-scaling
+# Install Karpenter for advanced auto-scaling (CPU nodes only)
 ./scripts/option_install_karpenter.sh
+
+# Install GPU support (requires Karpenter, adds P5/P5en/P6 + EFA)
+./scripts/option_install_gpu_support.sh
 
 # Install CSI drivers (EFS, FSx, S3)
 ./scripts/option_install_csi_drivers.sh efs      # EFS CSI Driver
@@ -179,11 +182,8 @@ System nodes (`app=eks-utils` label) run cluster infrastructure:
 
 ### Storage Configuration
 
-Always installed by default:
-- **gp3**: General purpose (default), 3000 IOPS baseline
-- **io2**: High-performance, configurable IOPS (default 10000)
-
-Optional (via `option_install_csi_drivers.sh`):
+All CSI drivers are optional (via `option_install_csi_drivers.sh`):
+- **EBS**: Block storage with gp3 (default) and io2 StorageClasses
 - **EFS**: Shared filesystem across pods/nodes
 - **FSx**: Lustre for HPC/ML workloads
 - **S3**: Object storage mounting (Standard S3 and S3 Express One Zone)
@@ -200,7 +200,7 @@ Optional (via `option_install_csi_drivers.sh`):
    ```
 3. Follow Pod Identity pattern for AWS permissions
 4. Add manifests to `manifests/addons/` or `manifests/<component>/`
-5. Use `envsubst` to template environment variables into manifests
+5. Use `sed` to template environment variables into manifests
 6. Add system node selectors if component should run on system nodes
 
 ### Validation Functions
@@ -232,12 +232,19 @@ error "message"         # Error logging and exit 1
 warn "message"          # Warning logging (no exit)
 ```
 
-## GPU Node Support
+## Karpenter Node Support
 
-GPU nodes support P5/P5en/P6 instances with EFA networking:
-- 16 network interfaces (ENI 0: with IP, ENI 1-15: EFA only)
+**CPU Nodes (Graviton/x86):** `option_install_karpenter.sh`
+- Karpenter EC2NodeClass configs in `manifests/karpenter/cpu-nodeclass/` (Kustomize base + overlays)
+- Graviton (ARM64): r8g.8xlarge
+- x86 (AMD64): r7i.8xlarge
+- LVM configuration for containerd data volume
+
+**GPU Nodes (P5/P5en/P6):** `option_install_gpu_support.sh`
+- Karpenter EC2NodeClass configs in `manifests/karpenter/gpu-nodeclass/` (Kustomize base + overlays)
+- EFA multi-NIC setup via DaemonSet (P5: 31, P5en: 15, P6: 7 interfaces)
 - NVIDIA drivers, EFA drivers, NCCL plugin auto-installed
-- Karpenter EC2NodeClass configs in `manifests/karpenter/ec2nodeclass-gpu-*.yaml`
+- Lustre client pre-installed for FSx Lustre support
 - NodePools for different pricing: on-demand, spot, ODCR, capacity blocks
 
 ## Testing and Validation

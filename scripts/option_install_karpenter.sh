@@ -399,7 +399,7 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
     --set "serviceAccount.create=false" \
     --set "serviceAccount.name=${KARPENTER_SA}" \
     --set "replicas=2" \
-    --set "nodeSelector.node-group-type=system" \
+    --set "nodeSelector.${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}" \
     --set "tolerations[0].key=CriticalAddonsOnly" \
     --set "tolerations[0].operator=Exists" \
     --set "tolerations[1].key=node.kubernetes.io/not-ready" \
@@ -433,10 +433,9 @@ export AWS_REGION
 
 # 部署 Graviton 专用配置 (r8g.8xlarge)
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
-    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-        -e "s/\${ENVIRONMENT}/${ENVIRONMENT:-prod}/g" \
-        "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
+    kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/cpu-nodeclass/overlays/graviton" | \
+        sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+            -e "s/\${AWS_REGION}/$AWS_REGION/g" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
@@ -445,10 +444,9 @@ fi
 
 # 可选：部署 x86 专用配置 (r7i.8xlarge)
 if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
-    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-        -e "s/\${ENVIRONMENT}/${ENVIRONMENT:-prod}/g" \
-        "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-x86.yaml" | kubectl apply -f -
+    kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/cpu-nodeclass/overlays/x86" | \
+        sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+            -e "s/\${AWS_REGION}/$AWS_REGION/g" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         "${PROJECT_ROOT}/manifests/karpenter/nodepool-x86.yaml" | kubectl apply -f -
