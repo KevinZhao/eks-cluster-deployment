@@ -50,7 +50,7 @@ install_ebs_csi_addon() {
     # 1. 设置 Pod Identity
     setup_ebs_csi_pod_identity
 
-    # 2. 创建 addon 配置
+    # 2. 创建 addon 配置 (只用 nodeSelector，使用默认 affinity)
     local config_file=$(mktemp /tmp/ebs-csi-config.XXXXXX.json)
     cat > "${config_file}" <<EOF
 {
@@ -58,20 +58,6 @@ install_ebs_csi_addon() {
     "replicaCount": 2,
     "nodeSelector": {
       "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
-    },
-    "affinity": {
-      "podAntiAffinity": {
-        "requiredDuringSchedulingIgnoredDuringExecution": [
-          {
-            "labelSelector": {
-              "matchLabels": {
-                "app": "ebs-csi-controller"
-              }
-            },
-            "topologyKey": "kubernetes.io/hostname"
-          }
-        ]
-      }
     }
   }
 }
@@ -152,7 +138,7 @@ install_efs_csi_addon() {
     # 1. 设置 Pod Identity
     setup_efs_csi_pod_identity
 
-    # 2. 创建 addon 配置
+    # 2. 创建 addon 配置 (EFS addon schema 不支持 affinity，只支持 nodeSelector/tolerations)
     local config_file=$(mktemp /tmp/efs-csi-config.XXXXXX.json)
     cat > "${config_file}" <<EOF
 {
@@ -160,20 +146,6 @@ install_efs_csi_addon() {
     "replicaCount": 2,
     "nodeSelector": {
       "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
-    },
-    "affinity": {
-      "podAntiAffinity": {
-        "requiredDuringSchedulingIgnoredDuringExecution": [
-          {
-            "labelSelector": {
-              "matchLabels": {
-                "app": "efs-csi-controller"
-              }
-            },
-            "topologyKey": "kubernetes.io/hostname"
-          }
-        ]
-      }
     }
   }
 }
@@ -239,7 +211,7 @@ install_fsx_csi_addon() {
     # 1. 设置 Pod Identity（使用自定义 policy）
     setup_fsx_csi_pod_identity
 
-    # 2. 创建 addon 配置
+    # 2. 创建 addon 配置 (只用 nodeSelector，使用默认 affinity)
     local config_file=$(mktemp /tmp/fsx-csi-config.XXXXXX.json)
     cat > "${config_file}" <<EOF
 {
@@ -247,20 +219,6 @@ install_fsx_csi_addon() {
     "replicaCount": 2,
     "nodeSelector": {
       "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
-    },
-    "affinity": {
-      "podAntiAffinity": {
-        "requiredDuringSchedulingIgnoredDuringExecution": [
-          {
-            "labelSelector": {
-              "matchLabels": {
-                "app": "fsx-csi-controller"
-              }
-            },
-            "topologyKey": "kubernetes.io/hostname"
-          }
-        ]
-      }
     }
   }
 }
