@@ -228,6 +228,13 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
     {
       "Effect": "Allow",
       "Action": [
+        "ssm:GetParameter"
+      ],
+      "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/eks/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
         "iam:GetInstanceProfile",
         "iam:CreateInstanceProfile",
         "iam:AddRoleToInstanceProfile",

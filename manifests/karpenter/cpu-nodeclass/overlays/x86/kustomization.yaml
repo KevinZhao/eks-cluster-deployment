@@ -5,4 +5,20 @@ resources:
   - ../../base
 
 patches:
-  - path: patch.yaml
+  - target:
+      kind: EC2NodeClass
+      name: cpu-base
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: x86
+      - op: replace
+        path: /spec/amiSelectorTerms
+        value:
+          - alias: al2023@latest
+      - op: add
+        path: /spec/tags/Name
+        value: "${CLUSTER_NAME}-karpenter-x86"
+      - op: add
+        path: /spec/tags/Architecture
+        value: x86_64
