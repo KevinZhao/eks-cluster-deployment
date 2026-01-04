@@ -126,42 +126,7 @@ kubectl exec test-pod -- df -h
 
 ---
 
-## 7. CSI Driver 托管化优化
-
-**状态**: ✅ 已完成
-
-### 7.1 实现
-
-所有可选 CSI Driver (EFS, FSx, S3) 现已改为 EKS Managed Addon 方式安装：
-
-| Driver | EKS Addon 名称 | ServiceAccount |
-|--------|----------------|----------------|
-| EFS CSI | `aws-efs-csi-driver` | `efs-csi-controller-sa` |
-| FSx CSI | `aws-fsx-csi-driver` | `fsx-csi-controller-sa` |
-| S3 CSI | `aws-mountpoint-s3-csi-driver` | `s3-csi-driver-sa` |
-
-### 7.2 优势
-
-- 统一管理: 与 EBS CSI、Metrics Server 等一致
-- 自动更新: AWS 托管版本升级和安全补丁
-- 简化配置: 支持 `--configuration-values` 设置 nodeSelector
-- 原生 Pod Identity 支持
-
-### 7.3 安装命令
-
-```bash
-# 安装所有可选 CSI drivers
-INSTALL_DRIVERS=all S3_BUCKET_ARNS=arn:aws:s3:::my-bucket ./scripts/option_install_csi_drivers.sh
-
-# 单独安装
-INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
-INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
-INSTALL_DRIVERS=s3 S3_BUCKET_ARNS=arn:aws:s3:::my-bucket ./scripts/option_install_csi_drivers.sh
-```
-
----
-
-## 8. 参考资料
+## 7. 参考资料
 
 - [Ephemeral Storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage)
 - [XFS Project Quotas](https://www.kernel.org/doc/html/latest/filesystems/xfs-self-describing-metadata.html)

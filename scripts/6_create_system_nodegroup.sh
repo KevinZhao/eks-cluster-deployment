@@ -357,9 +357,11 @@ systemctl start containerd
 
 echo "=== LVM Setup Complete ==="
 
---==BOUNDARY==
-Content-Type: application/node.eks.aws
+echo "=== Starting EKS Node Bootstrap ==="
 
+# Create nodeadm config
+mkdir -p /etc/eks/nodeadm.d
+cat > /etc/eks/nodeadm.d/nodeconfig.yaml <<NODECONFIG
 ---
 apiVersion: node.eks.aws/v1alpha1
 kind: NodeConfig
@@ -369,6 +371,16 @@ spec:
     apiServerEndpoint: ${CLUSTER_ENDPOINT}
     certificateAuthority: ${CLUSTER_CA}
     cidr: ${SERVICE_IPV4_CIDR}
+NODECONFIG
+
+echo "NodeConfig written to /etc/eks/nodeadm.d/nodeconfig.yaml"
+cat /etc/eks/nodeadm.d/nodeconfig.yaml
+
+# Run nodeadm init to bootstrap the node
+echo "Running nodeadm init..."
+nodeadm init --config-source file:///etc/eks/nodeadm.d/nodeconfig.yaml
+
+echo "=== EKS Node Bootstrap Complete ==="
 
 --==BOUNDARY==--
 EOF_USERDATA
