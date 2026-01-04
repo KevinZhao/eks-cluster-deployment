@@ -145,6 +145,18 @@ else
     echo "  Instance Profile ${KARPENTER_NODE_ROLE} already exists"
 fi
 
+# 添加 KarpenterNodeRole 到 EKS 访问配置（允许节点加入集群）
+echo "  Adding ${KARPENTER_NODE_ROLE} to EKS access entries..."
+if aws eks describe-access-entry --cluster-name "${CLUSTER_NAME}" --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}" &>/dev/null; then
+    echo "  EKS access entry for ${KARPENTER_NODE_ROLE} already exists"
+else
+    aws eks create-access-entry \
+        --cluster-name "${CLUSTER_NAME}" \
+        --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}" \
+        --type EC2_LINUX
+    echo "  ✓ EKS access entry created for ${KARPENTER_NODE_ROLE}"
+fi
+
 # 6. 创建 Karpenter Controller IAM Policy
 echo ""
 echo "Step 5: Creating Karpenter Controller IAM Policy..."
