@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+export AWS_PAGER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -14,14 +15,14 @@ echo "  • Deploy GPU NodePools (on-demand, spot, ODCR, capacity-block)"
 echo "  • Deploy EFA multi-NIC setup DaemonSet"
 echo ""
 
-# 1. 加载环境变量
+# 1. Load environment variables
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
-# 1.1 设置 KUBECONFIG
+# 1.1 Set KUBECONFIG
 export KUBECONFIG="${HOME}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
-# 2. 验证 Karpenter 已安装
+# 2. Verify Karpenter is installed
 echo ""
 echo "Step 1: Verifying Karpenter is installed..."
 
@@ -32,23 +33,23 @@ if ! kubectl get deployment karpenter -n kube-system &>/dev/null; then
 fi
 echo "✓ Karpenter is installed"
 
-# 验证 kubectl context
+# Verify kubectl context
 verify_kubectl_context
 
-# 3. 添加 EFA 权限到 KarpenterNodeRole
+# 3. Add EFA permissions to KarpenterNodeRole
 echo ""
 echo "Step 2: Adding EFA permissions to KarpenterNodeRole..."
 
 KARPENTER_NODE_ROLE="KarpenterNodeRole-${CLUSTER_NAME}"
 EFA_POLICY_NAME="KarpenterNodeEFAPolicy-${CLUSTER_NAME}"
 
-# 检查角色是否存在
+# Check if role exists
 if ! aws iam get-role --role-name "${KARPENTER_NODE_ROLE}" &>/dev/null; then
     echo "❌ ERROR: KarpenterNodeRole not found: ${KARPENTER_NODE_ROLE}"
     exit 1
 fi
 
-# 创建 EFA 权限策略
+# Create EFA permissions policy
 EFA_POLICY_FILE=$(mktemp /tmp/efa-policy.XXXXXX.json)
 cat > "${EFA_POLICY_FILE}" <<EOF
 {
@@ -69,11 +70,11 @@ cat > "${EFA_POLICY_FILE}" <<EOF
 }
 EOF
 
-# 检查策略是否已存在
+# Check if policy already exists
 if aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${EFA_POLICY_NAME}" &>/dev/null; then
     echo "  EFA policy already exists, updating..."
 
-    # 删除旧版本
+    # Delete old versions
     POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${EFA_POLICY_NAME}"
     OLD_VERSIONS=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
         --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text)
@@ -95,7 +96,7 @@ fi
 
 rm -f "${EFA_POLICY_FILE}"
 
-# 附加策略到角色
+# Attach policy to role
 echo "  Attaching EFA policy to ${KARPENTER_NODE_ROLE}..."
 aws iam attach-role-policy \
     --role-name "${KARPENTER_NODE_ROLE}" \
@@ -103,37 +104,40 @@ aws iam attach-role-policy \
 
 echo "✓ EFA permissions configured"
 
-# 4. 部署 GPU EC2NodeClass
+# 4. Deploy GPU EC2NodeClass
 echo ""
 echo "Step 3: Deploying GPU EC2NodeClass..."
 
-# 部署标准 GPU EC2NodeClass (用于 on-demand 和 spot)
+# Deploy standard GPU EC2NodeClass (for on-demand and spot)
 echo "  Deploying EC2NodeClass: gpu..."
 kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/gpu-nodeclass/overlays/default" | \
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-        -e "s/\${AWS_REGION}/$AWS_REGION/g" | kubectl apply -f -
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        -e "s/\${K8S_VERSION}/$K8S_VERSION/g" | kubectl apply -f -
 
-# 部署 Capacity Block EC2NodeClass (可选)
+# Deploy Capacity Block EC2NodeClass (optional)
 if [ -n "${CAPACITY_BLOCK_ID}" ]; then
     echo "  Deploying EC2NodeClass: gpu-cb..."
     kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/gpu-nodeclass/overlays/cb" | \
         sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
             -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+            -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
             -e "s/\${CAPACITY_BLOCK_ID}/$CAPACITY_BLOCK_ID/g" | kubectl apply -f -
 fi
 
-# 部署 ODCR EC2NodeClass (可选)
+# Deploy ODCR EC2NodeClass (optional)
 if [ -n "${ODCR_ID}" ]; then
     echo "  Deploying EC2NodeClass: gpu-odcr..."
     kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/gpu-nodeclass/overlays/odcr" | \
         sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
             -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+            -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
             -e "s/\${ODCR_ID}/$ODCR_ID/g" | kubectl apply -f -
 fi
 
 echo "✓ GPU EC2NodeClass deployed"
 
-# 5. 部署 GPU NodePools
+# 5. Deploy GPU NodePools
 echo ""
 echo "Step 4: Deploying GPU NodePools..."
 
@@ -173,7 +177,7 @@ fi
 
 echo "✓ GPU NodePools deployed"
 
-# 6. 部署 EFA Setup DaemonSet
+# 6. Deploy EFA Setup DaemonSet
 echo ""
 echo "Step 5: Deploying GPU EFA Setup DaemonSet..."
 
@@ -181,7 +185,7 @@ kubectl apply -f "${PROJECT_ROOT}/manifests/karpenter/gpu-efa-setup-daemonset.ya
 
 echo "✓ EFA Setup DaemonSet deployed"
 
-# 7. 验证
+# 7. Verify
 echo ""
 echo "Step 6: Verifying GPU support installation..."
 

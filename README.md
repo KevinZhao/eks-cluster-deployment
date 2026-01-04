@@ -281,8 +281,6 @@ eks-cluster-deployment/
 │   └── option_test_karpenter_pools.sh # 测试 Karpenter 节点池
 │
 ├── manifests/
-│   ├── cluster/
-│   │   └── eksctl_cluster_template.yaml   # EKS 集群配置模板
 │   ├── addons/
 │   │   ├── cluster-autoscaler-rbac.yaml   # Cluster Autoscaler RBAC
 │   │   └── cluster-autoscaler.yaml        # Cluster Autoscaler 部署

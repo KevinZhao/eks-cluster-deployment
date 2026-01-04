@@ -4,6 +4,7 @@
 # 提供可重用的 Pod Identity 设置函数，用于所有 EKS add-ons
 
 set -e
+export AWS_PAGER=""
 
 # ============================================
 # 日志函数

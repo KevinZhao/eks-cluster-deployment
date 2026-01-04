@@ -5,6 +5,7 @@
 #
 
 set -e
+export AWS_PAGER=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -204,4 +205,3 @@ aws ec2 describe-vpc-endpoints \
 
 echo ""
 echo -e "${YELLOW}Note: It may take a few minutes for endpoints to become available.${NC}"
-echo -e "${YELLOW}Monthly cost estimate: ~\$93-97 for 13 interface endpoints (includes SSM endpoints for Session Manager)${NC}"

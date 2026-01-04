@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+export AWS_PAGER=""
 
 # 日志函数
 log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"; }

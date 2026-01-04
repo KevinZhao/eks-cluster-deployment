@@ -5,6 +5,7 @@
 #
 
 set -e
+export AWS_PAGER=""
 
 # Colors for output
 RED='\033[0;31m'

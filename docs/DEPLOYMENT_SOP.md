@@ -71,7 +71,7 @@ EKS Cluster (Kubernetes 1.34)
 **选项 3：使用 eksctl** - 可以在集群创建时自动创建 VPC
 ```bash
 # 注意：本 SOP 脚本假设 VPC 已存在，如需 eksctl 自动创建 VPC，
-# 需要修改 manifests/cluster/eksctl_cluster_template.yaml
+# 需要修改 scripts/5_install_eks_cluster.sh 中的集群配置
 ```
 
 **网络规划建议**：

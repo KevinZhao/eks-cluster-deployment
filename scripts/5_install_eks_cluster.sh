@@ -1,24 +1,25 @@
 #!/bin/bash
 
 set -e
+export AWS_PAGER=""
 
-# 获取脚本所在目录的父目录（项目根目录）
+# Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "=== EKS Cluster Installation with Cluster Autoscaler and EBS CSI Driver ==="
 
-# 1. 设置环境变量
+# 1. Load environment variables
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
-# 1.1 设置 KUBECONFIG 环境变量 (确保 kubectl 能找到配置文件)
+# 1.1 Set KUBECONFIG environment variable
 export KUBECONFIG="${HOME}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
-# 1.5. 导入 Pod Identity helper 函数
+# 1.5. Import Pod Identity helper functions
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
 
-# 1.6. 检查必需的依赖工具
+# 1.6. Check required dependencies
 echo "Checking required dependencies..."
 MISSING_DEPS=()
 
@@ -42,7 +43,7 @@ echo ""
 
 
 # ===================================================================
-# 主流程开始
+# Main workflow
 # ===================================================================
 
 # Validate VPC and subnets before cluster creation
@@ -51,10 +52,10 @@ validate_vpc_exists "${VPC_ID}" "${AWS_REGION}"
 validate_subnets "${PRIVATE_SUBNETS}" "${VPC_ID}" "${AWS_REGION}"
 echo ""
 
-# 2. 创建EKS集群（控制平面）
+# 2. Create EKS cluster (control plane)
 echo "Step 2: Creating EKS cluster control plane..."
 
-# 检查集群是否已存在
+# Check if cluster already exists
 if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
     echo "⚠️  Cluster '${CLUSTER_NAME}' already exists"
     echo "Skipping cluster creation..."
@@ -146,6 +147,32 @@ addons:
     version: latest
   - name: eks-pod-identity-agent
     version: latest
+  - name: coredns
+    version: latest
+    configurationValues: |
+      replicaCount: 2
+      nodeSelector:
+        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  k8s-app: kube-dns
+              topologyKey: kubernetes.io/hostname
+  - name: metrics-server
+    version: latest
+    configurationValues: |
+      replicas: 2
+      nodeSelector:
+        ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  k8s-app: metrics-server
+              topologyKey: kubernetes.io/hostname
 
 cloudWatch:
   clusterLogging:
@@ -162,13 +189,13 @@ EOF
     eksctl create cluster -f "${PROJECT_ROOT}/eksctl_cluster_final.yaml"
 fi
 
-# 3. 等待集群控制平面就绪
+# 3. Wait for cluster control plane to be ready
 echo ""
 echo "Step 3: Waiting for cluster control plane to be ready..."
 aws eks wait cluster-active --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
 echo "✓ Cluster control plane is ready"
 
-# 4. 启用删除保护
+# 4. Enable deletion protection
 if [ "${ENABLE_DELETION_PROTECTION:-true}" = "true" ]; then
     echo ""
     echo "Step 4: Enabling deletion protection..."
@@ -180,7 +207,7 @@ if [ "${ENABLE_DELETION_PROTECTION:-true}" = "true" ]; then
     echo "✓ Deletion protection enabled"
 fi
 
-# 5. 完成
+# 5. Complete
 echo ""
 echo "=== EKS Cluster Control Plane Created Successfully ==="
 echo ""

@@ -1,24 +1,25 @@
 #!/bin/bash
 
 set -e
+export AWS_PAGER=""
 
-# 获取脚本所在目录的父目录（项目根目录）
+# Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-echo "=== EKS Addons Installation (Cluster Autoscaler, Load Balancer Controller, Metrics Server) ==="
+echo "=== EKS Addons Installation (Cluster Autoscaler, Load Balancer Controller) ==="
 
-# 1. 设置环境变量
+# 1. Load environment variables
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
-# 1.1 设置 KUBECONFIG 环境变量 (确保 kubectl 能找到配置文件)
+# 1.1 Set KUBECONFIG environment variable
 export KUBECONFIG="${HOME}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
-# 1.2. 导入 Pod Identity helper 函数
+# 1.2. Import Pod Identity helper functions
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"
 
-# 1.3. 检查必需的依赖工具
+# 1.3. Check required dependencies
 echo "Checking required dependencies..."
 MISSING_DEPS=()
 
@@ -39,89 +40,108 @@ fi
 echo "✓ All required dependencies are installed"
 echo ""
 
-# 2. 验证集群存在并更新 kubeconfig
+# 2. Verify cluster exists and update kubeconfig
 echo "Verifying EKS cluster exists and updating kubeconfig..."
 validate_eks_cluster_exists "${CLUSTER_NAME}" "${AWS_REGION}"
 
-# 验证 kubectl context（使用统一函数）
+# Verify kubectl context
 verify_kubectl_context
 echo ""
 echo "Note: Security group configuration for bastion access should have been"
 echo "      completed in script 6_create_system_nodegroup.sh"
 echo ""
 
-# 3. 验证集群状态
+# 3. Verify cluster status
 echo "Checking cluster status..."
 echo "Note: If cluster uses private-only access, kubectl may timeout. This is expected."
 timeout 10 kubectl get nodes || echo "Warning: kubectl timeout - using AWS CLI to verify cluster"
 timeout 10 kubectl get pods -A || aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query 'cluster.status'
 
-# 3.1. 等待 Pod Identity Agent 就绪
+# 3.1. Wait for Pod Identity Agent to be ready
 echo ""
 echo "Step 3.1: Waiting for Pod Identity Agent..."
 wait_for_pod_identity_agent
 
-# 3.2. 安装 CoreDNS addon（配置 nodeSelector 到系统节点）
+# 3.2. Ensure CoreDNS addon exists (fallback if not created by eksctl)
 echo ""
-echo "Step 3.2: Installing CoreDNS addon..."
+echo "Step 3.2: Checking CoreDNS addon..."
+if ! aws eks describe-addon --cluster-name "${CLUSTER_NAME}" --addon-name coredns --region "${AWS_REGION}" &>/dev/null; then
+    echo "coredns addon not found, creating with custom configuration..."
+    COREDNS_CONFIG=$(cat <<'EOFCONFIG'
+replicaCount: 2
+nodeSelector:
+  ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            k8s-app: kube-dns
+        topologyKey: kubernetes.io/hostname
+EOFCONFIG
+)
+    # Substitute environment variables
+    COREDNS_CONFIG=$(echo "$COREDNS_CONFIG" | sed \
+        -e "s/\${SYSTEM_NODE_LABEL_KEY}/${SYSTEM_NODE_LABEL_KEY}/g" \
+        -e "s/\${SYSTEM_NODE_LABEL_VALUE}/${SYSTEM_NODE_LABEL_VALUE}/g")
 
-COREDNS_CONFIG_FILE=$(mktemp /tmp/coredns-config.XXXXXX.json)
-cat > "${COREDNS_CONFIG_FILE}" <<EOF
-{
-  "replicaCount": 2,
-  "nodeSelector": {
-    "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
-  },
-  "affinity": {
-    "podAntiAffinity": {
-      "requiredDuringSchedulingIgnoredDuringExecution": [
-        {
-          "labelSelector": {
-            "matchLabels": {
-              "k8s-app": "kube-dns"
-            }
-          },
-          "topologyKey": "kubernetes.io/hostname"
-        }
-      ]
-    }
-  }
-}
-EOF
-
-if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name coredns --region ${AWS_REGION} &>/dev/null; then
-    echo "CoreDNS addon already exists, updating..."
-    aws eks update-addon \
-        --cluster-name ${CLUSTER_NAME} \
-        --addon-name coredns \
-        --configuration-values "file://${COREDNS_CONFIG_FILE}" \
-        --region ${AWS_REGION} \
-        --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
-else
-    echo "Creating CoreDNS addon..."
     aws eks create-addon \
-        --cluster-name ${CLUSTER_NAME} \
+        --cluster-name "${CLUSTER_NAME}" \
         --addon-name coredns \
-        --configuration-values "file://${COREDNS_CONFIG_FILE}" \
-        --region ${AWS_REGION} \
-        --resolve-conflicts OVERWRITE
+        --addon-version "$(aws eks describe-addon-versions --kubernetes-version "${K8S_VERSION}" --addon-name coredns --region "${AWS_REGION}" --query 'addons[0].addonVersions[0].addonVersion' --output text)" \
+        --configuration-values "$COREDNS_CONFIG" \
+        --region "${AWS_REGION}"
+    echo "✓ coredns addon created"
 fi
-
-rm -f "${COREDNS_CONFIG_FILE}"
-
+echo "Waiting for CoreDNS addon..."
 wait_for_eks_addon "coredns"
-echo "✓ CoreDNS addon installed"
+echo "✓ CoreDNS addon ready"
 
-# 4. 设置 Cluster Autoscaler with Pod Identity
+# 3.3. Ensure Metrics Server addon exists (fallback if not created by eksctl)
+echo ""
+echo "Step 3.3: Checking Metrics Server addon..."
+if ! aws eks describe-addon --cluster-name "${CLUSTER_NAME}" --addon-name metrics-server --region "${AWS_REGION}" &>/dev/null; then
+    echo "metrics-server addon not found, creating with custom configuration..."
+    METRICS_SERVER_CONFIG=$(cat <<'EOFCONFIG'
+replicas: 2
+nodeSelector:
+  ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            k8s-app: metrics-server
+        topologyKey: kubernetes.io/hostname
+EOFCONFIG
+)
+    # Substitute environment variables
+    METRICS_SERVER_CONFIG=$(echo "$METRICS_SERVER_CONFIG" | sed \
+        -e "s/\${SYSTEM_NODE_LABEL_KEY}/${SYSTEM_NODE_LABEL_KEY}/g" \
+        -e "s/\${SYSTEM_NODE_LABEL_VALUE}/${SYSTEM_NODE_LABEL_VALUE}/g")
+
+    aws eks create-addon \
+        --cluster-name "${CLUSTER_NAME}" \
+        --addon-name metrics-server \
+        --addon-version "$(aws eks describe-addon-versions --kubernetes-version "${K8S_VERSION}" --addon-name metrics-server --region "${AWS_REGION}" --query 'addons[0].addonVersions[0].addonVersion' --output text)" \
+        --configuration-values "$METRICS_SERVER_CONFIG" \
+        --region "${AWS_REGION}"
+    echo "✓ metrics-server addon created"
+fi
+echo "Waiting for Metrics Server addon..."
+wait_for_eks_addon "metrics-server"
+echo "✓ Metrics Server addon ready"
+
+# 4. Setup Cluster Autoscaler with Pod Identity
 echo ""
 echo "Step 4: Setting up Cluster Autoscaler with Pod Identity..."
 setup_cluster_autoscaler_pod_identity
 
-# 4.1 部署Cluster Autoscaler RBAC
+# 4.1 Deploy Cluster Autoscaler RBAC
 echo "Deploying Cluster Autoscaler RBAC..."
 kubectl apply -f "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler-rbac.yaml"
 
-# 4.2 部署Cluster Autoscaler Deployment
+# 4.2 Deploy Cluster Autoscaler Deployment
 echo "Deploying Cluster Autoscaler..."
 sed -e "s|\${CLUSTER_NAME}|$CLUSTER_NAME|g" \
     -e "s|\${AWS_REGION}|$AWS_REGION|g" \
@@ -130,7 +150,7 @@ sed -e "s|\${CLUSTER_NAME}|$CLUSTER_NAME|g" \
     -e "s|\${SYSTEM_NODE_LABEL_VALUE}|$SYSTEM_NODE_LABEL_VALUE|g" \
     "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
 
-# 4.3 验证Cluster Autoscaler
+# 4.3 Verify Cluster Autoscaler
 echo "Checking Cluster Autoscaler status..."
 kubectl get deployment cluster-autoscaler -n kube-system
 
@@ -139,12 +159,12 @@ kubectl wait --for=condition=available --timeout=300s deployment/cluster-autosca
 
 kubectl logs -n kube-system -l app=cluster-autoscaler --tail=10
 
-# 5. 设置 AWS Load Balancer Controller with Pod Identity
+# 5. Setup AWS Load Balancer Controller with Pod Identity
 echo ""
 echo "Step 5: Setting up AWS Load Balancer Controller with Pod Identity..."
 setup_alb_controller_pod_identity
 
-# 5.1 部署 Load Balancer Controller
+# 5.1 Deploy Load Balancer Controller
 echo "Deploying Load Balancer Controller..."
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update eks
@@ -166,86 +186,34 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
     --version "${ALB_CONTROLLER_CHART_VERSION}"
 
-# 5.2 验证 Load Balancer Controller
+# 5.2 Verify Load Balancer Controller
 echo "Testing AWS Load Balancer Controller..."
 kubectl wait --for=condition=available --timeout=300s deployment/aws-load-balancer-controller -n kube-system
 kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=10
 
-# 6. 安装 Metrics Server (EKS Managed Addon)
+# 6. Verify Metrics Server functionality
 echo ""
-echo "Step 6: Installing Metrics Server addon..."
-
-# 创建 metrics-server addon 配置（确保运行在系统节点上，高可用）
-METRICS_SERVER_CONFIG_FILE=$(mktemp /tmp/metrics-server-config.XXXXXX.json)
-cat > "${METRICS_SERVER_CONFIG_FILE}" <<EOF
-{
-  "replicas": 2,
-  "nodeSelector": {
-    "${SYSTEM_NODE_LABEL_KEY}": "${SYSTEM_NODE_LABEL_VALUE}"
-  },
-  "affinity": {
-    "podAntiAffinity": {
-      "requiredDuringSchedulingIgnoredDuringExecution": [
-        {
-          "labelSelector": {
-            "matchLabels": {
-              "k8s-app": "metrics-server"
-            }
-          },
-          "topologyKey": "kubernetes.io/hostname"
-        }
-      ]
-    }
-  }
-}
-EOF
-
-# 检查 addon 是否已存在
-if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name metrics-server --region ${AWS_REGION} &>/dev/null; then
-    echo "Metrics Server addon already exists, updating..."
-    aws eks update-addon \
-        --cluster-name ${CLUSTER_NAME} \
-        --addon-name metrics-server \
-        --configuration-values "file://${METRICS_SERVER_CONFIG_FILE}" \
-        --region ${AWS_REGION} \
-        --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
-else
-    echo "Creating Metrics Server addon..."
-    aws eks create-addon \
-        --cluster-name ${CLUSTER_NAME} \
-        --addon-name metrics-server \
-        --configuration-values "file://${METRICS_SERVER_CONFIG_FILE}" \
-        --region ${AWS_REGION} \
-        --resolve-conflicts OVERWRITE
-fi
-
-rm -f "${METRICS_SERVER_CONFIG_FILE}"
-
-# 等待 addon 就绪
-wait_for_eks_addon "metrics-server"
-
-# 验证 metrics 功能
-echo "Verifying Metrics Server functionality..."
-sleep 10
+echo "Step 6: Verifying Metrics Server functionality..."
+sleep 5
 if kubectl top nodes &>/dev/null; then
     echo "✓ Metrics Server is working correctly"
     kubectl top nodes
 else
-    echo "Note: Metrics Server may need more time to collect metrics (this is normal on first install)"
+    echo "Note: Metrics Server may need more time to collect metrics (this is normal)"
     echo "You can verify later with: kubectl top nodes"
 fi
 
-# 7. 最终验证
+# 7. Final verification
 echo ""
 echo "Step 7: Verifying all Pod Identity Associations..."
 list_pod_identity_associations
 
 echo ""
 echo "=== EKS Addons Installation Complete ==="
-echo "✓ CoreDNS addon installed and configured"
+echo "✓ CoreDNS addon ready (configured in cluster creation)"
+echo "✓ Metrics Server addon ready (configured in cluster creation)"
 echo "✓ Cluster Autoscaler installed and configured"
 echo "✓ AWS Load Balancer Controller installed and configured"
-echo "✓ Metrics Server installed and configured"
 echo "✓ All components use Pod Identity for AWS authentication"
 echo ""
 echo "Next steps:"

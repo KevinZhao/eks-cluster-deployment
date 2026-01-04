@@ -7,6 +7,7 @@
 #
 
 set -e
+export AWS_PAGER=""
 
 # Colors
 RED='\033[0;31m'
@@ -206,13 +207,77 @@ if [[ -n "$EC2_METADATA_TOKEN" ]]; then
         if [[ "$INSTANCE_VPC" == "$VPC_ID" ]]; then
             check_pass "Instance is in target VPC"
         elif [[ -n "$VPC_ID" ]]; then
-            check_warn "Instance VPC differs from target VPC (ensure VPC peering/connectivity)"
+            check_info "Instance VPC differs from target VPC (checking peering connectivity...)"
         fi
     fi
 
     INSTANCE_SUBNET=$(curl -s -H "X-aws-ec2-metadata-token: $EC2_METADATA_TOKEN" http://169.254.169.254/latest/meta-data/network/interfaces/macs/$(curl -s -H "X-aws-ec2-metadata-token: $EC2_METADATA_TOKEN" http://169.254.169.254/latest/meta-data/mac)/subnet-id 2>/dev/null || true)
     if [[ -n "$INSTANCE_SUBNET" ]]; then
         check_info "Instance Subnet: ${INSTANCE_SUBNET}"
+    fi
+
+    # Get instance region for route table queries
+    INSTANCE_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $EC2_METADATA_TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || true)
+
+    # VPC Peering connectivity check (when in different VPC)
+    if [[ -n "$VPC_ID" ]] && [[ "$INSTANCE_VPC" != "$VPC_ID" ]]; then
+        echo ""
+        echo "  Checking VPC Peering connectivity to target VPC..."
+
+        # Check VPC endpoint DNS resolution
+        STS_DNS="sts.${AWS_REGION}.amazonaws.com"
+        if command -v dig &> /dev/null; then
+            STS_IP=$(dig +short "$STS_DNS" 2>/dev/null | head -1)
+        elif command -v nslookup &> /dev/null; then
+            STS_IP=$(nslookup "$STS_DNS" 2>/dev/null | awk '/^Address: / { print $2 }' | head -1)
+        elif command -v getent &> /dev/null; then
+            STS_IP=$(getent hosts "$STS_DNS" 2>/dev/null | awk '{ print $1 }' | head -1)
+        else
+            STS_IP=""
+        fi
+        if [[ -n "$STS_IP" ]]; then
+            # Check if resolved IP is private (10.x, 172.16-31.x, 192.168.x)
+            if [[ "$STS_IP" =~ ^10\. ]] || [[ "$STS_IP" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] || [[ "$STS_IP" =~ ^192\.168\. ]]; then
+                check_pass "VPC Endpoint DNS resolves to private IP: ${STS_IP}"
+            else
+                check_info "STS resolves to public IP: ${STS_IP} (VPC endpoints may not exist)"
+            fi
+        else
+            check_warn "Cannot resolve ${STS_DNS}"
+        fi
+
+        # Check route table for peering routes to target VPC CIDR
+        TARGET_VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$AWS_REGION" --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null || true)
+        if [[ -n "$TARGET_VPC_CIDR" ]] && [[ "$TARGET_VPC_CIDR" != "None" ]]; then
+            check_info "Target VPC CIDR: ${TARGET_VPC_CIDR}"
+
+            # Get route table for current instance's subnet (use instance region, not target region)
+            if [[ -n "$INSTANCE_SUBNET" ]] && [[ -n "$INSTANCE_REGION" ]]; then
+                ROUTE_TO_TARGET=$(aws ec2 describe-route-tables \
+                    --filters "Name=association.subnet-id,Values=${INSTANCE_SUBNET}" \
+                    --query "RouteTables[0].Routes[?DestinationCidrBlock=='${TARGET_VPC_CIDR}'].VpcPeeringConnectionId" \
+                    --region "$INSTANCE_REGION" \
+                    --output text 2>/dev/null || true)
+
+                if [[ -n "$ROUTE_TO_TARGET" ]] && [[ "$ROUTE_TO_TARGET" != "None" ]]; then
+                    check_pass "Route to target VPC exists via peering: ${ROUTE_TO_TARGET}"
+                else
+                    check_warn "No route to target VPC CIDR in route table"
+                fi
+            fi
+        fi
+
+        # Test actual connectivity to target VPC (try VPC endpoint if exists)
+        ENDPOINT_COUNT=$(aws ec2 describe-vpc-endpoints \
+            --filters "Name=vpc-id,Values=${VPC_ID}" \
+            --query 'length(VpcEndpoints)' \
+            --region "$AWS_REGION" \
+            --output text 2>/dev/null || echo "0")
+        if [[ "$ENDPOINT_COUNT" -gt 0 ]]; then
+            check_info "Target VPC has ${ENDPOINT_COUNT} VPC endpoints"
+        else
+            check_warn "No VPC endpoints found in target VPC (run script 3 first)"
+        fi
     fi
 else
     check_info "Not running on EC2 (or IMDSv2 not available)"
