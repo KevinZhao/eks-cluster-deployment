@@ -108,31 +108,37 @@ echo "✓ EFA permissions configured"
 echo ""
 echo "Step 3: Deploying GPU EC2NodeClass..."
 
-# Deploy standard GPU EC2NodeClass (for on-demand and spot)
-echo "  Deploying EC2NodeClass: gpu..."
-kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/gpu-nodeclass/overlays/default" | \
+# Deploy GPU EC2NodeClasses for P5, P5en, P6 (on-demand and spot)
+echo "  Deploying EC2NodeClasses for GPU nodes..."
+for gpu_file in ec2nodeclass-gpu-p5.yaml ec2nodeclass-gpu-p5en.yaml ec2nodeclass-gpu-p6.yaml; do
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-        -e "s/\${K8S_VERSION}/$K8S_VERSION/g" | kubectl apply -f -
+        -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/${gpu_file}" | kubectl apply -f -
+done
 
-# Deploy Capacity Block EC2NodeClass (optional)
+# Deploy Capacity Block EC2NodeClasses (optional)
 if [ -n "${CAPACITY_BLOCK_ID}" ]; then
-    echo "  Deploying EC2NodeClass: gpu-cb..."
-    kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/gpu-nodeclass/overlays/cb" | \
+    echo "  Deploying EC2NodeClasses for Capacity Block..."
+    for gpu_file in ec2nodeclass-gpu-p5-cb.yaml ec2nodeclass-gpu-p5en-cb.yaml ec2nodeclass-gpu-p6-cb.yaml; do
         sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
             -e "s/\${AWS_REGION}/$AWS_REGION/g" \
             -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
-            -e "s/\${CAPACITY_BLOCK_ID}/$CAPACITY_BLOCK_ID/g" | kubectl apply -f -
+            -e "s/\${CAPACITY_BLOCK_ID}/$CAPACITY_BLOCK_ID/g" \
+            "${PROJECT_ROOT}/manifests/karpenter/${gpu_file}" | kubectl apply -f -
+    done
 fi
 
-# Deploy ODCR EC2NodeClass (optional)
+# Deploy ODCR EC2NodeClasses (optional)
 if [ -n "${ODCR_ID}" ]; then
-    echo "  Deploying EC2NodeClass: gpu-odcr..."
-    kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/gpu-nodeclass/overlays/odcr" | \
+    echo "  Deploying EC2NodeClasses for ODCR..."
+    for gpu_file in ec2nodeclass-gpu-p5-odcr.yaml ec2nodeclass-gpu-p5en-odcr.yaml ec2nodeclass-gpu-p6-odcr.yaml; do
         sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
             -e "s/\${AWS_REGION}/$AWS_REGION/g" \
             -e "s/\${K8S_VERSION}/$K8S_VERSION/g" \
-            -e "s/\${ODCR_ID}/$ODCR_ID/g" | kubectl apply -f -
+            -e "s/\${ODCR_ID}/$ODCR_ID/g" \
+            "${PROJECT_ROOT}/manifests/karpenter/${gpu_file}" | kubectl apply -f -
+    done
 fi
 
 echo "✓ GPU EC2NodeClass deployed"

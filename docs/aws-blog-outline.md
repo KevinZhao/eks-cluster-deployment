@@ -377,7 +377,7 @@ kubectl get nodes -o wide
 kubectl get pods -A
 
 # LVM 验证
-kubectl debug node/<node-name> -it --image=busybox -- \
+kubectl debug node/<node-name> -it --image=amazonlinux -- \
   chroot /host bash -c "vgs && lvs && df -h /var/lib/containerd"
 
 # CSI 验证

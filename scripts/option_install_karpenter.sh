@@ -452,9 +452,9 @@ export AWS_REGION
 
 # 部署 Graviton 专用配置 (r8g.8xlarge)
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
-    kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/cpu-nodeclass/overlays/graviton" | \
-        sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-            -e "s/\${AWS_REGION}/$AWS_REGION/g" | kubectl apply -f -
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
@@ -463,9 +463,9 @@ fi
 
 # 可选：部署 x86 专用配置 (r7i.8xlarge)
 if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
-    kubectl kustomize "${PROJECT_ROOT}/manifests/karpenter/cpu-nodeclass/overlays/x86" | \
-        sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
-            -e "s/\${AWS_REGION}/$AWS_REGION/g" | kubectl apply -f -
+    sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
+        -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-x86.yaml" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         "${PROJECT_ROOT}/manifests/karpenter/nodepool-x86.yaml" | kubectl apply -f -

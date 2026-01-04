@@ -12,7 +12,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 echo "=== Create System Nodegroup with LVM Configuration ==="
 echo ""
 echo "This script will create a system nodegroup with LVM configuration:"
-echo "  • Instance Type: m7i.2xlarge (or custom from .env)"
+echo "  • Instance Type: configured in .env (default: m8g.xlarge)"
 echo "  • Root Volume: 50GB gp3"
 echo "  • Data Volume: 100GB gp3 (for containerd with LVM)"
 echo "  • Desired Capacity: 3 nodes"
@@ -767,8 +767,7 @@ verify_lvm_configuration() {
     echo "✓ LVM configuration verification complete"
     echo ""
     echo "To manually verify LVM on a node, run:"
-    echo "  kubectl debug node/${NODE_NAME} -it --image=busybox -- sh"
-    echo "  Then: chroot /host bash && vgs && lvs && df -h /var/lib/containerd"
+    echo "  kubectl debug node/${NODE_NAME} -it --image=amazonlinux -- chroot /host bash -c 'vgs && lvs && df -h /var/lib/containerd'"
 }
 
 # ===================================================================

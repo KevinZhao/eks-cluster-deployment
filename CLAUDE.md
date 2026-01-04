@@ -235,13 +235,13 @@ warn "message"          # Warning logging (no exit)
 ## Karpenter Node Support
 
 **CPU Nodes (Graviton/x86):** `option_install_karpenter.sh`
-- Karpenter EC2NodeClass configs in `manifests/karpenter/cpu-nodeclass/` (Kustomize base + overlays)
+- EC2NodeClass: `manifests/karpenter/ec2nodeclass-graviton.yaml`, `ec2nodeclass-x86.yaml`
 - Graviton (ARM64): r8g.8xlarge
 - x86 (AMD64): r7i.8xlarge
 - LVM configuration for containerd data volume
 
 **GPU Nodes (P5/P5en/P6):** `option_install_gpu_support.sh`
-- Karpenter EC2NodeClass configs in `manifests/karpenter/gpu-nodeclass/` (Kustomize base + overlays)
+- EC2NodeClass: `manifests/karpenter/ec2nodeclass-gpu-*.yaml` (P5/P5en/P6 with on-demand/ODCR/CB variants)
 - EFA multi-NIC setup via DaemonSet (P5: 31, P5en: 15, P6: 7 interfaces)
 - NVIDIA drivers, EFA drivers, NCCL plugin auto-installed
 - Lustre client pre-installed for FSx Lustre support

@@ -1,12 +1,12 @@
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
-  name: gpu  # Will be overridden by overlay for CB/ODCR variants
+  name: gpu-p6-cb
 spec:
-  # AMI Selection - EKS-optimized AL2023 GPU AMI (pinned to K8s version for stability)
-  amiFamily: AL2023
+  # AMI Selection - Deep Learning AMI AL2023
   amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-x86_64-nvidia-${K8S_VERSION}-*"
+    - alias: al2023@latest
+  amiFamily: AL2023
 
   # Block Device Mappings
   blockDeviceMappings:
@@ -27,7 +27,7 @@ spec:
         encrypted: true
         deleteOnTermination: true
 
-  # User Data - LVM setup + Lustre client installation
+  # User Data - LVM setup with idempotency (EFA setup handled by DaemonSet)
   userData: |
     #!/bin/bash
     set -ex
@@ -140,15 +140,7 @@ spec:
     systemctl start containerd
 
     echo "=== LVM setup complete ==="
-
-    # Install Lustre client for FSx Lustre support
-    echo "=== Installing Lustre Client ==="
-    dnf install -y lustre-client
-    modprobe lustre || echo "Lustre module will be loaded on first mount"
-    echo "=== Lustre Client Installation Complete ==="
-
     echo "=== Node initialization complete ==="
-
   # Metadata Options (IMDSv2)
   metadataOptions:
     httpEndpoint: enabled
@@ -166,10 +158,18 @@ spec:
     - tags:
         karpenter.sh/discovery: ${CLUSTER_NAME}
 
-  # IAM Role (Karpenter will auto-create instance profile)
-  role: KarpenterNodeRole-${CLUSTER_NAME}
+  # IAM Instance Profile
+  instanceProfile: KarpenterNodeRole-${CLUSTER_NAME}
 
-  # Tags - will be extended by overlays
+  # Capacity Reservation Selection - specify CB ID directly
+  # Replace ${CAPACITY_BLOCK_ID} with your actual Capacity Block reservation ID (e.g., cr-0abc123456)
+  capacityReservationSelectorTerms:
+    - id: ${CAPACITY_BLOCK_ID}
+
+  # Tags
   tags:
+    Name: ${CLUSTER_NAME}-gpu-node-cb
     karpenter.sh/discovery: ${CLUSTER_NAME}
     node-type: gpu
+    gpu-family: p6
+    purchase-option: capacity-block

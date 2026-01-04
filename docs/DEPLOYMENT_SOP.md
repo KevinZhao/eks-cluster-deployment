@@ -650,12 +650,10 @@ kubectl describe node <node-name>
 # 验证标签
 kubectl get nodes --show-labels | grep eks-utils
 
-# 手动验证 LVM 配置（在节点上）
-kubectl debug node/<node-name> -it --image=busybox -- sh
-chroot /host bash
-vgs              # 应显示 vg_data
-lvs              # 应显示 lv_containerd
-df -h /var/lib/containerd  # 应显示 100GB
+# 手动验证 LVM 配置（一条命令）
+kubectl debug node/<node-name> -it --image=amazonlinux -- \
+  chroot /host bash -c "vgs && lvs && df -h /var/lib/containerd"
+# 预期输出: vg_data, lv_containerd, 100GB 挂载到 /var/lib/containerd
 ```
 
 **故障排查**：
@@ -1182,9 +1180,8 @@ aws ec2 describe-vpc-endpoints \
 kubectl describe node <node-name>
 
 # 2. 检查 kubelet 日志
-kubectl debug node/<node-name> -it --image=busybox -- sh
-chroot /host bash
-journalctl -u kubelet -f
+kubectl debug node/<node-name> -it --image=amazonlinux -- \
+  chroot /host bash -c "journalctl -u kubelet --no-pager -n 100"
 
 # 3. 验证 IAM 权限
 aws iam get-role --role-name EKSNodeRole-eks-frankfurt
