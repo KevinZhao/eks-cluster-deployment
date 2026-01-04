@@ -26,7 +26,7 @@ spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: gpu
+        name: gpu-p5
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule
