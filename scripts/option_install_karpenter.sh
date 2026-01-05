@@ -54,11 +54,9 @@ echo ""
 echo "Step 2: Getting cluster information..."
 CLUSTER_ENDPOINT=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query "cluster.endpoint" --output text)
 OIDC_ENDPOINT=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query "cluster.identity.oidc.issuer" --output text | sed -e "s/^https:\/\///")
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-
 echo "  Cluster Endpoint: ${CLUSTER_ENDPOINT}"
 echo "  OIDC Endpoint: ${OIDC_ENDPOINT}"
-echo "  AWS Account ID: ${AWS_ACCOUNT_ID}"
+echo "  Account ID: ${ACCOUNT_ID}"
 
 # 4. Karpenter 版本（来自 0_setup_env.sh，可通过 .env 覆盖）
 echo ""
@@ -194,14 +192,14 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
     {
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}"
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}"
     },
     {
       "Effect": "Allow",
       "Action": [
         "eks:DescribeCluster"
       ],
-      "Resource": "arn:aws:eks:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${CLUSTER_NAME}"
+      "Resource": "arn:aws:eks:${AWS_REGION}:${ACCOUNT_ID}:cluster/${CLUSTER_NAME}"
     },
     {
       "Effect": "Allow",
@@ -215,7 +213,7 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
         "sqs:SetQueueAttributes",
         "sqs:TagQueue"
       ],
-      "Resource": "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:Karpenter-${CLUSTER_NAME}-*"
+      "Resource": "arn:aws:sqs:${AWS_REGION}:${ACCOUNT_ID}:Karpenter-${CLUSTER_NAME}-*"
     },
     {
       "Effect": "Allow",
@@ -227,7 +225,7 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
         "events:DescribeRule"
       ],
       "Resource": [
-        "arn:aws:events:${AWS_REGION}:${AWS_ACCOUNT_ID}:rule/KarpenterInterruptionQueue-${CLUSTER_NAME}"
+        "arn:aws:events:${AWS_REGION}:${ACCOUNT_ID}:rule/KarpenterInterruptionQueue-${CLUSTER_NAME}"
       ]
     },
     {
@@ -263,11 +261,11 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
 EOF
 
 # 检查策略是否已存在
-if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" &>/dev/null; then
+if aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}" &>/dev/null; then
     echo "  Policy ${KARPENTER_CONTROLLER_POLICY} already exists, updating to latest version..."
 
     # 删除非默认的旧版本（AWS 限制最多 5 个版本）
-    POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}"
+    POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}"
     OLD_VERSIONS=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
         --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text)
     for VERSION in $OLD_VERSIONS; do
@@ -338,7 +336,7 @@ EOF
     # 附加 Karpenter Controller Policy
     aws iam attach-role-policy \
         --role-name "${KARPENTER_CONTROLLER_ROLE}" \
-        --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}"
+        --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${KARPENTER_CONTROLLER_POLICY}"
 
     echo "  ✓ IAM role ${KARPENTER_CONTROLLER_ROLE} created successfully"
 fi
@@ -374,7 +372,7 @@ if [ -z "$EXISTING_ASSOCIATION" ]; then
         --cluster-name "${CLUSTER_NAME}" \
         --namespace "${KARPENTER_NAMESPACE}" \
         --service-account "${KARPENTER_SA}" \
-        --role-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${KARPENTER_CONTROLLER_ROLE}" \
+        --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_CONTROLLER_ROLE}" \
         --region "${AWS_REGION}"
     echo "  ✓ Pod Identity Association created successfully"
 else
