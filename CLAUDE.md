@@ -55,9 +55,15 @@ source scripts/0_setup_env.sh
 ./scripts/option_install_gpu_nodegroups.sh
 
 # Install CSI drivers (EFS, FSx, S3)
+# Method 1: Positional arguments
 ./scripts/option_install_csi_drivers.sh efs      # EFS CSI Driver
 ./scripts/option_install_csi_drivers.sh fsx      # FSx CSI Driver
 ./scripts/option_install_csi_drivers.sh s3 <bucket-arns>  # S3 CSI Driver
+
+# Method 2: Environment variables (non-interactive)
+INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
+INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
+INSTALL_DRIVERS=s3 S3_BUCKET_ARNS="arn:aws:s3:::bucket1,arn:aws:s3express:region:account:bucket/express-bucket" ./scripts/option_install_csi_drivers.sh
 
 # Test Karpenter node provisioning (example)
 ./examples/option_test_karpenter_pools.sh
@@ -168,6 +174,8 @@ docs/                      # Additional documentation
 - `INSTALL_KARPENTER`: Enable Karpenter (true/false)
 - `INSTALL_EFS_CSI`: Enable EFS CSI driver (true/false)
 - `INSTALL_FSX_CSI`: Enable FSx CSI driver (true/false)
+- `INSTALL_DRIVERS`: CSI driver type for option_install_csi_drivers.sh (efs/fsx/s3)
+- `S3_BUCKET_ARNS`: Comma-separated S3 bucket ARNs for S3 CSI driver
 - `SYSTEM_NODE_INSTANCE_TYPE`: System node EC2 instance type
 - `K8S_VERSION`: Kubernetes version (default: 1.34)
 
@@ -187,7 +195,7 @@ All CSI drivers are optional (via `option_install_csi_drivers.sh`):
 - **EBS**: Block storage with gp3 (default) and io2 StorageClasses
 - **EFS**: Shared filesystem across pods/nodes
 - **FSx**: Lustre for HPC/ML workloads
-- **S3**: Object storage mounting (Standard S3 and S3 Express One Zone)
+- **S3**: Object storage mounting (Standard S3 and S3 Express One Zone, single replica - no HA needed)
 
 ## Key Development Patterns
 

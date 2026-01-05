@@ -316,24 +316,13 @@ install_s3_csi_addon() {
     # 1. 设置 Pod Identity（使用动态 bucket policy）
     setup_s3_csi_pod_identity "$bucket_arns"
 
-    # 2. 创建 addon 配置
-    local config_file=$(mktemp /tmp/s3-csi-config.XXXXXX.json)
-    cat > "${config_file}" <<EOF
-{
-  "controller": {
-    "replicaCount": 2
-  }
-}
-EOF
-
-    # 3. 安装或更新 addon
+    # 2. 安装或更新 addon (S3 CSI Driver 不支持自定义配置)
     if aws eks describe-addon --cluster-name ${CLUSTER_NAME} --addon-name ${addon_name} --region ${AWS_REGION} &>/dev/null; then
         echo "S3 CSI Driver addon already exists, updating..."
         aws eks update-addon \
             --cluster-name ${CLUSTER_NAME} \
             --addon-name ${addon_name} \
             --service-account-role-arn ${role_arn} \
-            --configuration-values "file://${config_file}" \
             --region ${AWS_REGION} \
             --resolve-conflicts OVERWRITE || echo "Update may have failed, but continuing..."
     else
@@ -342,12 +331,9 @@ EOF
             --cluster-name ${CLUSTER_NAME} \
             --addon-name ${addon_name} \
             --service-account-role-arn ${role_arn} \
-            --configuration-values "file://${config_file}" \
             --region ${AWS_REGION} \
             --resolve-conflicts OVERWRITE
     fi
-
-    rm -f "${config_file}"
 
     # 4. 等待 addon 就绪
     wait_for_eks_addon "${addon_name}"

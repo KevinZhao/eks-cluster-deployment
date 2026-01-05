@@ -468,6 +468,7 @@ setup_s3_csi_pod_identity() {
     local bucket_resources=""
     local object_resources=""
     local s3express_resources=""
+    local s3express_object_resources=""
     local has_s3express=false
 
     IFS=',' read -ra ARNS <<< "$bucket_arns"
@@ -478,6 +479,7 @@ setup_s3_csi_pod_identity() {
         if [[ "$arn" == *"s3express"* ]] || [[ "$arn" == *"--x-s3"* ]]; then
             log "Detected S3 Express One Zone bucket: ${arn}"
             s3express_resources="${s3express_resources}\"${arn}\","
+            s3express_object_resources="${s3express_object_resources}\"${arn}/*\","
             has_s3express=true
         else
             bucket_resources="${bucket_resources}\"${arn}\","
@@ -487,6 +489,7 @@ setup_s3_csi_pod_identity() {
     bucket_resources=${bucket_resources%,}
     object_resources=${object_resources%,}
     s3express_resources=${s3express_resources%,}
+    s3express_object_resources=${s3express_object_resources%,}
 
     # 构建策略文档
     local policy_statements=""
@@ -538,7 +541,7 @@ setup_s3_csi_pod_identity() {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload"
       ],
-      "Resource": ['"${s3express_resources}/*"']
+      "Resource": ['"${s3express_object_resources}"']
     }'
         log "✓ Added S3 Express One Zone (CreateSession + Object Access) permissions"
     fi
