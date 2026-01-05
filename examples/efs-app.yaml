@@ -1,5 +1,37 @@
 ---
-# EFS StorageClass
+# EFS CSI Driver Test Examples
+# Demonstrates shared filesystem across multiple pods on different nodes
+#
+# Prerequisites:
+#   1. Install EFS CSI Driver:
+#      INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
+#   2. Create EFS filesystem with mount targets in each subnet
+#   3. Replace ${EFS_ID} with your EFS filesystem ID (e.g., fs-091a3f95533e513a9)
+#
+# Quick Test:
+#   # Set variables
+#   export EFS_ID=fs-xxxxxxxxxxxxxxxxx
+#
+#   # Apply manifests
+#   envsubst < examples/efs-app.yaml | kubectl apply -f -
+#
+#   # Verify shared storage (pods on different nodes can read/write same file)
+#   kubectl get sc efs-sc
+#   kubectl get pvc efs-claim
+#   kubectl get pods efs-test-1 efs-test-2 -o wide
+#   kubectl logs efs-test-1
+#   kubectl logs efs-test-2
+#   kubectl exec efs-test-1 -- cat /data/shared.txt
+#
+#   # Cleanup
+#   kubectl delete pod efs-test-1 efs-test-2
+#   kubectl delete pvc efs-claim
+#   kubectl delete sc efs-sc
+
+# ============================================
+# EFS StorageClass (Dynamic Provisioning with Access Points)
+# ============================================
+---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -25,54 +57,53 @@ spec:
   resources:
     requests:
       storage: 10Gi
+
+# ============================================
+# Test Pods - Verify shared storage across nodes
+# ============================================
 ---
-# Deployment using EFS
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: efs-app
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: efs-app
-  template:
-    metadata:
-      labels:
-        app: efs-app
-    spec:
-      nodeSelector:
-        app: test
-      containers:
-      - name: app
-        image: nginx:latest
-        ports:
-        - containerPort: 80
-        volumeMounts:
-        - name: persistent-storage
-          mountPath: /usr/share/nginx/html
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 200m
-            memory: 256Mi
-      volumes:
-      - name: persistent-storage
-        persistentVolumeClaim:
-          claimName: efs-claim
----
-# Service
 apiVersion: v1
-kind: Service
+kind: Pod
 metadata:
-  name: efs-app
+  name: efs-test-1
 spec:
-  selector:
-    app: efs-app
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 80
-  type: ClusterIP
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c", "echo 'Hello from Pod 1' >> /data/shared.txt && cat /data/shared.txt && sleep infinity"]
+    volumeMounts:
+    - name: efs-storage
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  volumes:
+  - name: efs-storage
+    persistentVolumeClaim:
+      claimName: efs-claim
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-test-2
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c", "sleep 5 && echo 'Hello from Pod 2' >> /data/shared.txt && cat /data/shared.txt && sleep infinity"]
+    volumeMounts:
+    - name: efs-storage
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  volumes:
+  - name: efs-storage
+    persistentVolumeClaim:
+      claimName: efs-claim

@@ -1,13 +1,32 @@
 ---
-# S3 CSI Driver Examples
+# S3 CSI Driver Test Examples
 # Supports both Standard S3 and S3 Express One Zone (Directory Buckets)
 #
 # Prerequisites:
-#   1. Install S3 CSI Driver: ./scripts/option_install_csi_drivers.sh s3 <bucket-arns>
-#   2. Replace ${S3_BUCKET_NAME} with your bucket name
+#   1. Install S3 CSI Driver:
+#      INSTALL_DRIVERS=s3 S3_BUCKET_ARNS="arn:aws:s3:::bucket1,arn:aws:s3express:region:account:bucket/express-bucket" ./scripts/option_install_csi_drivers.sh
+#   2. Replace ${S3_BUCKET_NAME} and ${S3_EXPRESS_BUCKET_NAME} with your bucket names
+#   3. Replace ${AWS_REGION} with your region (e.g., us-east-2)
 #
-# S3 Express One Zone bucket naming: <name>--<az-id>--x-s3
-# Example: my-bucket--usw2-az1--x-s3
+# Quick Test:
+#   # Set variables
+#   export S3_BUCKET_NAME=your-standard-bucket
+#   export S3_EXPRESS_BUCKET_NAME=your-bucket--use2-az1--x-s3
+#   export AWS_REGION=us-east-2
+#
+#   # Apply manifests
+#   envsubst < examples/s3-app.yaml | kubectl apply -f -
+#
+#   # Verify
+#   kubectl get pv,pvc
+#   kubectl get pods -l app=s3-app
+#   kubectl logs s3-test
+#   kubectl logs s3-express-test
+#
+#   # Cleanup
+#   kubectl delete pod s3-test s3-express-test
+#   kubectl delete pvc s3-claim s3-express-claim
+#   kubectl delete pv s3-pv s3-express-pv
 
 # ============================================
 # Example 1: Standard S3 Bucket (Static Provisioning)
@@ -45,48 +64,64 @@ spec:
       storage: 100Gi
   volumeName: s3-pv
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Pod
 metadata:
-  name: s3-app
+  name: s3-test
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: s3-app
-  template:
-    metadata:
-      labels:
-        app: s3-app
-    spec:
-      nodeSelector:
-        app: eks-utils
-      containers:
-      - name: app
-        image: public.ecr.aws/amazonlinux/amazonlinux:2023
-        command: ["/bin/sh"]
-        args: ["-c", "echo 'Testing S3 CSI Driver' > /data/test.txt && tail -f /dev/null"]
-        volumeMounts:
-        - name: s3-storage
-          mountPath: /data
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 200m
-            memory: 256Mi
-      volumes:
-      - name: s3-storage
-        persistentVolumeClaim:
-          claimName: s3-claim
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c", "echo 'Hello S3 Standard' > /data/test.txt && cat /data/test.txt && ls -la /data/ && sleep infinity"]
+    volumeMounts:
+    - name: s3-storage
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  volumes:
+  - name: s3-storage
+    persistentVolumeClaim:
+      claimName: s3-claim
 
 # ============================================
 # Example 2: S3 Express One Zone (Directory Bucket)
 # ============================================
-# S3 Express One Zone provides single-digit millisecond latency
-# Bucket must be created with: aws s3api create-bucket --bucket <name>--<az-id>--x-s3 \
-#   --create-bucket-configuration '{"Location":{"Type":"AvailabilityZone","Name":"<az-id>"},"Bucket":{"DataRedundancy":"SingleAvailabilityZone","Type":"Directory"}}'
+# S3 Express One Zone provides single-digit millisecond latency for ML/AI workloads
+#
+# Key differences from Standard S3:
+#   - Bucket naming format: <name>--<az-id>--x-s3 (e.g., my-bucket--use2-az1--x-s3)
+#   - ARN format: arn:aws:s3express:<region>:<account>:bucket/<bucket-name>
+#   - Single AZ only (lower latency, no cross-AZ replication)
+#   - Different API endpoint: s3express-<az-id>.<region>.amazonaws.com
+#
+# Create S3 Express bucket:
+#   # Get AZ ID (not AZ name)
+#   aws ec2 describe-availability-zones --region us-east-2 \
+#     --query 'AvailabilityZones[0].ZoneId' --output text
+#   # Output: use2-az1
+#
+#   # Create directory bucket
+#   aws s3api create-bucket \
+#     --bucket myapp-express--use2-az1--x-s3 \
+#     --region us-east-2 \
+#     --create-bucket-configuration '{
+#       "Location": {"Type": "AvailabilityZone", "Name": "use2-az1"},
+#       "Bucket": {"DataRedundancy": "SingleAvailabilityZone", "Type": "Directory"}
+#     }'
+#
+# Install S3 CSI with Express bucket:
+#   INSTALL_DRIVERS=s3 S3_BUCKET_ARNS="arn:aws:s3express:us-east-2:123456789012:bucket/myapp-express--use2-az1--x-s3" \
+#     ./scripts/option_install_csi_drivers.sh
+#
+# List objects in Express bucket:
+#   aws s3api list-objects-v2 \
+#     --bucket myapp-express--use2-az1--x-s3 \
+#     --region us-east-2 \
+#     --endpoint-url https://s3express-use2-az1.us-east-2.amazonaws.com
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -130,15 +165,7 @@ spec:
   containers:
   - name: app
     image: public.ecr.aws/amazonlinux/amazonlinux:2023
-    command: ["/bin/sh", "-c"]
-    args:
-      - |
-        echo "Testing S3 Express One Zone mount..."
-        echo "Timestamp: $(date)"
-        echo "Hello from S3 Express One Zone! $(date)" > /data/test-$(date +%s).txt
-        ls -la /data/
-        echo "Test complete. Sleeping..."
-        sleep infinity
+    command: ["/bin/sh", "-c", "echo 'Hello S3 Express' > /data/test.txt && cat /data/test.txt && ls -la /data/ && sleep infinity"]
     volumeMounts:
     - name: s3-storage
       mountPath: /data
@@ -146,9 +173,6 @@ spec:
       requests:
         cpu: 100m
         memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 256Mi
   volumes:
   - name: s3-storage
     persistentVolumeClaim:
