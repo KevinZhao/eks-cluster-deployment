@@ -340,6 +340,12 @@ systemctl start containerd
 
 echo "=== LVM Setup Complete ==="
 
+# Install lustre-client for FSx Lustre support
+echo "=== Installing Lustre Client ==="
+dnf install -y lustre-client
+modprobe lustre || true
+echo "Lustre client installed"
+
 echo "=== Starting EKS Node Bootstrap ==="
 
 # Create nodeadm config
