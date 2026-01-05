@@ -51,8 +51,8 @@ source scripts/0_setup_env.sh
 # Install Karpenter for advanced auto-scaling (CPU nodes only)
 ./scripts/option_install_karpenter.sh
 
-# Install GPU support (requires Karpenter, adds P5/P5en/P6 + EFA)
-./scripts/option_install_gpu_support.sh
+# Install GPU node groups with EFA support (uses Managed Node Groups, not Karpenter)
+./scripts/option_install_gpu_nodegroups.sh
 
 # Install CSI drivers (EFS, FSx, S3)
 ./scripts/option_install_csi_drivers.sh efs      # EFS CSI Driver
@@ -141,7 +141,8 @@ manifests/                  # Kubernetes manifests
 ├── cluster/               # eksctl cluster templates
 ├── addons/                # Core addons (autoscaler, LB controller, CSI drivers)
 ├── storage/               # StorageClass definitions
-├── karpenter/             # Karpenter EC2NodeClass and NodePool configs
+├── karpenter/             # Karpenter EC2NodeClass and NodePool configs (CPU only)
+├── gpu-nodegroups/        # GPU managed node group templates
 └── iam/                   # IAM policy templates
 
 docs/                      # Additional documentation
@@ -232,7 +233,7 @@ error "message"         # Error logging and exit 1
 warn "message"          # Warning logging (no exit)
 ```
 
-## Karpenter Node Support
+## Karpenter Node Support (CPU Only)
 
 **CPU Nodes (Graviton/x86):** `option_install_karpenter.sh`
 - EC2NodeClass: `manifests/karpenter/ec2nodeclass-graviton.yaml`, `ec2nodeclass-x86.yaml`
@@ -240,12 +241,23 @@ warn "message"          # Warning logging (no exit)
 - x86 (AMD64): r7i.8xlarge
 - LVM configuration for containerd data volume
 
-**GPU Nodes (P5/P5en/P6):** `option_install_gpu_support.sh`
-- EC2NodeClass: `manifests/karpenter/ec2nodeclass-gpu-*.yaml` (P5/P5en/P6 with on-demand/ODCR/CB variants)
-- EFA multi-NIC setup via DaemonSet (P5: 31, P5en: 15, P6: 7 interfaces)
-- NVIDIA drivers, EFA drivers, NCCL plugin auto-installed
-- Lustre client pre-installed for FSx Lustre support
-- NodePools for different pricing: on-demand, spot, ODCR, capacity blocks
+## GPU Node Support (Managed Node Groups)
+
+**GPU Nodes (P5/P5en/P6):** `option_install_gpu_nodegroups.sh`
+- Uses AWS Managed Node Groups (not Karpenter) for EFA multi-NIC support
+- Launch Templates pre-configure all EFA interfaces at node launch time
+- EFA interface counts:
+  - p5.48xlarge: 32 ENIs (1 primary + 31 EFA-only)
+  - p5en.48xlarge: 16 ENIs (1 primary + 15 EFA-only)
+  - p6-b200.48xlarge: 8 ENIs (1 primary + 7 EFA-only)
+- Pricing options (mutually exclusive - choose ONE):
+  - Spot: Cost-effective for fault-tolerant workloads
+  - ODCR: Guaranteed capacity with on-demand pricing
+  - Capacity Block: Time-limited reserved capacity
+- LVM configuration for containerd (same as system nodes)
+- NVIDIA Device Plugin installed via kubectl (with host library symlinks)
+- Node labels: `workload-type=gpu`, `gpu-family=p5|p5en|p6`, `purchase-option=spot|odcr|cb`
+- Taints: `nvidia.com/gpu:NoSchedule`
 
 ## Testing and Validation
 
