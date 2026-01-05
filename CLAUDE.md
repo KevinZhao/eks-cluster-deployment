@@ -194,7 +194,7 @@ System nodes (`app=eks-utils` label) run cluster infrastructure:
 All CSI drivers are optional (via `option_install_csi_drivers.sh`):
 - **EBS**: Block storage with gp3 (default) and io2 StorageClasses
 - **EFS**: Shared filesystem across pods/nodes
-- **FSx**: Lustre for HPC/ML workloads
+- **FSx**: Lustre for HPC/ML workloads (requires PERSISTENT_2 for AL2023 lustre-client 2.15 compatibility)
 - **S3**: Object storage mounting (Standard S3 and S3 Express One Zone, single replica - no HA needed)
 
 ## Key Development Patterns

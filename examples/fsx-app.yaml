@@ -1,0 +1,154 @@
+---
+# FSx Lustre CSI Driver Test Examples
+# High-performance parallel filesystem for HPC/ML workloads
+#
+# Prerequisites:
+#   1. Install FSx CSI Driver:
+#      INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
+#   2. Create FSx Lustre filesystem with PERSISTENT_2 deployment type
+#   3. Install lustre-client on nodes (required for AL2023)
+#
+# IMPORTANT: Lustre Version Compatibility
+#   - AL2023 lustre-client version: 2.15.x
+#   - FSx SCRATCH_2 server version: 2.10.x (INCOMPATIBLE)
+#   - FSx PERSISTENT_2 server version: 2.15.x (COMPATIBLE)
+#
+#   Use PERSISTENT_2 deployment type for AL2023 nodes!
+#
+# Create FSx Lustre (PERSISTENT_2):
+#   aws fsx create-file-system \
+#     --file-system-type LUSTRE \
+#     --storage-capacity 1200 \
+#     --subnet-ids subnet-xxx \
+#     --security-group-ids sg-xxx \
+#     --lustre-configuration '{
+#       "DeploymentType": "PERSISTENT_2",
+#       "PerUnitStorageThroughput": 125,
+#       "DataCompressionType": "LZ4"
+#     }' \
+#     --tags Key=Name,Value=${CLUSTER_NAME}-fsx \
+#     --region ${AWS_REGION}
+#
+# Install lustre-client on nodes (via SSM):
+#   aws ssm send-command --instance-ids <node-instance-id> \
+#     --document-name "AWS-RunShellScript" \
+#     --parameters 'commands=["dnf install -y lustre-client && modprobe lustre"]'
+#
+# Quick Test:
+#   # Set variables
+#   export FSX_ID=fs-xxxxxxxxxxxxxxxxx
+#   export FSX_DNS=fs-xxx.fsx.region.amazonaws.com
+#   export FSX_MOUNT_NAME=xxxxx
+#
+#   # Apply manifests
+#   envsubst < examples/fsx-app.yaml | kubectl apply -f -
+#
+#   # Verify
+#   kubectl get pv,pvc | grep fsx
+#   kubectl get pods fsx-test-1 fsx-test-2 -o wide
+#   kubectl logs fsx-test-1
+#
+#   # Cleanup
+#   kubectl delete pod fsx-test-1 fsx-test-2
+#   kubectl delete pvc fsx-claim
+#   kubectl delete pv fsx-pv
+
+# ============================================
+# FSx Lustre PV (Static Provisioning)
+# ============================================
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: fsx-pv
+spec:
+  capacity:
+    storage: 1200Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  csi:
+    driver: fsx.csi.aws.com
+    volumeHandle: ${FSX_ID}
+    volumeAttributes:
+      dnsname: ${FSX_DNS}
+      mountname: ${FSX_MOUNT_NAME}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-claim
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1200Gi
+  volumeName: fsx-pv
+
+# ============================================
+# Test Pods - Verify high-performance shared storage
+# ============================================
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fsx-test-1
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "FSx Lustre Test - Pod 1"
+        echo "Writing 100MB test file..."
+        dd if=/dev/zero of=/data/testfile bs=1M count=100
+        ls -lh /data/
+        df -h /data
+        sleep infinity
+    volumeMounts:
+    - name: fsx-storage
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+  volumes:
+  - name: fsx-storage
+    persistentVolumeClaim:
+      claimName: fsx-claim
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fsx-test-2
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "FSx Lustre Test - Pod 2"
+        sleep 15
+        echo "Verifying shared file from Pod 1..."
+        ls -lh /data/
+        md5sum /data/testfile
+        sleep infinity
+    volumeMounts:
+    - name: fsx-storage
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+  volumes:
+  - name: fsx-storage
+    persistentVolumeClaim:
+      claimName: fsx-claim

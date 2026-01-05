@@ -454,5 +454,15 @@ aws s3 rb "s3://${STANDARD_BUCKET}" --force --region ${AWS_REGION}
 
 | 日期 | 测试项 | 结果 | 备注 |
 |------|--------|------|------|
+| 2026-01-05 | S3 Standard 挂载 (gpu-ohio) | 通过 | Pod 成功读写文件到 bucket |
+| 2026-01-05 | S3 Express One Zone 挂载 (gpu-ohio) | 通过 | 单位数毫秒延迟，适合 ML 场景 |
 | 2026-01-03 | S3 Express One Zone 读写 | 通过 | 需要 authenticationSource: driver |
 | 2026-01-03 | IAM 权限更新 | 通过 | 需要重启 s3-csi-node |
+
+## 非交互式安装
+
+```bash
+# 环境变量方式安装 S3 CSI Driver
+INSTALL_DRIVERS=s3 S3_BUCKET_ARNS="arn:aws:s3:::bucket1,arn:aws:s3express:region:account:bucket/express-bucket" \
+  ./scripts/option_install_csi_drivers.sh
+```
