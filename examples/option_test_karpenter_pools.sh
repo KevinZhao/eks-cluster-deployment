@@ -55,6 +55,7 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/arch: arm64
+        karpenter.sh/nodepool: graviton
       containers:
       - name: inflate
         image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
@@ -64,7 +65,7 @@ spec:
             memory: 1.5Gi
 EOF
 
-echo "  ✓ Created inflate-graviton deployment"
+echo "  ✓ Created inflate-graviton deployment (targets Karpenter graviton pool only)"
 
 # 6. 创建测试部署 - x86
 echo ""
@@ -88,6 +89,7 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/arch: amd64
+        karpenter.sh/nodepool: x86
       containers:
       - name: inflate
         image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
@@ -97,7 +99,7 @@ spec:
             memory: 1.5Gi
 EOF
 
-echo "  ✓ Created inflate-x86 deployment"
+echo "  ✓ Created inflate-x86 deployment (targets Karpenter x86 pool only)"
 
 # 7. 测试 Graviton 池子
 echo ""

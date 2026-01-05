@@ -99,10 +99,14 @@ EOF
     sed -e "s/\${IO2_IOPS}/${IO2_IOPS}/g" \
         "${PROJECT_ROOT}/manifests/storage/storageclass.yaml" | kubectl apply -f -
 
-    # 7. 删除旧的 gp2 StorageClass
-    if kubectl get storageclass gp2 &>/dev/null; then
-        echo "Removing deprecated gp2 StorageClass..."
-        kubectl delete storageclass gp2 || echo "Warning: Failed to delete gp2"
+    # 7. 删除旧的 gp2 StorageClass (only after gp3 is confirmed ready)
+    if kubectl get storageclass gp3 &>/dev/null; then
+        if kubectl get storageclass gp2 &>/dev/null; then
+            echo "gp3 StorageClass confirmed, removing deprecated gp2..."
+            kubectl delete storageclass gp2 || echo "Warning: Failed to delete gp2"
+        fi
+    else
+        echo "Warning: gp3 StorageClass not found, keeping gp2 as fallback"
     fi
 
     # 8. 验证
