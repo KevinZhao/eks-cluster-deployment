@@ -140,7 +140,7 @@ create_gpu_node_iam_role() {
                     "Action": "sts:AssumeRole"
                 }]
             }' \
-            --tags Key=Cluster,Value="${CLUSTER_NAME}" Key=Purpose,Value=gpu-nodes >/dev/null
+            --tags Key=Cluster,Value="${CLUSTER_NAME}" Key=Purpose,Value=gpu-nodes Key=business,Value=middleware Key=resource,Value=eks >/dev/null
 
         echo "IAM Role created"
     fi
@@ -209,7 +209,7 @@ create_gpu_security_group() {
             --description "Security group for GPU nodes with EFA" \
             --vpc-id "${VPC_ID}" \
             --region "${AWS_REGION}" \
-            --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=${GPU_SG_NAME}},{Key=Cluster,Value=${CLUSTER_NAME}}]" \
+            --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=${GPU_SG_NAME}},{Key=Cluster,Value=${CLUSTER_NAME}},{Key=business,Value=middleware},{Key=resource,Value=eks}]" \
             --query 'GroupId' \
             --output text)
 
@@ -450,14 +450,18 @@ lt_data = {
                 {"Key": "Name", "Value": "${CLUSTER_NAME}-gpu-${gpu_type}-node"},
                 {"Key": "kubernetes.io/cluster/${CLUSTER_NAME}", "Value": "owned"},
                 {"Key": "gpu-family", "Value": "${gpu_type}"},
-                {"Key": "purchase-option", "Value": "${purchase_option}"}
+                {"Key": "purchase-option", "Value": "${purchase_option}"},
+                {"Key": "business", "Value": "middleware"},
+                {"Key": "resource", "Value": "eks"}
             ]
         },
         {
             "ResourceType": "volume",
             "Tags": [
                 {"Key": "Name", "Value": "${CLUSTER_NAME}-gpu-${gpu_type}-volume"},
-                {"Key": "kubernetes.io/cluster/${CLUSTER_NAME}", "Value": "owned"}
+                {"Key": "kubernetes.io/cluster/${CLUSTER_NAME}", "Value": "owned"},
+                {"Key": "business", "Value": "middleware"},
+                {"Key": "resource", "Value": "eks"}
             ]
         }
     ]
@@ -571,7 +575,7 @@ create_gpu_nodegroup() {
         --scaling-config "minSize=${GPU_NODE_MIN_SIZE},maxSize=${GPU_NODE_MAX_SIZE},desiredSize=${GPU_NODE_DESIRED_CAPACITY}" \
         --labels "workload-type=gpu,gpu-family=${gpu_type},purchase-option=${purchase_option}" \
         --taints "key=nvidia.com/gpu,value=true,effect=NO_SCHEDULE" \
-        --tags "k8s.io/cluster-autoscaler/enabled=true,k8s.io/cluster-autoscaler/${CLUSTER_NAME}=owned,gpu-family=${gpu_type}" \
+        --tags "k8s.io/cluster-autoscaler/enabled=true,k8s.io/cluster-autoscaler/${CLUSTER_NAME}=owned,gpu-family=${gpu_type},business=middleware,resource=eks" \
         --region "${AWS_REGION}"
 
     echo "Nodegroup ${ng_name} creation initiated"

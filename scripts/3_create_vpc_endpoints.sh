@@ -78,6 +78,8 @@ aws ec2 create-tags \
     --resources "${SG_ID}" \
     --tags "Key=Name,Value=${CLUSTER_NAME}-vpc-endpoints-sg" \
            "Key=Cluster,Value=${CLUSTER_NAME}" \
+           "Key=business,Value=middleware" \
+           "Key=resource,Value=eks" \
     --no-cli-pager 2>/dev/null || true
 
 echo -e "${GREEN}✓ Security group created${NC}"

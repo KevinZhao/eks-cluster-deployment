@@ -108,11 +108,18 @@ spec:
 
     --==BOUNDARY==--
 
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+
   tags:
     Name: "${CLUSTER_NAME}-karpenter-x86"
-    Environment: "${ENVIRONMENT}"
-    ManagedBy: "karpenter"
-    Architecture: "amd64"
+    Environment: production
+    ManagedBy: karpenter
+    Architecture: amd64
+    karpenter.sh/discovery: "${CLUSTER_NAME}"
     business: middleware
     resource: eks
     bdm-rev: "2025-12-26-3"

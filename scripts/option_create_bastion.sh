@@ -306,7 +306,7 @@ if [ -z "${INSTANCE_ID}" ]; then
         --subnet-id ${PRIVATE_SUBNET_A} \
         --security-group-ids ${VPC_ENDPOINT_SG} \
         --iam-instance-profile Name=EKS-Deploy-Profile \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=EKS-Deploy-Bastion-${CLUSTER_NAME}},{Key=Purpose,Value=EKS-Deployment},{Key=Cluster,Value=${CLUSTER_NAME}}]" \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=EKS-Deploy-Bastion-${CLUSTER_NAME}},{Key=Purpose,Value=EKS-Deployment},{Key=Cluster,Value=${CLUSTER_NAME}},{Key=business,Value=middleware},{Key=resource,Value=eks}]" \
         --region ${AWS_REGION} \
         --query 'Instances[0].InstanceId' \
         --output text)
