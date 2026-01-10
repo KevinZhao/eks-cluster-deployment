@@ -1,12 +1,13 @@
 ---
 # FSx Lustre CSI Driver Test Examples
-# High-performance parallel filesystem for HPC/ML workloads
+# High-performance parallel filesystem for GPU/ML workloads with EFA
 #
 # Prerequisites:
 #   1. Install FSx CSI Driver:
 #      INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
 #   2. Create FSx Lustre filesystem with PERSISTENT_2 deployment type
-#   3. Install lustre-client on nodes (required for AL2023)
+#   3. Install lustre-client on GPU nodes (required for AL2023)
+#   4. GPU node group deployed with EFA enabled
 #
 # IMPORTANT: Lustre Version Compatibility
 #   - AL2023 lustre-client version: 2.15.x
@@ -15,7 +16,7 @@
 #
 #   Use PERSISTENT_2 deployment type for AL2023 nodes!
 #
-# Create FSx Lustre (PERSISTENT_2):
+# Create FSx Lustre (PERSISTENT_2 with EFA-optimized throughput):
 #   aws fsx create-file-system \
 #     --file-system-type LUSTRE \
 #     --storage-capacity 1200 \
@@ -23,16 +24,18 @@
 #     --security-group-ids sg-xxx \
 #     --lustre-configuration '{
 #       "DeploymentType": "PERSISTENT_2",
-#       "PerUnitStorageThroughput": 125,
+#       "PerUnitStorageThroughput": 250,
 #       "DataCompressionType": "LZ4"
 #     }' \
 #     --tags Key=Name,Value=${CLUSTER_NAME}-fsx \
 #     --region ${AWS_REGION}
 #
-# Install lustre-client on nodes (via SSM):
-#   aws ssm send-command --instance-ids <node-instance-id> \
+# Install lustre-client on GPU nodes (via SSM):
+#   INSTANCE_ID=<gpu-node-instance-id>
+#   aws ssm send-command --instance-ids "${INSTANCE_ID}" \
 #     --document-name "AWS-RunShellScript" \
-#     --parameters 'commands=["dnf install -y lustre-client && modprobe lustre"]'
+#     --parameters 'commands=["dnf install -y lustre-client && modprobe lustre"]' \
+#     --region ${AWS_REGION}
 #
 # Quick Test:
 #   # Set variables
@@ -88,35 +91,52 @@ spec:
   volumeName: fsx-pv
 
 # ============================================
-# Test Pods - Verify high-performance shared storage
+# Test Pods - GPU nodes with EFA support
 # ============================================
 ---
 apiVersion: v1
 kind: Pod
 metadata:
   name: fsx-test-1
+  labels:
+    app: fsx-test
 spec:
   nodeSelector:
-    app: eks-utils
+    workload-type: gpu
+  tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
   containers:
   - name: app
     image: public.ecr.aws/amazonlinux/amazonlinux:2023
     command: ["/bin/sh", "-c"]
     args:
       - |
-        echo "FSx Lustre Test - Pod 1"
+        echo "=== FSx Lustre Test - Pod 1 (GPU Node) ==="
+        echo "Node: $(hostname)"
+        echo ""
         echo "Writing 100MB test file..."
         dd if=/dev/zero of=/data/testfile bs=1M count=100
+        echo ""
+        echo "File created:"
         ls -lh /data/
+        echo ""
+        echo "Mount info:"
         df -h /data
+        echo ""
+        echo "Test complete. Sleeping..."
         sleep infinity
     volumeMounts:
     - name: fsx-storage
       mountPath: /data
     resources:
       requests:
-        cpu: 100m
-        memory: 256Mi
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
   volumes:
   - name: fsx-storage
     persistentVolumeClaim:
@@ -126,28 +146,43 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: fsx-test-2
+  labels:
+    app: fsx-test
 spec:
   nodeSelector:
-    app: eks-utils
+    workload-type: gpu
+  tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
   containers:
   - name: app
     image: public.ecr.aws/amazonlinux/amazonlinux:2023
     command: ["/bin/sh", "-c"]
     args:
       - |
-        echo "FSx Lustre Test - Pod 2"
+        echo "=== FSx Lustre Test - Pod 2 (GPU Node) ==="
+        echo "Node: $(hostname)"
+        echo ""
         sleep 15
         echo "Verifying shared file from Pod 1..."
         ls -lh /data/
+        echo ""
+        echo "File checksum:"
         md5sum /data/testfile
+        echo ""
+        echo "Test complete. Sleeping..."
         sleep infinity
     volumeMounts:
     - name: fsx-storage
       mountPath: /data
     resources:
       requests:
-        cpu: 100m
-        memory: 256Mi
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
   volumes:
   - name: fsx-storage
     persistentVolumeClaim:
