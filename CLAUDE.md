@@ -29,11 +29,11 @@ source scripts/0_setup_env.sh
 # 4. Create VPC endpoints
 ./scripts/3_create_vpc_endpoints.sh
 
-# 5. Check local environment (alternative to bastion)
-./scripts/4_check_environment.sh
+# 5. Install EKS cluster control plane (~8-10 min)
+./scripts/4_install_eks_cluster.sh
 
-# 6. Install EKS cluster control plane (~8-10 min)
-./scripts/5_install_eks_cluster.sh
+# 6. Check local environment (optional)
+./scripts/5_check_environment.sh
 
 # 7. Create system nodegroup with LVM (~8-12 min)
 ./scripts/6_create_system_nodegroup.sh
@@ -144,11 +144,9 @@ examples/                   # Example/test scripts and manifests
 └── *.yaml                 # Example workload manifests
 
 manifests/                  # Kubernetes manifests
-├── cluster/               # eksctl cluster templates
 ├── addons/                # Core addons (autoscaler, LB controller, CSI drivers)
 ├── storage/               # StorageClass definitions
 ├── karpenter/             # Karpenter EC2NodeClass and NodePool configs (CPU only)
-├── gpu-nodegroups/        # GPU managed node group templates
 └── iam/                   # IAM policy templates
 
 docs/                      # Additional documentation

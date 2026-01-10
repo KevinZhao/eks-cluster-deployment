@@ -32,7 +32,7 @@ chmod +x scripts/*.sh
 ./scripts/3_create_vpc_endpoints.sh     # 创建 VPC Endpoints
 
 # 部署 EKS 集群
-./scripts/5_install_eks_cluster.sh      # 创建控制平面（8-10分钟）
+./scripts/4_install_eks_cluster.sh      # 创建控制平面（8-10分钟）
 ./scripts/6_create_system_nodegroup.sh  # 创建系统节点组（8-12分钟）
 ./scripts/7_install_eks_addon.sh        # 安装核心组件（5-8分钟）
 
@@ -114,8 +114,8 @@ EKS Cluster (Kubernetes 1.34)
 | `1_enable_vpc_dns.sh` | 启用 VPC DNS | 任意 | <1分钟 |
 | `2_validate_network_environment.sh` | 验证网络配置（可选） | 任意 | <1分钟 |
 | `3_create_vpc_endpoints.sh` | 创建 VPC Endpoints | 任意 | 2-3分钟 |
-| `4_check_environment.sh` | 检查本地环境（可选） | 任意 | <1分钟 |
-| `5_install_eks_cluster.sh` | 创建集群控制平面 | VPC 内 | 8-10分钟 |
+| `5_check_environment.sh` | 检查本地环境（可选） | 任意 | <1分钟 |
+| `4_install_eks_cluster.sh` | 创建集群控制平面 | VPC 内 | 8-10分钟 |
 | `6_create_system_nodegroup.sh` | 创建系统节点组（LVM） | VPC 内 | 8-12分钟 |
 | `7_install_eks_addon.sh` | 安装核心组件 | VPC 内 | 5-8分钟 |
 
@@ -267,8 +267,8 @@ eks-cluster-deployment/
 │   ├── 1_enable_vpc_dns.sh            # 启用 VPC DNS
 │   ├── 2_validate_network_environment.sh  # 验证网络配置
 │   ├── 3_create_vpc_endpoints.sh      # 创建 VPC Endpoints
-│   ├── 4_check_environment.sh         # 检查本地环境
-│   ├── 5_install_eks_cluster.sh       # 创建集群控制平面
+│   ├── 5_check_environment.sh         # 检查本地环境
+│   ├── 4_install_eks_cluster.sh       # 创建集群控制平面
 │   ├── 6_create_system_nodegroup.sh   # 创建系统节点组（LVM）
 │   ├── 7_install_eks_addon.sh         # 安装核心组件
 │   ├── option_create_bastion.sh       # 创建堡垒机（可选）

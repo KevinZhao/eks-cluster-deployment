@@ -1,8 +1,8 @@
 # EKS 集群部署标准操作流程 (SOP)
 
 ## 文档信息
-- **版本**: v1.0
-- **最后更新**: 2025-12-29
+- **版本**: v1.1
+- **最后更新**: 2026-01-10
 - **适用范围**: EKS 1.34 集群自动化部署
 - **执行环境**: AWS VPC 内的堡垒机 (Bastion Host)
 
@@ -71,7 +71,7 @@ EKS Cluster (Kubernetes 1.34)
 **选项 3：使用 eksctl** - 可以在集群创建时自动创建 VPC
 ```bash
 # 注意：本 SOP 脚本假设 VPC 已存在，如需 eksctl 自动创建 VPC，
-# 需要修改 scripts/5_install_eks_cluster.sh 中的集群配置
+# 需要修改 scripts/4_install_eks_cluster.sh 中的集群配置
 ```
 
 **网络规划建议**：
@@ -500,7 +500,7 @@ aws ec2 describe-vpc-endpoints \
 ### 步骤 3.1：创建集群控制平面
 
 ```bash
-./scripts/5_install_eks_cluster.sh
+./scripts/4_install_eks_cluster.sh
 ```
 
 **执行内容**：
@@ -1610,7 +1610,7 @@ SYSTEM_NODE_MAX_SIZE=6                 # 最大节点数
 | 2_validate_network_environment.sh | 验证网络配置 | VPC 外/内 | 可选 |
 | 3_create_vpc_endpoints.sh | 创建 VPC Endpoints | VPC 外/内 | 推荐 |
 | option_create_bastion.sh | 创建堡垒机 | VPC 外 | 推荐 |
-| 5_install_eks_cluster.sh | 创建集群控制平面 | VPC 内 | ✅ |
+| 4_install_eks_cluster.sh | 创建集群控制平面 | VPC 内 | ✅ |
 | 6_create_system_nodegroup.sh | 创建系统节点组 | VPC 内 | ✅ |
 | 7_install_eks_addon.sh | 安装集群 Addons | VPC 内 | ✅ |
 
@@ -1698,9 +1698,10 @@ SYSTEM_NODE_MAX_SIZE=6                 # 最大节点数
 | 版本 | 日期 | 变更内容 | 作者 |
 |------|------|----------|------|
 | v1.0 | 2025-12-29 | 初始版本 | Platform Team |
+| v1.1 | 2026-01-10 | 修复脚本编号引用；简化 FSx 测试步骤 | Platform Team |
 
 ---
 
 **文档维护者**: Platform Team
-**最后审核**: 2026-01-03
-**下次审核**: 2026-04-03
+**最后审核**: 2026-01-10
+**下次审核**: 2026-04-10
