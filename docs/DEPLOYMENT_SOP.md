@@ -551,6 +551,70 @@ aws eks describe-cluster \
 
 **执行位置**：堡垒机
 
+### 可选：配置 EC2 SSH Key
+
+默认情况下，节点使用 **AWS Systems Manager Session Manager** 进行访问，无需 SSH Key。如需配置传统 SSH 访问，可在创建节点组前添加 EC2 Key Pair。
+
+**方法一：修改脚本添加 Key 支持**
+
+1. 在 `.env` 文件中添加 Key 名称：
+```bash
+# EC2 Key Pair 名称（可选，用于 SSH 访问节点）
+EC2_KEY_NAME=my-eks-key
+```
+
+2. 修改 `scripts/6_create_system_nodegroup.sh` 中的 `create_launch_template()` 函数，在 Launch Template 数据中添加 `KeyName`：
+```bash
+# 找到 aws ec2 create-launch-template 命令，在 LaunchTemplateData JSON 中添加：
+"KeyName": "${EC2_KEY_NAME}",
+
+# 示例（在 ImageId 后添加）：
+--launch-template-data "{
+  \"ImageId\": \"${AMI_ID}\",
+  \"KeyName\": \"${EC2_KEY_NAME}\",
+  \"InstanceType\": \"${SYSTEM_NODE_INSTANCE_TYPE}\",
+  ...
+}"
+```
+
+**方法二：手动更新现有 Launch Template**
+
+如果节点组已创建，可通过创建新的 Launch Template 版本添加 Key：
+
+```bash
+# 1. 获取现有 Launch Template ID
+LT_NAME="${CLUSTER_NAME}-eks-utils-lt"
+LT_ID=$(aws ec2 describe-launch-templates \
+  --launch-template-names "${LT_NAME}" \
+  --query 'LaunchTemplates[0].LaunchTemplateId' \
+  --output text \
+  --region ${AWS_REGION})
+
+# 2. 创建新版本（添加 KeyName）
+aws ec2 create-launch-template-version \
+  --launch-template-id "${LT_ID}" \
+  --source-version 1 \
+  --launch-template-data "{\"KeyName\": \"my-eks-key\"}" \
+  --region ${AWS_REGION}
+
+# 3. 设置新版本为默认版本
+aws ec2 modify-launch-template \
+  --launch-template-id "${LT_ID}" \
+  --default-version 2 \
+  --region ${AWS_REGION}
+
+# 4. 更新节点组以使用新版本（需要滚动更新节点）
+aws eks update-nodegroup-version \
+  --cluster-name ${CLUSTER_NAME} \
+  --nodegroup-name eks-utils \
+  --launch-template name=${LT_NAME},version=2 \
+  --region ${AWS_REGION}
+```
+
+**注意**：使用 SSH 访问节点时，还需确保：
+- 节点安全组允许 22 端口入站
+- 从堡垒机或其他跳板机访问
+
 ### 步骤 4.1：创建系统节点组（带 LVM 配置）
 
 ```bash
@@ -1026,6 +1090,291 @@ kubectl logs ebs-test-pod-2
 # 清理测试资源
 kubectl delete pod ebs-test-pod-2
 kubectl delete pvc ebs-test-pvc
+```
+
+### 步骤 6.5：测试 EFS 共享存储（可选）
+
+```bash
+# 前置条件：已安装 EFS CSI Driver 并创建 EFS 文件系统
+# INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
+
+# 设置 EFS ID
+export EFS_ID=fs-xxxxxxxxxxxxxxxxx
+
+# 创建 StorageClass、PVC 和测试 Pod
+cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: ${EFS_ID}
+  directoryPerms: "700"
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-test-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-test-pod-1
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c", "echo 'Hello from Pod 1' >> /data/shared.txt && cat /data/shared.txt && sleep infinity"]
+    volumeMounts:
+    - name: efs-storage
+      mountPath: /data
+  volumes:
+  - name: efs-storage
+    persistentVolumeClaim:
+      claimName: efs-test-pvc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: efs-test-pod-2
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c", "sleep 5 && echo 'Hello from Pod 2' >> /data/shared.txt && cat /data/shared.txt && sleep infinity"]
+    volumeMounts:
+    - name: efs-storage
+      mountPath: /data
+  volumes:
+  - name: efs-storage
+    persistentVolumeClaim:
+      claimName: efs-test-pvc
+EOF
+
+# 等待 Pod 运行
+kubectl wait --for=condition=Ready pod/efs-test-pod-1 pod/efs-test-pod-2 --timeout=120s
+
+# 验证共享存储（两个 Pod 应该看到相同的文件内容）
+kubectl exec efs-test-pod-1 -- cat /data/shared.txt
+# 预期输出：Hello from Pod 1
+#          Hello from Pod 2
+
+# 清理测试资源
+kubectl delete pod efs-test-pod-1 efs-test-pod-2
+kubectl delete pvc efs-test-pvc
+kubectl delete sc efs-sc
+```
+
+### 步骤 6.6：测试 FSx Lustre 高性能存储（可选，GPU 场景）
+
+**⚠️ 重要说明**：
+- FSx Lustre 主要用于 GPU/ML 工作负载
+- **必须使用 PERSISTENT_2 部署类型**（AL2023 lustre-client 2.15 与 SCRATCH_2 的 2.10 版本不兼容）
+- 需要在节点上安装 lustre-client
+
+```bash
+# 前置条件：
+# 1. 已安装 FSx CSI Driver: INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
+# 2. 已创建 FSx Lustre 文件系统（PERSISTENT_2 类型）
+# 3. 节点已安装 lustre-client
+
+# 创建 FSx Lustre 文件系统（PERSISTENT_2，兼容 AL2023）
+aws fsx create-file-system \
+  --file-system-type LUSTRE \
+  --storage-capacity 1200 \
+  --subnet-ids ${PRIVATE_SUBNET_A} \
+  --security-group-ids ${CLUSTER_SG} \
+  --lustre-configuration '{
+    "DeploymentType": "PERSISTENT_2",
+    "PerUnitStorageThroughput": 125,
+    "DataCompressionType": "LZ4"
+  }' \
+  --tags Key=Name,Value=${CLUSTER_NAME}-fsx \
+  --region ${AWS_REGION}
+
+# 等待文件系统可用（约 10-15 分钟）
+aws fsx describe-file-systems --region ${AWS_REGION} \
+  --query 'FileSystems[?Tags[?Key==`Name` && Value==`'${CLUSTER_NAME}'-fsx`]].{ID:FileSystemId,Status:Lifecycle}'
+
+# 获取 FSx 信息
+export FSX_ID=fs-xxxxxxxxxxxxxxxxx
+export FSX_DNS=$(aws fsx describe-file-systems --file-system-ids ${FSX_ID} --region ${AWS_REGION} \
+  --query 'FileSystems[0].DNSName' --output text)
+export FSX_MOUNT_NAME=$(aws fsx describe-file-systems --file-system-ids ${FSX_ID} --region ${AWS_REGION} \
+  --query 'FileSystems[0].LustreConfiguration.MountName' --output text)
+
+# 在 GPU 节点上安装 lustre-client（通过 SSM）
+INSTANCE_ID=<gpu-node-instance-id>
+aws ssm send-command --instance-ids "${INSTANCE_ID}" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["dnf install -y lustre-client && modprobe lustre"]' \
+  --region ${AWS_REGION}
+
+# 创建 PV/PVC 和测试 Pod
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: fsx-pv
+spec:
+  capacity:
+    storage: 1200Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  csi:
+    driver: fsx.csi.aws.com
+    volumeHandle: ${FSX_ID}
+    volumeAttributes:
+      dnsname: ${FSX_DNS}
+      mountname: ${FSX_MOUNT_NAME}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-test-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1200Gi
+  volumeName: fsx-pv
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fsx-test-pod
+spec:
+  nodeSelector:
+    workload-type: gpu
+  tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "FSx Lustre Test"
+        dd if=/dev/zero of=/data/testfile bs=1M count=100
+        ls -lh /data/
+        df -h /data
+        sleep infinity
+    volumeMounts:
+    - name: fsx-storage
+      mountPath: /data
+  volumes:
+  - name: fsx-storage
+    persistentVolumeClaim:
+      claimName: fsx-test-pvc
+EOF
+
+# 等待 Pod 运行
+kubectl wait --for=condition=Ready pod/fsx-test-pod --timeout=300s
+
+# 查看测试结果
+kubectl logs fsx-test-pod
+
+# 清理测试资源
+kubectl delete pod fsx-test-pod
+kubectl delete pvc fsx-test-pvc
+kubectl delete pv fsx-pv
+```
+
+### 步骤 6.7：测试 S3 对象存储挂载（可选）
+
+```bash
+# 前置条件：已安装 S3 CSI Driver
+# INSTALL_DRIVERS=s3 S3_BUCKET_ARNS="arn:aws:s3:::my-bucket" ./scripts/option_install_csi_drivers.sh
+
+# 设置 S3 bucket 名称
+export S3_BUCKET_NAME=my-bucket
+
+# 创建 PV/PVC 和测试 Pod
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: s3-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  csi:
+    driver: s3.csi.aws.com
+    volumeHandle: s3-test-volume
+    volumeAttributes:
+      bucketName: ${S3_BUCKET_NAME}
+      authenticationSource: driver
+  mountOptions:
+    - allow-delete
+    - region ${AWS_REGION}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-test-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: s3-pv
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-test-pod
+spec:
+  nodeSelector:
+    app: eks-utils
+  containers:
+  - name: app
+    image: public.ecr.aws/amazonlinux/amazonlinux:2023
+    command: ["/bin/sh", "-c", "echo 'Hello S3' > /data/test.txt && cat /data/test.txt && ls -la /data/ && sleep infinity"]
+    volumeMounts:
+    - name: s3-storage
+      mountPath: /data
+  volumes:
+  - name: s3-storage
+    persistentVolumeClaim:
+      claimName: s3-test-pvc
+EOF
+
+# 等待 Pod 运行
+kubectl wait --for=condition=Ready pod/s3-test-pod --timeout=120s
+
+# 查看测试结果
+kubectl logs s3-test-pod
+
+# 验证 S3 bucket 中的文件
+aws s3 ls s3://${S3_BUCKET_NAME}/
+
+# 清理测试资源
+kubectl delete pod s3-test-pod
+kubectl delete pvc s3-test-pvc
+kubectl delete pv s3-pv
 ```
 
 ---
