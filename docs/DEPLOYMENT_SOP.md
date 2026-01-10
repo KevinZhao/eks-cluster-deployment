@@ -1184,14 +1184,16 @@ kubectl delete sc efs-sc
 **⚠️ 重要说明**：
 - FSx Lustre 主要用于 GPU/ML 工作负载
 - **必须使用 PERSISTENT_2 部署类型**（AL2023 lustre-client 2.15 与 SCRATCH_2 的 2.10 版本不兼容）
-- 需要在节点上安装 lustre-client
+- GPU 节点组脚本会自动安装 lustre-client
+
+**前置条件**：
+1. 已安装 FSx CSI Driver: `INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh`
+2. 已创建 FSx Lustre 文件系统（PERSISTENT_2 类型）
+3. 已部署 GPU 节点组（`option_install_gpu_nodegroups.sh` 会自动安装 lustre-client）
+
+#### 1. 创建 FSx Lustre 文件系统（如尚未创建）
 
 ```bash
-# 前置条件：
-# 1. 已安装 FSx CSI Driver: INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
-# 2. 已创建 FSx Lustre 文件系统（PERSISTENT_2 类型）
-# 3. 节点已安装 lustre-client
-
 # 创建 FSx Lustre 文件系统（PERSISTENT_2，兼容 AL2023）
 aws fsx create-file-system \
   --file-system-type LUSTRE \
@@ -1209,93 +1211,65 @@ aws fsx create-file-system \
 # 等待文件系统可用（约 10-15 分钟）
 aws fsx describe-file-systems --region ${AWS_REGION} \
   --query 'FileSystems[?Tags[?Key==`Name` && Value==`'${CLUSTER_NAME}'-fsx`]].{ID:FileSystemId,Status:Lifecycle}'
+```
 
-# 获取 FSx 信息
+#### 2. 设置 FSx 环境变量
+
+```bash
+# 获取 FSx 文件系统 ID
 export FSX_ID=fs-xxxxxxxxxxxxxxxxx
+
+# 自动获取 DNS 和 Mount Name
 export FSX_DNS=$(aws fsx describe-file-systems --file-system-ids ${FSX_ID} --region ${AWS_REGION} \
   --query 'FileSystems[0].DNSName' --output text)
 export FSX_MOUNT_NAME=$(aws fsx describe-file-systems --file-system-ids ${FSX_ID} --region ${AWS_REGION} \
   --query 'FileSystems[0].LustreConfiguration.MountName' --output text)
 
-# 在 GPU 节点上安装 lustre-client（通过 SSM）
-INSTANCE_ID=<gpu-node-instance-id>
-aws ssm send-command --instance-ids "${INSTANCE_ID}" \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["dnf install -y lustre-client && modprobe lustre"]' \
-  --region ${AWS_REGION}
+# 验证环境变量
+echo "FSX_ID: ${FSX_ID}"
+echo "FSX_DNS: ${FSX_DNS}"
+echo "FSX_MOUNT_NAME: ${FSX_MOUNT_NAME}"
+```
 
-# 创建 PV/PVC 和测试 Pod
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: fsx-pv
-spec:
-  capacity:
-    storage: 1200Gi
-  accessModes:
-    - ReadWriteMany
-  persistentVolumeReclaimPolicy: Retain
-  csi:
-    driver: fsx.csi.aws.com
-    volumeHandle: ${FSX_ID}
-    volumeAttributes:
-      dnsname: ${FSX_DNS}
-      mountname: ${FSX_MOUNT_NAME}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: fsx-test-pvc
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: ""
-  resources:
-    requests:
-      storage: 1200Gi
-  volumeName: fsx-pv
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: fsx-test-pod
-spec:
-  nodeSelector:
-    workload-type: gpu
-  tolerations:
-  - key: "nvidia.com/gpu"
-    operator: "Exists"
-    effect: "NoSchedule"
-  containers:
-  - name: app
-    image: public.ecr.aws/amazonlinux/amazonlinux:2023
-    command: ["/bin/sh", "-c"]
-    args:
-      - |
-        echo "FSx Lustre Test"
-        dd if=/dev/zero of=/data/testfile bs=1M count=100
-        ls -lh /data/
-        df -h /data
-        sleep infinity
-    volumeMounts:
-    - name: fsx-storage
-      mountPath: /data
-  volumes:
-  - name: fsx-storage
-    persistentVolumeClaim:
-      claimName: fsx-test-pvc
-EOF
+#### 3. 部署 FSx 测试
 
-# 等待 Pod 运行
-kubectl wait --for=condition=Ready pod/fsx-test-pod --timeout=300s
+```bash
+# 使用 envsubst 替换环境变量并部署
+envsubst < examples/fsx-app.yaml | kubectl apply -f -
+```
 
-# 查看测试结果
-kubectl logs fsx-test-pod
+#### 4. 查看结果
 
-# 清理测试资源
-kubectl delete pod fsx-test-pod
-kubectl delete pvc fsx-test-pvc
+```bash
+# 监控 Pod 状态
+kubectl get pods -l app=fsx-test -w
+
+# 查看 Pod 1 日志（写入 100MB 测试文件）
+kubectl logs fsx-test-1
+
+# 查看 Pod 2 日志（验证共享文件）
+kubectl logs fsx-test-2
+```
+
+**预期输出**：
+```
+=== fsx-test-1 ===
+Writing 100MB test file...
+100+0 records in
+100+0 records out
+104857600 bytes (105 MB, 100 MiB) copied, 0.114406 s, 917 MB/s
+
+=== fsx-test-2 ===
+Verifying shared file from Pod 1...
+-rw-r--r--. 1 root root 100M Jan 10 14:44 testfile
+File checksum: 2f282b84e7e608d5852449ed940bfc51  /data/testfile
+```
+
+#### 5. 清理测试资源
+
+```bash
+kubectl delete pod fsx-test-1 fsx-test-2
+kubectl delete pvc fsx-claim
 kubectl delete pv fsx-pv
 ```
 
