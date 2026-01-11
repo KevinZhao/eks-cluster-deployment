@@ -448,10 +448,16 @@ echo "Step 11: Deploying EC2NodeClass and NodePool..."
 export CLUSTER_NAME
 export AWS_REGION
 
+# SSH public key for Karpenter nodes (optional)
+if [[ -n "${SSH_PUBLIC_KEY:-}" ]]; then
+    echo "  SSH public key will be injected into Karpenter nodes"
+fi
+
 # 部署 Graviton 专用配置 (r8g.8xlarge)
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        -e "s|\${SSH_PUBLIC_KEY}|${SSH_PUBLIC_KEY:-}|g" \
         "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
@@ -463,6 +469,7 @@ fi
 if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
+        -e "s|\${SSH_PUBLIC_KEY}|${SSH_PUBLIC_KEY:-}|g" \
         "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-x86.yaml" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \

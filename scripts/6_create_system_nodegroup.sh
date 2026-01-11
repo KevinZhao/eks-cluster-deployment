@@ -418,6 +418,14 @@ EOF_USERDATA
 create_launch_template() {
     LT_NAME="${CLUSTER_NAME}-eks-utils-lt"
 
+    # 构建可选的 KeyName JSON 片段
+    if [[ -n "${EC2_KEY_NAME:-}" ]]; then
+        KEY_NAME_JSON="\"KeyName\": \"${EC2_KEY_NAME}\","
+        echo "Using EC2 Key Pair: ${EC2_KEY_NAME}"
+    else
+        KEY_NAME_JSON=""
+    fi
+
     # 检查Launch Template是否已存在（幂等性）
     if aws ec2 describe-launch-templates \
         --launch-template-names "${LT_NAME}" \
@@ -435,6 +443,7 @@ create_launch_template() {
             --launch-template-id "${LT_ID}" \
             --launch-template-data "{
               \"ImageId\": \"${AMI_ID}\",
+              ${KEY_NAME_JSON}
               \"InstanceType\": \"${SYSTEM_NODE_INSTANCE_TYPE}\",
               \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
               \"BlockDeviceMappings\": [
@@ -497,6 +506,7 @@ create_launch_template() {
             --launch-template-name "${LT_NAME}" \
             --launch-template-data "{
               \"ImageId\": \"${AMI_ID}\",
+              ${KEY_NAME_JSON}
               \"InstanceType\": \"${SYSTEM_NODE_INSTANCE_TYPE}\",
               \"UserData\": \"$(base64 -w 0 < ${USERDATA_FILE})\",
               \"BlockDeviceMappings\": [

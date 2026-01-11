@@ -244,6 +244,9 @@ create_gpu_launch_template() {
     echo "Creating Launch Template: ${lt_name}"
     echo "  Instance Type: ${instance_type}"
     echo "  EFA-only Cards: ${efa_only_count}"
+    if [[ -n "${EC2_KEY_NAME:-}" ]]; then
+        echo "  EC2 Key Pair: ${EC2_KEY_NAME}"
+    fi
 
     # Create userdata for node bootstrap (with LVM configuration)
     local userdata_file=$(mktemp /tmp/gpu-userdata.XXXXXX.txt)
@@ -390,6 +393,7 @@ cluster_sg_id = "${CLUSTER_SG_ID}"
 efa_only_count = ${efa_only_count}
 capacity_reservation_id = "${capacity_reservation_id}"
 userdata_b64 = "${userdata_b64}"
+ec2_key_name = "${EC2_KEY_NAME:-}"
 
 # Network interfaces configuration
 # Primary: NetworkCardIndex=0, DeviceIndex=0, InterfaceType=efa (not efa-only!)
@@ -480,6 +484,10 @@ if capacity_reservation_id:
             "CapacityReservationId": capacity_reservation_id
         }
     }
+
+# Add EC2 Key Pair if specified
+if ec2_key_name:
+    lt_data["KeyName"] = ec2_key_name
 
 print(json.dumps(lt_data, indent=2))
 PYSCRIPT

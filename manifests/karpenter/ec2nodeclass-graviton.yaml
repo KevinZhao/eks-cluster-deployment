@@ -109,6 +109,21 @@ spec:
     # Start containerd with migrated data
     systemctl start containerd
 
+    --==BOUNDARY==
+    Content-Type: text/cloud-boothook; charset="us-ascii"
+
+    #!/bin/bash
+    # Inject SSH public key for Karpenter nodes (optional)
+    SSH_PUB_KEY="${SSH_PUBLIC_KEY}"
+    if [ -n "$SSH_PUB_KEY" ]; then
+      mkdir -p /home/ec2-user/.ssh
+      echo "$SSH_PUB_KEY" >> /home/ec2-user/.ssh/authorized_keys
+      chown -R ec2-user:ec2-user /home/ec2-user/.ssh
+      chmod 700 /home/ec2-user/.ssh
+      chmod 600 /home/ec2-user/.ssh/authorized_keys
+      echo "SSH public key injected for ec2-user"
+    fi
+
     --==BOUNDARY==--
 
   metadataOptions:
