@@ -366,16 +366,6 @@ kubectl debug node/<node-name> -it --image=amazonlinux -- \
 kubectl get storageclass
 ```
 
-### 常见问题
-
-**kubectl 连接超时**：由于集群使用私有 API Endpoint，必须从 VPC 内部访问。请确保通过堡垒机执行 kubectl 命令。
-
-**节点 NotReady**：最常见的原因是 LVM 配置失败。登录节点查看 `/var/log/lvm-setup.log` 获取详细错误信息。
-
-**CSI 挂载失败**：检查对应 CSI Driver 的 Pod Identity Association 是否正确配置。可以通过 `aws eks list-pod-identity-associations` 命令验证。
-
-**GPU 节点无 EFA**：确认 Launch Template 中的网络接口配置正确，不同实例类型的 EFA 网卡数量不同。
-
 ---
 
 ## 最佳实践检查清单
@@ -426,6 +416,20 @@ kubectl get storageclass
 ## 关于作者
 
 本文由 AWS 解决方案架构师团队撰写，基于多个企业客户的实际部署经验总结。如有问题或建议，欢迎通过 GitHub Issues 反馈。
+
+---
+
+## 参考链接
+
+- [Amazon EKS Blueprints](https://aws-quickstart.github.io/cdk-eks-blueprints/) - 基于 CDK 的 EKS 集群快速部署框架
+- [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/) - EKS 最佳实践指南
+- [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) - Pod Identity 官方文档
+- [Amazon VPC CNI Plugin](https://github.com/aws/amazon-vpc-cni-k8s) - VPC CNI 插件及配置说明
+- [Karpenter](https://karpenter.sh/) - Kubernetes 节点自动扩缩容
+- [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/) - ALB/NLB Ingress 控制器
+- [Mountpoint for Amazon S3](https://github.com/awslabs/mountpoint-s3) - S3 文件系统挂载
+- [Amazon FSx for Lustre](https://docs.aws.amazon.com/fsx/latest/LustreGuide/what-is.html) - 高性能并行文件系统
+- [EKS Workshop](https://www.eksworkshop.com/) - EKS 实战教程
 
 ---
 
