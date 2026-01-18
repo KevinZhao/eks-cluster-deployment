@@ -301,45 +301,44 @@ if vgs vg_data &>/dev/null; then
   echo "LVM already configured, mounting..."
   mount /dev/vg_data/lv_containerd /var/lib/containerd || true
   systemctl start containerd
-  exit 0
+else
+  # Install lvm2 and rsync
+  echo "Installing lvm2 and rsync..."
+  dnf install -y lvm2 rsync
+
+  # Create LVM
+  echo "Creating LVM on \$DISK..."
+  pvcreate "\$DISK"
+  vgcreate vg_data "\$DISK"
+  lvcreate -l 100%VG -n lv_containerd vg_data
+  mkfs.xfs /dev/vg_data/lv_containerd
+
+  # Mount and migrate data (including pre-cached images from AMI)
+  echo "Mounting and migrating containerd data..."
+  mkdir -p /mnt/runtime/containerd
+  mount /dev/vg_data/lv_containerd /mnt/runtime/containerd
+
+  echo "Copying containerd data (including pre-cached pause image) from AMI..."
+  rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true
+
+  echo "Unmounting temporary directory"
+  umount /mnt/runtime/containerd
+
+  echo "Mounting LV to final destination: /var/lib/containerd"
+  mount /dev/vg_data/lv_containerd /var/lib/containerd
+
+  # Add to fstab
+  grep -q "lv_containerd" /etc/fstab || \\
+    echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
+
+  echo "LVM setup completed successfully"
+  df -h /var/lib/containerd
+  vgs
+  lvs
+
+  # Start containerd
+  systemctl start containerd
 fi
-
-# Install lvm2 and rsync
-echo "Installing lvm2 and rsync..."
-dnf install -y lvm2 rsync
-
-# Create LVM
-echo "Creating LVM on \$DISK..."
-pvcreate "\$DISK"
-vgcreate vg_data "\$DISK"
-lvcreate -l 100%VG -n lv_containerd vg_data
-mkfs.xfs /dev/vg_data/lv_containerd
-
-# Mount and migrate data (including pre-cached images from AMI)
-echo "Mounting and migrating containerd data..."
-mkdir -p /mnt/runtime/containerd
-mount /dev/vg_data/lv_containerd /mnt/runtime/containerd
-
-echo "Copying containerd data (including pre-cached pause image) from AMI..."
-rsync -aHAX /var/lib/containerd/ /mnt/runtime/containerd/ || true
-
-echo "Unmounting temporary directory"
-umount /mnt/runtime/containerd
-
-echo "Mounting LV to final destination: /var/lib/containerd"
-mount /dev/vg_data/lv_containerd /var/lib/containerd
-
-# Add to fstab
-grep -q "lv_containerd" /etc/fstab || \\
-  echo "/dev/vg_data/lv_containerd /var/lib/containerd xfs defaults,nofail 0 2" >> /etc/fstab
-
-echo "LVM setup completed successfully"
-df -h /var/lib/containerd
-vgs
-lvs
-
-# Start containerd
-systemctl start containerd
 
 echo "=== LVM Setup Complete ==="
 
