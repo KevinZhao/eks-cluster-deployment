@@ -405,6 +405,10 @@ cat /etc/eks/nodeadm.d/nodeconfig.yaml
 echo "Running nodeadm init..."
 nodeadm init --config-source file:///etc/eks/nodeadm.d/nodeconfig.yaml
 
+# Enable services for reboot persistence
+echo "Enabling kubelet and containerd services..."
+systemctl enable kubelet containerd
+
 echo "=== EKS Node Bootstrap Complete ==="
 
 --==BOUNDARY==--

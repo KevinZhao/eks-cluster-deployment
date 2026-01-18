@@ -109,6 +109,9 @@ spec:
     # Start containerd with migrated data
     systemctl start containerd
 
+    # Enable services for reboot persistence
+    systemctl enable kubelet containerd
+
     --==BOUNDARY==
     Content-Type: text/cloud-boothook; charset="us-ascii"
 
