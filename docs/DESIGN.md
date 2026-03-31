@@ -131,3 +131,83 @@ kubectl exec test-pod -- df -h
 - [Ephemeral Storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage)
 - [XFS Project Quotas](https://www.kernel.org/doc/html/latest/filesystems/xfs-self-describing-metadata.html)
 - [EKS Managed Addons](https://docs.aws.amazon.com/eks/latest/userguide/eks-add-ons.html)
+
+---
+
+## 8. EKS 节点组 Patch 策略
+
+**状态**: 待确定
+
+### 8.1 问题背景
+
+EKS 节点需要定期打安全补丁，但需要平衡以下因素：
+- 安全性：及时应用安全补丁
+- 可用性：避免服务中断
+- 成本：最小化额外资源消耗
+
+### 8.2 当前节点组类型
+
+| 节点组类型 | 实现方式 | Patch 机制 |
+|-----------|---------|-----------|
+| System Nodegroup | Managed Node Group (eksctl) | ? |
+| Karpenter Nodes | EC2NodeClass | ? |
+| GPU Nodegroup | Managed Node Group (Launch Template) | ? |
+
+### 8.3 可选 Patch 策略
+
+#### 方案 A: SSM Patch Manager (In-place Patch)
+
+**实现**: `scripts/option_configure_ssm_patch.sh`
+
+```
+优点:
+- 节点原地更新，无需替换
+- 支持 rolling reboot (MAX_CONCURRENCY=1)
+- SSM 原生集成，可设置维护窗口
+
+缺点:
+- 需要节点 reboot，可能影响 Pod
+- 长期运行的节点可能积累配置漂移
+- 需要处理 PodDisruptionBudget
+```
+
+#### 方案 B: Node Replacement (替换节点)
+
+```
+优点:
+- 始终使用最新 AMI
+- 无配置漂移
+- 更符合 immutable infrastructure 理念
+
+缺点:
+- 需要额外容量来 drain/替换节点
+- 数据卷迁移复杂（如有 local PV）
+- Karpenter 节点天然支持，MNG 需要额外处理
+```
+
+#### 方案 C: 混合策略
+
+```
+- Karpenter 节点: 定期 drift/替换 (天然支持)
+- System/GPU MNG: SSM Patch Manager (原地更新)
+```
+
+### 8.4 待确定事项
+
+- [ ] 选择哪种 Patch 策略？(A/B/C)
+- [ ] Patch 频率？(每周/每月)
+- [ ] 维护窗口时间？(当前默认: 周六 18:00 UTC)
+- [ ] 是否需要 PodDisruptionBudget 配置？
+- [ ] Karpenter 节点如何触发 AMI 更新？(drift detection / 手动)
+- [ ] GPU 节点特殊处理？(训练任务 checkpoint)
+- [ ] Patch 失败时的告警和回滚机制？
+
+### 8.5 相关脚本
+
+- `scripts/option_configure_ssm_patch.sh` - SSM Patch Manager 配置
+
+### 8.6 参考资料
+
+- [AWS SSM Patch Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-patch.html)
+- [EKS AMI Release Notes](https://github.com/awslabs/amazon-eks-ami/releases)
+- [Karpenter Drift](https://karpenter.sh/docs/concepts/disruption/#drift)
