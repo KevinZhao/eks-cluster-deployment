@@ -533,7 +533,8 @@ PYSCRIPT
     else
         echo "Creating new Launch Template..."
 
-        local lt_result=$(aws ec2 create-launch-template \
+        local lt_result
+        lt_result=$(aws ec2 create-launch-template \
             --launch-template-name "${lt_name}" \
             --launch-template-data "file://${lt_data_file}" \
             --region "${AWS_REGION}" \
@@ -586,6 +587,8 @@ create_gpu_nodegroup() {
     local capacity_type="ON_DEMAND"
     if [ "${purchase_option}" = "spot" ]; then
         capacity_type="SPOT"
+    elif [ "${purchase_option}" = "cb" ]; then
+        capacity_type="CAPACITY_BLOCK"
     fi
 
     echo "Creating nodegroup via AWS CLI..."
@@ -942,8 +945,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     fi
 done
 echo ""
-echo "To scale up nodes:"
-echo "  aws eks update-nodegroup-config --cluster-name ${CLUSTER_NAME} --nodegroup-name gpu-p5-spot --scaling-config minSize=0,maxSize=8,desiredSize=1"
+echo "To scale up nodes (replace <nodegroup-name> with actual name from above):"
+echo "  aws eks update-nodegroup-config --cluster-name ${CLUSTER_NAME} --nodegroup-name <nodegroup-name> --scaling-config minSize=0,maxSize=8,desiredSize=1"
 echo ""
 echo "To verify nodes:"
 echo "  kubectl get nodes -l workload-type=gpu"

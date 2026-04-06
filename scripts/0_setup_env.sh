@@ -63,18 +63,18 @@ for var in "${REQUIRED_VARS[@]}"; do
 done
 
 if [ ${#MISSING_VARS[@]} -gt 0 ]; then
-    error "Missing required environment variables: ${MISSING_VARS[*]}\nPlease create a .env file or set these variables. See .env.example for reference."
+    error "Missing required environment variables: ${MISSING_VARS[*]}. Please create a .env file or set these variables. See .env.example for reference."
 fi
 
 # 5. 设置默认值
-export K8S_VERSION="${K8S_VERSION:-1.34}"
+export K8S_VERSION="${K8S_VERSION:-1.35}"
 export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 
 # ============================================
 # 组件版本配置（可通过 .env 覆盖）
 # ============================================
 # Cluster Autoscaler - 版本应与 K8S_VERSION 主版本匹配
-export CLUSTER_AUTOSCALER_VERSION="${CLUSTER_AUTOSCALER_VERSION:-v1.34.2}"
+export CLUSTER_AUTOSCALER_VERSION="${CLUSTER_AUTOSCALER_VERSION:-v1.35.0}"
 
 # AWS Load Balancer Controller
 export ALB_CONTROLLER_VERSION="${ALB_CONTROLLER_VERSION:-v2.13.0}"

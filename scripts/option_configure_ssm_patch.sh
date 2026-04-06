@@ -5,6 +5,7 @@
 #
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/0_setup_env.sh"
@@ -137,7 +138,8 @@ tag_eks_nodes() {
     log "Tagging EKS nodes with Patch Group: ${PATCH_GROUP}"
     
     # Get all node instance IDs
-    local instances=$(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' | cut -d'/' -f5)
+    local instances
+    instances=$(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' | cut -d'/' -f5)
     
     for instance in $instances; do
         log "  Tagging instance: ${instance}"

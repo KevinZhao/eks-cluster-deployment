@@ -6,7 +6,7 @@ spec:
   # AMI 选择器 - 使用 EKS 优化的 AL2023 ARM64 AMI
   amiFamily: AL2023
   amiSelectorTerms:
-    - name: "amazon-eks-node-al2023-arm64-standard-1.34-*"
+    - name: "amazon-eks-node-al2023-arm64-standard-1.35-*"
 
   # IAM 角色
   role: "KarpenterNodeRole-${CLUSTER_NAME}"

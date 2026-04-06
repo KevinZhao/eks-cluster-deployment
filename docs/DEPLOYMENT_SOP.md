@@ -2,7 +2,7 @@
 
 - **版本**: v1.3
 - **最后更新**: 2026-01-11
-- **适用范围**: EKS 1.34 集群自动化部署
+- **适用范围**: EKS 1.35 集群自动化部署
 - **执行环境**: AWS VPC 内的堡垒机 (Bastion Host)
 
 ---
@@ -13,7 +13,7 @@
 
 **部署架构**：
 ```
-EKS Cluster (K8s 1.34)
+EKS Cluster (K8s 1.35)
 ├── 控制平面 (AWS 托管，私有 API Endpoint)
 ├── 系统节点组 (eks-utils): m7i.2xlarge × 3，50GB 根卷 + 100GB LVM 数据卷
 └── 核心组件: CoreDNS, Cluster Autoscaler, ALB Controller, EBS CSI Driver

@@ -2,7 +2,7 @@
 
 生产级 AWS EKS 集群自动化部署方案，支持私有 API 访问、LVM 存储配置、Pod Identity 认证。
 
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.34-326CE5?logo=kubernetes)](https://kubernetes.io/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.35-326CE5?logo=kubernetes)](https://kubernetes.io/)
 [![AWS](https://img.shields.io/badge/AWS-EKS-FF9900?logo=amazon-aws)](https://aws.amazon.com/eks/)
 
 ---
@@ -60,7 +60,7 @@ kubectl get pods -A
 ### 集群架构
 
 ```
-EKS Cluster (Kubernetes 1.34)
+EKS Cluster (Kubernetes 1.35)
 ├── Control Plane (AWS 托管)
 │   └── 私有 API Endpoint (10.0.x.x)
 │
@@ -82,12 +82,12 @@ EKS Cluster (Kubernetes 1.34)
 
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| Kubernetes | 1.34 | 容器编排 |
+| Kubernetes | 1.35 | 容器编排 |
 | VPC CNI | v1.18.5 | Pod 网络 |
 | CoreDNS | v1.11.3 | DNS 解析 |
 | Pod Identity Agent | v1.3.4 | IAM 认证 |
 | EBS CSI Driver | v1.37.0 | 块存储 |
-| Cluster Autoscaler | v1.34.2 | 自动扩缩容 |
+| Cluster Autoscaler | v1.35.0 | 自动扩缩容 |
 | AWS LB Controller | v1.13.0 | 负载均衡 |
 | Metrics Server | v0.7.2 | 资源指标 |
 

@@ -119,15 +119,19 @@ if [ -n "${INSTANCE_ID}" ] && [ -n "${INSTANCE_VPC_ID}" ]; then
         if [ -n "${BASTION_SG}" ] && [ "${BASTION_SG}" != "None" ]; then
             echo "Bastion Security Group: ${BASTION_SG}"
             echo "Adding security group rule..."
-            if aws ec2 authorize-security-group-ingress \
+            sg_result=""
+            if sg_result=$(aws ec2 authorize-security-group-ingress \
                 --group-id ${CLUSTER_SG} \
                 --protocol tcp \
                 --port 443 \
                 --source-group ${BASTION_SG} \
-                --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
+                --region ${AWS_REGION} 2>&1); then
+                echo "✓ Security group rule added successfully"
+            elif echo "${sg_result}" | grep -q "already exists"; then
                 echo "✓ Security group rule already exists"
             else
-                echo "✓ Security group rule added successfully"
+                echo "ERROR: Failed to add security group rule: ${sg_result}"
+                exit 1
             fi
         fi
     else
@@ -148,15 +152,19 @@ if [ -n "${INSTANCE_ID}" ] && [ -n "${INSTANCE_VPC_ID}" ]; then
             if [ -n "${INSTANCE_VPC_CIDR}" ] && [ "${INSTANCE_VPC_CIDR}" != "None" ]; then
                 echo "Instance VPC CIDR: ${INSTANCE_VPC_CIDR}"
                 echo "Adding CIDR-based security group rule..."
-                if aws ec2 authorize-security-group-ingress \
+                sg_cidr_result=""
+                if sg_cidr_result=$(aws ec2 authorize-security-group-ingress \
                     --group-id ${CLUSTER_SG} \
                     --protocol tcp \
                     --port 443 \
                     --cidr ${INSTANCE_VPC_CIDR} \
-                    --region ${AWS_REGION} 2>&1 | grep -q "already exists"; then
+                    --region ${AWS_REGION} 2>&1); then
+                    echo "✓ Security group rule added for VPC CIDR ${INSTANCE_VPC_CIDR}"
+                elif echo "${sg_cidr_result}" | grep -q "already exists"; then
                     echo "✓ Security group rule already exists"
                 else
-                    echo "✓ Security group rule added for VPC CIDR ${INSTANCE_VPC_CIDR}"
+                    echo "ERROR: Failed to add CIDR security group rule: ${sg_cidr_result}"
+                    exit 1
                 fi
             fi
         fi

@@ -175,7 +175,7 @@ docs/                      # Additional documentation
 - `INSTALL_DRIVERS`: CSI driver type for option_install_csi_drivers.sh (efs/fsx/s3)
 - `S3_BUCKET_ARNS`: Comma-separated S3 bucket ARNs for S3 CSI driver
 - `SYSTEM_NODE_INSTANCE_TYPE`: System node EC2 instance type
-- `K8S_VERSION`: Kubernetes version (default: 1.34)
+- `K8S_VERSION`: Kubernetes version (default: 1.35)
 - `EC2_KEY_NAME`: EC2 Key Pair name for SSH access to system/GPU nodegroups (case-sensitive)
 - `SSH_PUBLIC_KEY`: SSH public key content for Karpenter nodes (injected via userData)
 

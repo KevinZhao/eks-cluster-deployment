@@ -489,31 +489,55 @@ if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>
 
     # Add security group rule to allow bastion access to EKS API
     echo "  Configuring security group access..."
-    aws ec2 authorize-security-group-ingress \
+    sg_result=""
+    if sg_result=$(aws ec2 authorize-security-group-ingress \
         --group-id ${CLUSTER_SG} \
         --protocol tcp \
         --port 443 \
         --source-group ${BASTION_SG} \
-        --region ${AWS_REGION} 2>/dev/null && echo "  ✓ Security group rule added" || echo "  ℹ Security group rule already exists"
+        --region ${AWS_REGION} 2>&1); then
+        echo "  ✓ Security group rule added"
+    elif echo "${sg_result}" | grep -q "already exists"; then
+        echo "  ✓ Security group rule already exists"
+    else
+        echo "  ERROR: Failed to add security group rule: ${sg_result}"
+        exit 1
+    fi
 
     # Configure EKS access entry for bastion IAM role
     echo "  Configuring EKS access entry..."
     BASTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/EKS-Deploy-Role"
 
     # Create access entry
-    aws eks create-access-entry \
+    ae_result=""
+    if ae_result=$(aws eks create-access-entry \
         --cluster-name "${CLUSTER_NAME}" \
         --principal-arn "${BASTION_ROLE_ARN}" \
         --type STANDARD \
-        --region "${AWS_REGION}" 2>/dev/null && echo "  ✓ Access entry created" || echo "  ℹ Access entry already exists"
+        --region "${AWS_REGION}" 2>&1); then
+        echo "  ✓ Access entry created"
+    elif echo "${ae_result}" | grep -q "already exists"; then
+        echo "  ✓ Access entry already exists"
+    else
+        echo "  ERROR: Failed to create access entry: ${ae_result}"
+        exit 1
+    fi
 
     # Associate cluster admin policy
-    aws eks associate-access-policy \
+    ap_result=""
+    if ap_result=$(aws eks associate-access-policy \
         --cluster-name "${CLUSTER_NAME}" \
         --principal-arn "${BASTION_ROLE_ARN}" \
         --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
         --access-scope type=cluster \
-        --region "${AWS_REGION}" 2>/dev/null && echo "  ✓ Admin policy associated" || echo "  ℹ Policy already associated"
+        --region "${AWS_REGION}" 2>&1); then
+        echo "  ✓ Admin policy associated"
+    elif echo "${ap_result}" | grep -q "already exists"; then
+        echo "  ✓ Admin policy already associated"
+    else
+        echo "  ERROR: Failed to associate admin policy: ${ap_result}"
+        exit 1
+    fi
 
     echo -e "${GREEN}✓ EKS cluster access configured${NC}"
 else
