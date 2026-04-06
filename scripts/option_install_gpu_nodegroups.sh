@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 export AWS_PAGER=""
 
@@ -16,6 +17,8 @@ echo "Supported GPU types:"
 echo "  • p5.48xlarge:      1 EFA + 31 EFA-only (NetworkCardIndex 0-31)"
 echo "  • p5en.48xlarge:    1 EFA + 15 EFA-only (NetworkCardIndex 0-15)"
 echo "  • p6-b200.48xlarge: 1 EFA + 7 EFA-only  (NetworkCardIndex 0-7)"
+echo "  • p6-b300.48xlarge: 1 EFA + 16 EFA-only (NetworkCardIndex 0-16)"
+echo "  • g7e.48xlarge:     1 EFA + 3 EFA-only  (NetworkCardIndex 0-3)"
 echo ""
 echo "Pricing options (mutually exclusive - choose ONE):"
 echo "  • Spot:           Cost-effective for fault-tolerant workloads (DEPLOY_GPU_SPOT=true)"
@@ -62,7 +65,7 @@ echo ""
 # Configuration
 # ===================================================================
 
-GPU_INSTANCE_TYPES="${GPU_INSTANCE_TYPES:-p5,p5en,p6}"
+GPU_INSTANCE_TYPES="${GPU_INSTANCE_TYPES:-p5.48xlarge,p5en.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge,g7e.48xlarge}"
 GPU_NODE_DESIRED_CAPACITY="${GPU_NODE_DESIRED_CAPACITY:-0}"
 GPU_NODE_MIN_SIZE="${GPU_NODE_MIN_SIZE:-0}"
 GPU_NODE_MAX_SIZE="${GPU_NODE_MAX_SIZE:-8}"
@@ -97,24 +100,20 @@ fi
 
 # Get EFA-only network card count (excluding primary EFA card)
 get_efa_only_card_count() {
-    local gpu_type=$1
-    case "$gpu_type" in
-        p5)   echo 31 ;;   # NetworkCardIndex 1-31
-        p5en) echo 15 ;;   # NetworkCardIndex 1-15
-        p6)   echo 7 ;;    # NetworkCardIndex 1-7
-        *)    echo 0 ;;
+    local instance_type=$1
+    case "$instance_type" in
+        p5.48xlarge)      echo 31 ;;   # NetworkCardIndex 1-31
+        p5en.48xlarge)    echo 15 ;;   # NetworkCardIndex 1-15
+        p6-b200.48xlarge) echo 7 ;;    # NetworkCardIndex 1-7
+        p6-b300.48xlarge) echo 16 ;;   # NetworkCardIndex 1-16
+        g7e.48xlarge)     echo 3 ;;    # NetworkCardIndex 1-3
+        *)                echo 0 ;;
     esac
 }
 
-# Get full instance type name
-get_instance_type() {
-    local gpu_type=$1
-    case "$gpu_type" in
-        p5)   echo "p5.48xlarge" ;;
-        p5en) echo "p5en.48xlarge" ;;
-        p6)   echo "p6-b200.48xlarge" ;;
-        *)    echo "" ;;
-    esac
+# Convert instance type to resource-safe name (replace dots with dashes)
+get_resource_name() {
+    echo "${1//./-}"
 }
 
 # ===================================================================
@@ -218,11 +217,19 @@ create_gpu_security_group() {
 
     # Self-referencing rule for EFA/NCCL traffic (all protocols)
     echo "Ensuring security group rules..."
-    aws ec2 authorize-security-group-ingress \
+    local sg_result
+    if sg_result=$(aws ec2 authorize-security-group-ingress \
         --group-id "${GPU_SG_ID}" \
         --protocol -1 \
         --source-group "${GPU_SG_ID}" \
-        --region "${AWS_REGION}" 2>&1 | grep -q "already exists" && echo "  Self-ingress rule exists" || echo "  Self-ingress rule added"
+        --region "${AWS_REGION}" 2>&1); then
+        echo "  Self-ingress rule added"
+    elif echo "${sg_result}" | grep -q "already exists"; then
+        echo "  Self-ingress rule already exists"
+    else
+        echo "ERROR: Failed to add self-ingress rule to ${GPU_SG_ID}: ${sg_result}"
+        exit 1
+    fi
 
     echo "GPU Security Group configured: ${GPU_SG_ID}"
 }
@@ -237,9 +244,10 @@ create_gpu_launch_template() {
     local capacity_reservation_id=${3:-}
     local suffix=${4:-}  # Optional suffix for multiple reservations (e.g., "-1", "-2")
 
-    local instance_type=$(get_instance_type "$gpu_type")
+    local instance_type="$gpu_type"
+    local resource_name=$(get_resource_name "$gpu_type")
     local efa_only_count=$(get_efa_only_card_count "$gpu_type")
-    local lt_name="${CLUSTER_NAME}-gpu-${gpu_type}-${purchase_option}${suffix}-lt"
+    local lt_name="${CLUSTER_NAME}-gpu-${resource_name}-${purchase_option}${suffix}-lt"
 
     echo "Creating Launch Template: ${lt_name}"
     echo "  Instance Type: ${instance_type}"
@@ -460,9 +468,9 @@ lt_data = {
         {
             "ResourceType": "instance",
             "Tags": [
-                {"Key": "Name", "Value": "${CLUSTER_NAME}-gpu-${gpu_type}-node"},
+                {"Key": "Name", "Value": "${CLUSTER_NAME}-gpu-${resource_name}-node"},
                 {"Key": "kubernetes.io/cluster/${CLUSTER_NAME}", "Value": "owned"},
-                {"Key": "gpu-family", "Value": "${gpu_type}"},
+                {"Key": "gpu-instance-type", "Value": "${gpu_type}"},
                 {"Key": "purchase-option", "Value": "${purchase_option}"},
                 {"Key": "business", "Value": "middleware"},
                 {"Key": "resource", "Value": "eks"}
@@ -471,7 +479,7 @@ lt_data = {
         {
             "ResourceType": "volume",
             "Tags": [
-                {"Key": "Name", "Value": "${CLUSTER_NAME}-gpu-${gpu_type}-volume"},
+                {"Key": "Name", "Value": "${CLUSTER_NAME}-gpu-${resource_name}-volume"},
                 {"Key": "kubernetes.io/cluster/${CLUSTER_NAME}", "Value": "owned"},
                 {"Key": "business", "Value": "middleware"},
                 {"Key": "resource", "Value": "eks"}
@@ -557,8 +565,9 @@ create_gpu_nodegroup() {
     shift 5
     local subnets=("$@")
 
-    local ng_name="gpu-${gpu_type}-${purchase_option}${suffix}"
-    local instance_type=$(get_instance_type "$gpu_type")
+    local instance_type="$gpu_type"
+    local resource_name=$(get_resource_name "$gpu_type")
+    local ng_name="gpu-${resource_name}-${purchase_option}${suffix}"
 
     # Check if nodegroup exists
     if aws eks describe-nodegroup \
@@ -590,9 +599,9 @@ create_gpu_nodegroup() {
         --instance-types "${instance_type}" \
         --capacity-type "${capacity_type}" \
         --scaling-config "minSize=${GPU_NODE_MIN_SIZE},maxSize=${GPU_NODE_MAX_SIZE},desiredSize=${GPU_NODE_DESIRED_CAPACITY}" \
-        --labels "workload-type=gpu,gpu-family=${gpu_type},purchase-option=${purchase_option}" \
+        --labels "workload-type=gpu,gpu-instance-type=${gpu_type},purchase-option=${purchase_option}" \
         --taints "key=nvidia.com/gpu,value=true,effect=NO_SCHEDULE" \
-        --tags "k8s.io/cluster-autoscaler/enabled=true,k8s.io/cluster-autoscaler/${CLUSTER_NAME}=owned,gpu-family=${gpu_type},business=middleware,resource=eks" \
+        --tags "k8s.io/cluster-autoscaler/enabled=true,k8s.io/cluster-autoscaler/${CLUSTER_NAME}=owned,gpu-instance-type=${gpu_type},business=middleware,resource=eks" \
         --region "${AWS_REGION}"
 
     echo "Nodegroup ${ng_name} creation initiated"
@@ -601,7 +610,7 @@ create_gpu_nodegroup() {
     aws eks wait nodegroup-active \
         --cluster-name "${CLUSTER_NAME}" \
         --nodegroup-name "${ng_name}" \
-        --region "${AWS_REGION}" || echo "WARNING: Nodegroup may still be creating"
+        --region "${AWS_REGION}"
 
     echo "Nodegroup ${ng_name} created"
 }
@@ -775,8 +784,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     echo ""
     echo "Processing GPU type: ${gpu_type}"
 
-    instance_type=$(get_instance_type "$gpu_type")
-    if [ -z "$instance_type" ]; then
+    efa_count=$(get_efa_only_card_count "$gpu_type")
+    if [ "$efa_count" -eq 0 ]; then
         echo "WARNING: Unknown GPU type: ${gpu_type}, skipping"
         continue
     fi
@@ -805,16 +814,17 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
 
             if [ ${#ODCR_ID_ARRAY[@]} -ne ${#ODCR_AZ_ARRAY[@]} ]; then
                 echo "ERROR: ODCR_IDS and ODCR_AZS must have the same number of entries"
+                exit 1
             else
-                local odcr_count=${#ODCR_ID_ARRAY[@]}
+                odcr_count=${#ODCR_ID_ARRAY[@]}
                 for ((i=0; i<odcr_count; i++)); do
-                    local odcr_id=$(echo "${ODCR_ID_ARRAY[$i]}" | tr -d ' ')
-                    local odcr_az=$(echo "${ODCR_AZ_ARRAY[$i]}" | tr -d ' ')
-                    local odcr_az_suffix="${odcr_az: -1}"
-                    local odcr_subnet="${SUBNET_MAP[$odcr_az_suffix]:-}"
+                    odcr_id=$(echo "${ODCR_ID_ARRAY[$i]}" | tr -d ' ')
+                    odcr_az=$(echo "${ODCR_AZ_ARRAY[$i]}" | tr -d ' ')
+                    odcr_az_suffix="${odcr_az: -1}"
+                    odcr_subnet="${SUBNET_MAP[$odcr_az_suffix]:-}"
 
                     # Create unique suffix: -1, -2, etc. (only if multiple ODCRs)
-                    local suffix=""
+                    suffix=""
                     if [ $odcr_count -gt 1 ]; then
                         suffix="-$((i+1))"
                     fi
@@ -851,16 +861,17 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
 
             if [ ${#CB_ID_ARRAY[@]} -ne ${#CB_AZ_ARRAY[@]} ]; then
                 echo "ERROR: CAPACITY_BLOCK_IDS and CAPACITY_BLOCK_AZS must have the same number of entries"
+                exit 1
             else
-                local cb_count=${#CB_ID_ARRAY[@]}
+                cb_count=${#CB_ID_ARRAY[@]}
                 for ((i=0; i<cb_count; i++)); do
-                    local cb_id=$(echo "${CB_ID_ARRAY[$i]}" | tr -d ' ')
-                    local cb_az=$(echo "${CB_AZ_ARRAY[$i]}" | tr -d ' ')
-                    local cb_az_suffix="${cb_az: -1}"
-                    local cb_subnet="${SUBNET_MAP[$cb_az_suffix]:-}"
+                    cb_id=$(echo "${CB_ID_ARRAY[$i]}" | tr -d ' ')
+                    cb_az=$(echo "${CB_AZ_ARRAY[$i]}" | tr -d ' ')
+                    cb_az_suffix="${cb_az: -1}"
+                    cb_subnet="${SUBNET_MAP[$cb_az_suffix]:-}"
 
                     # Create unique suffix: -1, -2, etc. (only if multiple CBs)
-                    local suffix=""
+                    suffix=""
                     if [ $cb_count -gt 1 ]; then
                         suffix="-$((i+1))"
                     fi

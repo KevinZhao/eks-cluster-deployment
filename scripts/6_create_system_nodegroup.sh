@@ -726,7 +726,7 @@ wait_for_nodes_ready() {
     MAX_RETRIES=60
 
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        READY_NODES=$(kubectl get nodes -l ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE} --no-headers 2>/dev/null | grep -c "Ready" || echo "0")
+        READY_NODES=$(kubectl get nodes -l ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE} --no-headers 2>/dev/null | grep -cw "Ready" || echo "0")
         READY_NODES=${READY_NODES//[^0-9]/}
         READY_NODES=${READY_NODES:-0}
 

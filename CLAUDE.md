@@ -251,20 +251,22 @@ warn "message"          # Warning logging (no exit)
 
 ## GPU Node Support (Managed Node Groups)
 
-**GPU Nodes (P5/P5en/P6):** `option_install_gpu_nodegroups.sh`
+**GPU Nodes (P5/P5en/P6/G7e):** `option_install_gpu_nodegroups.sh`
 - Uses AWS Managed Node Groups (not Karpenter) for EFA multi-NIC support
 - Launch Templates pre-configure all EFA interfaces at node launch time
 - EFA interface counts:
   - p5.48xlarge: 32 ENIs (1 primary + 31 EFA-only)
   - p5en.48xlarge: 16 ENIs (1 primary + 15 EFA-only)
   - p6-b200.48xlarge: 8 ENIs (1 primary + 7 EFA-only)
+  - p6-b300.48xlarge: 17 ENIs (1 primary + 16 EFA-only)
+  - g7e.48xlarge: 4 ENIs (1 primary + 3 EFA-only)
 - Pricing options (mutually exclusive - choose ONE):
   - Spot: Cost-effective for fault-tolerant workloads
   - ODCR: Guaranteed capacity with on-demand pricing
   - Capacity Block: Time-limited reserved capacity
 - LVM configuration for containerd (same as system nodes)
 - NVIDIA Device Plugin installed via kubectl (with host library symlinks)
-- Node labels: `workload-type=gpu`, `gpu-family=p5|p5en|p6`, `purchase-option=spot|odcr|cb`
+- Node labels: `workload-type=gpu`, `gpu-instance-type=<instance-type>`, `purchase-option=spot|odcr|cb`
 - Taints: `nvidia.com/gpu:NoSchedule`
 
 ## Testing and Validation

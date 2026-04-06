@@ -6,7 +6,7 @@
 > - 使用 Pod Identity 替代 IRSA，简化 IAM 管理
 > - 容器运行时存储与系统盘隔离，提升节点稳定性
 > - 支持 EBS、EFS、FSx、S3 四种存储场景
-> - 原生支持 GPU 实例（P5/P5en/P6）与 EFA 网络
+> - 原生支持 GPU 实例（P5/P5en/P6/G7e）与 EFA 网络
 > - 私有 API Endpoint 满足高安全要求的企业级场景
 > - 全程脚本化部署，幂等且 CI/CD 友好
 
@@ -253,13 +253,15 @@ GPU 实例网络配置
 ├── ENI 1-N: 仅 EFA（用于 NCCL 集合通信）
 │   ├── p5.48xlarge:      N=31 (共 32 ENI)
 │   ├── p5en.48xlarge:    N=15 (共 16 ENI)
-│   └── p6-b200.48xlarge: N=7  (共 8 ENI)
+│   ├── p6-b200.48xlarge: N=7  (共 8 ENI)
+│   ├── p6-b300.48xlarge: N=16 (共 17 ENI)
+│   └── g7e.48xlarge:     N=3  (共 4 ENI)
 ├── NVIDIA 驱动: AMI 预装
 ├── EFA 驱动: AMI 预装
 └── NCCL 插件: 自动部署
 ```
 
-不同实例类型的 EFA 网卡数量有所不同：p5.48xlarge 支持 32 个 ENI，p5en.48xlarge 支持 16 个，p6-b200.48xlarge 支持 8 个。脚本会根据实例类型自动配置正确的网卡数量。
+不同实例类型的 EFA 网卡数量有所不同：p5.48xlarge 支持 32 个 ENI，p5en.48xlarge 支持 16 个，p6-b200.48xlarge 支持 8 个，p6-b300.48xlarge 支持 17 个，g7e.48xlarge 支持 4 个。脚本会根据实例类型自动配置正确的网卡数量。
 
 为满足不同的成本和可用性需求，本方案支持三种定价模式：
 

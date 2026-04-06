@@ -65,7 +65,8 @@ else
     # Prepare secretsEncryption configuration if KMS_KEY_ARN is set
     if [ -n "${KMS_KEY_ARN:-}" ]; then
         echo "✓ KMS encryption enabled: ${KMS_KEY_ARN}"
-        SECRETS_ENCRYPTION_CONFIG="secretsEncryption:\n  keyARN: ${KMS_KEY_ARN}"
+        SECRETS_ENCRYPTION_CONFIG="secretsEncryption:
+  keyARN: ${KMS_KEY_ARN}"
     else
         echo "⚠️  KMS encryption not configured (KMS_KEY_ARN not set)"
         SECRETS_ENCRYPTION_CONFIG=""
