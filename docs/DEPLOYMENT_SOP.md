@@ -71,9 +71,11 @@ module "vpc" {
 # Amazon Linux 2023 一键安装
 sudo yum update -y && sudo yum install -y git unzip tar gzip jq
 
-# kubectl
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && rm kubectl
+# kubectl (with checksum verification)
+curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl kubectl.sha256
 
 # eksctl
 curl -sL "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
@@ -177,6 +179,8 @@ aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query '
 ```
 
 ### 第四阶段：创建系统节点组
+
+> **注意**: 脚本会先通过 `curl /healthz` 检测集群 API 可达性。私有集群必须从 VPC 内部（堡垒机）执行。
 
 ```bash
 AUTO_DELETE_NODEGROUP=yes ./scripts/6_create_system_nodegroup.sh  # 8-12分钟
@@ -290,7 +294,7 @@ INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_inst
 
 ```bash
 # 症状: The connection to the server localhost:8080 was refused
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 ```
 
