@@ -29,7 +29,7 @@ echo ""
 # 1. Load environment
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 # Check dependencies

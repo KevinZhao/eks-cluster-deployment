@@ -13,7 +13,7 @@ echo "=== EKS Addons Installation (Cluster Autoscaler, Load Balancer Controller)
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
 # 1.1 Set KUBECONFIG environment variable
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 # 1.2. Import Pod Identity helper functions

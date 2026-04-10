@@ -15,7 +15,7 @@ echo ""
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
 # 设置 KUBECONFIG 环境变量
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 source "${SCRIPT_DIR}/pod_identity_helpers.sh"

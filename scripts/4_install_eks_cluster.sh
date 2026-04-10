@@ -13,7 +13,7 @@ echo "=== EKS Cluster Installation with Cluster Autoscaler and EBS CSI Driver ==
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
 # 1.1 Set KUBECONFIG environment variable
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 # 1.5. Import Pod Identity helper functions
@@ -110,6 +110,9 @@ metadata:
   version: "${K8S_VERSION}"
   tags:
     cluster-autoscaler: enabled
+
+autoModeConfig:
+  enabled: false
 
 ${SECRETS_ENCRYPTION_CONFIG}
 

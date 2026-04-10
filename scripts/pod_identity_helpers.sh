@@ -276,7 +276,7 @@ setup_cluster_autoscaler_pod_identity() {
 
     # 检查策略是否存在（某些 partition 可能没有这个策略）
     if ! aws iam get-policy --policy-arn "${policy_arn}" &>/dev/null; then
-        warn "AmazonEKSClusterAutoscalerPolicy not found, creating custom policy"
+        log "AmazonEKSClusterAutoscalerPolicy not found, creating custom policy"
 
         # 创建自定义 Autoscaler 策略
         local policy_doc=$(cat <<'EOF'

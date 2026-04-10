@@ -13,7 +13,7 @@ echo "=== Installing Karpenter on EKS Cluster ==="
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
 # 1.1 设置 KUBECONFIG 环境变量
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 # 1.5. 导入 Pod Identity helper 函数

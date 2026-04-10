@@ -29,7 +29,7 @@ echo ""
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
 # 1.1 设置 KUBECONFIG 环境变量
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
 # 1.2. 检查必需的依赖工具
@@ -58,9 +58,24 @@ echo ""
 echo "Verifying EKS cluster exists..."
 if ! aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>/dev/null; then
     echo "❌ ERROR: EKS cluster '${CLUSTER_NAME}' not found in region '${AWS_REGION}'"
-    echo "Please run script 5_install_eks_cluster.sh first to create the cluster."
+    echo "Please run script 4_install_eks_cluster.sh first to create the cluster."
     exit 1
 fi
+
+# 2.0 检测集群 API 可达性（私有集群需从 VPC 内部访问）
+CLUSTER_ENDPOINT=$(aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" --query 'cluster.endpoint' --output text)
+echo "Checking API endpoint reachability: ${CLUSTER_ENDPOINT}..."
+if ! timeout 10 curl -sk "${CLUSTER_ENDPOINT}/healthz" >/dev/null 2>&1; then
+    echo "❌ ERROR: Cannot reach cluster API at ${CLUSTER_ENDPOINT}"
+    echo ""
+    echo "This is a private cluster (publicAccess: false)."
+    echo "You must run this script from within the cluster's VPC."
+    echo "Options:"
+    echo "  1. Run from a bastion host in the same VPC: ./scripts/option_create_bastion.sh"
+    echo "  2. Run from an EC2 instance with VPC Peering to the cluster VPC"
+    exit 1
+fi
+echo "✓ Cluster API is reachable"
 
 # 验证 kubectl context（使用统一函数）
 verify_kubectl_context
