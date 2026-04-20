@@ -932,9 +932,14 @@ echo "Pricing Options: OD=${DEPLOY_GPU_OD}, Spot=${DEPLOY_GPU_SPOT}, ODCR=${DEPL
 IFS=',' read -ra GPU_TYPE_ARRAY <<< "$GPU_INSTANCE_TYPES"
 
 # Build subnet list
-ALL_SUBNETS=("${PRIVATE_SUBNET_A}" "${PRIVATE_SUBNET_B}")
-[ -n "${PRIVATE_SUBNET_C:-}" ] && ALL_SUBNETS+=("${PRIVATE_SUBNET_C}")
-[ -n "${PRIVATE_SUBNET_D:-}" ] && ALL_SUBNETS+=("${PRIVATE_SUBNET_D}")
+# Collect non-empty private subnets and deduplicate (EKS rejects duplicate subnets).
+_raw_subnets=()
+[ -n "${PRIVATE_SUBNET_A:-}" ] && _raw_subnets+=("${PRIVATE_SUBNET_A}")
+[ -n "${PRIVATE_SUBNET_B:-}" ] && _raw_subnets+=("${PRIVATE_SUBNET_B}")
+[ -n "${PRIVATE_SUBNET_C:-}" ] && _raw_subnets+=("${PRIVATE_SUBNET_C}")
+[ -n "${PRIVATE_SUBNET_D:-}" ] && _raw_subnets+=("${PRIVATE_SUBNET_D}")
+mapfile -t ALL_SUBNETS < <(printf '%s\n' "${_raw_subnets[@]}" | awk 'NF && !seen[$0]++')
+unset _raw_subnets
 
 # Subnet map for AZ-specific deployments
 declare -A SUBNET_MAP
