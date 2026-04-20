@@ -55,7 +55,7 @@ kubectl get pods -A
 - ✅ **Pod Identity** - 使用 EKS Pod Identity 替代 IRSA
 - ✅ **自动扩缩容** - Cluster Autoscaler 自动管理节点
 - ✅ **完整 CSI 支持** - EBS/EFS/FSx/S3 存储驱动
-- ✅ **GPU 节点支持** - P5/P5en/P6/G7e 实例 + EFA 网络
+- ✅ **GPU 节点支持** - P5/P5en/P6/G7e 实例 + EFA 多网卡 + `vpc.amazonaws.com/efa` 设备插件
 
 ### 集群架构
 

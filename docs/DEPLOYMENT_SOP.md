@@ -286,6 +286,50 @@ INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_inst
 ./examples/option_test_karpenter_pools.sh
 ```
 
+### GPU 节点组定价模式（互斥，仅选一种）
+
+| 模式 | 环境变量 | 适用场景 |
+|---|---|---|
+| On-Demand | `DEPLOY_GPU_OD=true` | 标准按需价格 |
+| Spot | `DEPLOY_GPU_SPOT=true`（默认） | 容错工作负载，成本敏感 |
+| ODCR | `DEPLOY_GPU_ODCR=true` + `ODCR_IDS` + `ODCR_AZS` | 固定容量保障 + 按需价格 |
+| Capacity Block | `DEPLOY_GPU_CB=true` + `CAPACITY_BLOCK_IDS` + `CAPACITY_BLOCK_AZS` | 短期锁定的 GPU 容量 |
+
+> Capacity Block 模式会自动在 Launch Template 注入 `InstanceType` 和 `InstanceMarketOptions.MarketType=capacity-block`，`create-nodegroup` 省略 `--instance-types` 以规避与 LT 冲突。
+
+### EFA 设备插件（必装）
+
+脚本在创建 GPU 节点组后会自动部署 `aws-efa-k8s-device-plugin` DaemonSet，向集群暴露 `vpc.amazonaws.com/efa` 资源。相关环境变量：
+
+```bash
+INSTALL_EFA_DEVICE_PLUGIN=true        # 默认 true，关闭可设为 false
+EFA_DEVICE_PLUGIN_VERSION=v0.5.17     # 镜像 tag
+EFA_DEVICE_PLUGIN_IMAGE=              # 覆盖完整镜像地址（CN 区域或私有 ECR mirror 使用）
+```
+
+验证：
+```bash
+# 节点内核侧 EFA 设备
+NODE=$(kubectl get nodes -l workload-type=gpu -o jsonpath='{.items[0].metadata.name}')
+kubectl debug node/$NODE -it --image=amazonlinux:2023 -- \
+  chroot /host bash -c 'ls /sys/class/infiniband/ && ls /dev/infiniband/'
+
+# 插件 DaemonSet 状态
+kubectl -n kube-system get ds aws-efa-k8s-device-plugin-daemonset
+
+# 节点暴露的 EFA 资源数量（p5 应为 32）
+kubectl describe node $NODE | grep 'vpc.amazonaws.com/efa'
+```
+
+Pod 请求 EFA 示例：
+```yaml
+resources:
+  limits:
+    nvidia.com/gpu: "8"
+    vpc.amazonaws.com/efa: "32"
+    hugepages-2Mi: 5120Mi
+```
+
 ---
 
 ## 常见问题

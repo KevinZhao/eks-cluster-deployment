@@ -78,6 +78,9 @@ DEPLOY_GPU_SPOT="${DEPLOY_GPU_SPOT:-true}"
 DEPLOY_GPU_ODCR="${DEPLOY_GPU_ODCR:-false}"
 DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 
+INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
+EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
+
 # Validate: only one pricing option should be enabled (mutually exclusive)
 ENABLED_COUNT=0
 [ "${DEPLOY_GPU_OD}" = "true" ] && ENABLED_COUNT=$((ENABLED_COUNT + 1))
@@ -762,6 +765,118 @@ EOF
 }
 
 # ===================================================================
+# AWS EFA Kubernetes Device Plugin (kubectl apply)
+# ===================================================================
+
+install_efa_device_plugin() {
+    if [ "${INSTALL_EFA_DEVICE_PLUGIN}" != "true" ]; then
+        echo "EFA Device Plugin installation skipped (INSTALL_EFA_DEVICE_PLUGIN=${INSTALL_EFA_DEVICE_PLUGIN})"
+        return 0
+    fi
+
+    echo "Installing AWS EFA Kubernetes Device Plugin via kubectl..."
+
+    if kubectl get daemonset aws-efa-k8s-device-plugin-daemonset -n kube-system &>/dev/null; then
+        echo "EFA Device Plugin already installed"
+        return 0
+    fi
+
+    # Region-aware ECR image prefix.
+    # China regions: 961992271922 is the standard CN EKS add-on ECR account,
+    # but AWS has not always mirrored aws-efa-k8s-device-plugin there. If a
+    # CN deployment hits ImagePullBackOff, override EFA_DEVICE_PLUGIN_IMAGE
+    # with a reachable registry (e.g. a customer-hosted ECR mirror).
+    local efa_image
+    if [ -n "${EFA_DEVICE_PLUGIN_IMAGE:-}" ]; then
+        efa_image="${EFA_DEVICE_PLUGIN_IMAGE}"
+    else
+        case "${AWS_REGION}" in
+            cn-*) efa_image="961992271922.dkr.ecr.${AWS_REGION}.amazonaws.com.cn/eks/aws-efa-k8s-device-plugin:${EFA_DEVICE_PLUGIN_VERSION}" ;;
+            *)    efa_image="602401143452.dkr.ecr.${AWS_REGION}.amazonaws.com/eks/aws-efa-k8s-device-plugin:${EFA_DEVICE_PLUGIN_VERSION}" ;;
+        esac
+    fi
+    echo "  Image: ${efa_image}"
+
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: aws-efa-k8s-device-plugin-daemonset
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: aws-efa-k8s-device-plugin
+spec:
+  selector:
+    matchLabels:
+      name: aws-efa-k8s-device-plugin
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: aws-efa-k8s-device-plugin
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        workload-type: gpu
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      - key: CriticalAddonsOnly
+        operator: Exists
+      priorityClassName: system-node-critical
+      containers:
+      - name: aws-efa-k8s-device-plugin
+        image: ${efa_image}
+        imagePullPolicy: IfNotPresent
+        # Upstream chart uses privileged container; required to open
+        # /dev/infiniband/uverbs* and advertise vpc.amazonaws.com/efa.
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: infiniband-volume
+          mountPath: /dev/infiniband/
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: infiniband-volume
+        hostPath:
+          path: /dev/infiniband/
+EOF
+
+    echo "Waiting for EFA Device Plugin to be ready..."
+    for i in {1..30}; do
+        local ready=$(kubectl get daemonset aws-efa-k8s-device-plugin-daemonset -n kube-system \
+            -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
+        local desired=$(kubectl get daemonset aws-efa-k8s-device-plugin-daemonset -n kube-system \
+            -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
+
+        echo "  EFA Device Plugin: ${ready}/${desired} ready"
+
+        if [ "${desired}" = "0" ]; then
+            echo "EFA Device Plugin installed (waiting for GPU nodes)"
+            return 0
+        fi
+
+        if [ "${ready}" = "${desired}" ] && [ "${ready}" != "0" ]; then
+            echo "EFA Device Plugin is ready"
+            return 0
+        fi
+        sleep 10
+    done
+
+    echo "WARNING: EFA Device Plugin may not be fully ready"
+}
+
+# ===================================================================
 # Main Execution
 # ===================================================================
 
@@ -955,7 +1070,12 @@ echo ""
 echo "Step 6: Installing NVIDIA Device Plugin..."
 install_nvidia_device_plugin
 
-# Step 7: Summary
+# Step 7: Install AWS EFA Kubernetes Device Plugin
+echo ""
+echo "Step 7: Installing AWS EFA Kubernetes Device Plugin..."
+install_efa_device_plugin
+
+# Step 8: Summary
 echo ""
 echo "=== GPU Node Groups Installation Complete ==="
 echo ""
@@ -963,6 +1083,7 @@ echo "Created resources:"
 echo "  • IAM Role: ${GPU_NODE_ROLE_NAME}"
 echo "  • Security Group: ${GPU_SG_ID}"
 echo "  • GPU AMI: ${GPU_AMI_ID}"
+[ "${INSTALL_EFA_DEVICE_PLUGIN}" = "true" ] && echo "  • EFA Device Plugin: aws-efa-k8s-device-plugin-daemonset (${EFA_DEVICE_PLUGIN_VERSION})"
 echo ""
 echo "Node groups created for:"
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
@@ -1006,6 +1127,10 @@ echo ""
 echo "To verify nodes:"
 echo "  kubectl get nodes -l workload-type=gpu"
 echo ""
-echo "To verify EFA:"
+echo "To verify EFA on node:"
 echo "  kubectl debug node/\${NODE} -it --image=amazonlinux -- chroot /host ls /sys/class/infiniband/"
+echo ""
+echo "To verify EFA device plugin (resource vpc.amazonaws.com/efa):"
+echo "  kubectl -n kube-system get ds aws-efa-k8s-device-plugin-daemonset"
+echo "  kubectl describe node \${NODE} | grep 'vpc.amazonaws.com/efa'"
 echo ""
