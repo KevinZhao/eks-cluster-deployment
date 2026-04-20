@@ -532,9 +532,12 @@ if capacity_reservation_id:
 if ec2_key_name:
     lt_data["KeyName"] = ec2_key_name
 
-# Capacity Block requires InstanceType inside the Launch Template
+# Capacity Block requires InstanceType and MarketType=capacity-block inside the Launch Template
 if embed_instance_type:
     lt_data["InstanceType"] = instance_type
+    lt_data["InstanceMarketOptions"] = {
+        "MarketType": "capacity-block"
+    }
 
 print(json.dumps(lt_data, indent=2))
 PYSCRIPT
