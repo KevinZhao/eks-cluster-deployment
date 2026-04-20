@@ -21,6 +21,7 @@ echo "  • p6-b300.48xlarge: 1 EFA + 16 EFA-only (NetworkCardIndex 0-16)"
 echo "  • g7e.48xlarge:     1 EFA + 3 EFA-only  (NetworkCardIndex 0-3)"
 echo ""
 echo "Pricing options (mutually exclusive - choose ONE):"
+echo "  • On-Demand:      Standard on-demand pricing (DEPLOY_GPU_OD=true)"
 echo "  • Spot:           Cost-effective for fault-tolerant workloads (DEPLOY_GPU_SPOT=true)"
 echo "  • ODCR:           Guaranteed capacity, on-demand pricing (DEPLOY_GPU_ODCR=true)"
 echo "  • Capacity Block: Time-limited reserved capacity (DEPLOY_GPU_CB=true)"
@@ -72,18 +73,21 @@ GPU_NODE_MAX_SIZE="${GPU_NODE_MAX_SIZE:-8}"
 GPU_NODE_ROOT_VOLUME_SIZE="${GPU_NODE_ROOT_VOLUME_SIZE:-50}"
 GPU_NODE_DATA_VOLUME_SIZE="${GPU_NODE_DATA_VOLUME_SIZE:-100}"
 
+DEPLOY_GPU_OD="${DEPLOY_GPU_OD:-false}"
 DEPLOY_GPU_SPOT="${DEPLOY_GPU_SPOT:-true}"
 DEPLOY_GPU_ODCR="${DEPLOY_GPU_ODCR:-false}"
 DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 
 # Validate: only one pricing option should be enabled (mutually exclusive)
 ENABLED_COUNT=0
+[ "${DEPLOY_GPU_OD}" = "true" ] && ENABLED_COUNT=$((ENABLED_COUNT + 1))
 [ "${DEPLOY_GPU_SPOT}" = "true" ] && ENABLED_COUNT=$((ENABLED_COUNT + 1))
 [ "${DEPLOY_GPU_ODCR}" = "true" ] && ENABLED_COUNT=$((ENABLED_COUNT + 1))
 [ "${DEPLOY_GPU_CB}" = "true" ] && ENABLED_COUNT=$((ENABLED_COUNT + 1))
 
 if [ "${ENABLED_COUNT}" -gt 1 ]; then
     echo "ERROR: Only ONE pricing option can be enabled at a time"
+    echo "  DEPLOY_GPU_OD=${DEPLOY_GPU_OD}"
     echo "  DEPLOY_GPU_SPOT=${DEPLOY_GPU_SPOT}"
     echo "  DEPLOY_GPU_ODCR=${DEPLOY_GPU_ODCR}"
     echo "  DEPLOY_GPU_CB=${DEPLOY_GPU_CB}"
@@ -94,7 +98,7 @@ fi
 
 if [ "${ENABLED_COUNT}" -eq 0 ]; then
     echo "ERROR: At least one pricing option must be enabled"
-    echo "Set one of: DEPLOY_GPU_SPOT=true, DEPLOY_GPU_ODCR=true, or DEPLOY_GPU_CB=true"
+    echo "Set one of: DEPLOY_GPU_OD=true, DEPLOY_GPU_SPOT=true, DEPLOY_GPU_ODCR=true, or DEPLOY_GPU_CB=true"
     exit 1
 fi
 
@@ -173,12 +177,30 @@ create_gpu_node_iam_role() {
     if aws eks describe-access-entry --cluster-name "${CLUSTER_NAME}" --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${GPU_NODE_ROLE_NAME}" --region "${AWS_REGION}" &>/dev/null; then
         echo "EKS access entry for ${GPU_NODE_ROLE_NAME} already exists"
     else
-        aws eks create-access-entry \
-            --cluster-name "${CLUSTER_NAME}" \
-            --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${GPU_NODE_ROLE_NAME}" \
-            --type EC2_LINUX \
-            --region "${AWS_REGION}"
-        echo "EKS access entry created for ${GPU_NODE_ROLE_NAME}"
+        # Wait for IAM role to propagate globally before creating access entry
+        echo "Waiting for IAM role to propagate (10 seconds)..."
+        sleep 10
+
+        local retry_count=0
+        local max_retries=5
+        while [ $retry_count -lt $max_retries ]; do
+            if aws eks create-access-entry \
+                --cluster-name "${CLUSTER_NAME}" \
+                --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${GPU_NODE_ROLE_NAME}" \
+                --type EC2_LINUX \
+                --region "${AWS_REGION}" 2>/dev/null; then
+                echo "EKS access entry created for ${GPU_NODE_ROLE_NAME}"
+                break
+            fi
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -lt $max_retries ]; then
+                echo "IAM role not yet propagated, retrying in 10 seconds... ($retry_count/$max_retries)"
+                sleep 10
+            else
+                echo "ERROR: Failed to create EKS access entry after $max_retries retries"
+                exit 1
+            fi
+        done
     fi
 
     GPU_NODE_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${GPU_NODE_ROLE_NAME}"
@@ -249,8 +271,16 @@ create_gpu_launch_template() {
     local efa_only_count=$(get_efa_only_card_count "$gpu_type")
     local lt_name="${CLUSTER_NAME}-gpu-${resource_name}-${purchase_option}${suffix}-lt"
 
+    # Capacity Block requires InstanceType to be embedded in the Launch Template.
+    # For other modes we leave it out so EKS managed node group accepts --instance-types.
+    local embed_instance_type="false"
+    if [ "${purchase_option}" = "cb" ]; then
+        embed_instance_type="true"
+    fi
+
     echo "Creating Launch Template: ${lt_name}"
     echo "  Instance Type: ${instance_type}"
+    echo "  Embed InstanceType in LT: ${embed_instance_type}"
     echo "  EFA-only Cards: ${efa_only_count}"
     if [[ -n "${EC2_KEY_NAME:-}" ]]; then
         echo "  EC2 Key Pair: ${EC2_KEY_NAME}"
@@ -405,6 +435,8 @@ efa_only_count = ${efa_only_count}
 capacity_reservation_id = "${capacity_reservation_id}"
 userdata_b64 = "${userdata_b64}"
 ec2_key_name = "${EC2_KEY_NAME:-}"
+instance_type = "${instance_type}"
+embed_instance_type = "${embed_instance_type}" == "true"
 
 # Network interfaces configuration
 # Primary: NetworkCardIndex=0, DeviceIndex=0, InterfaceType=efa (not efa-only!)
@@ -500,6 +532,10 @@ if capacity_reservation_id:
 if ec2_key_name:
     lt_data["KeyName"] = ec2_key_name
 
+# Capacity Block requires InstanceType inside the Launch Template
+if embed_instance_type:
+    lt_data["InstanceType"] = instance_type
+
 print(json.dumps(lt_data, indent=2))
 PYSCRIPT
 
@@ -593,13 +629,20 @@ create_gpu_nodegroup() {
 
     echo "Creating nodegroup via AWS CLI..."
 
+    # For CAPACITY_BLOCK, InstanceType is specified inside the Launch Template.
+    # Passing --instance-types here would conflict with the LT, so omit it.
+    local instance_types_arg=(--instance-types "${instance_type}")
+    if [ "${purchase_option}" = "cb" ]; then
+        instance_types_arg=()
+    fi
+
     aws eks create-nodegroup \
         --cluster-name "${CLUSTER_NAME}" \
         --nodegroup-name "${ng_name}" \
         --subnets ${subnets[*]} \
         --node-role "${GPU_NODE_ROLE_ARN}" \
         --launch-template "id=${lt_id},version=${lt_version}" \
-        --instance-types "${instance_type}" \
+        "${instance_types_arg[@]}" \
         --capacity-type "${capacity_type}" \
         --scaling-config "minSize=${GPU_NODE_MIN_SIZE},maxSize=${GPU_NODE_MAX_SIZE},desiredSize=${GPU_NODE_DESIRED_CAPACITY}" \
         --labels "workload-type=gpu,gpu-instance-type=${gpu_type},purchase-option=${purchase_option}" \
@@ -766,7 +809,7 @@ echo "GPU AMI ID: ${GPU_AMI_ID}"
 echo ""
 echo "Step 5: Creating GPU node groups..."
 echo "GPU Instance Types: ${GPU_INSTANCE_TYPES}"
-echo "Pricing Options: Spot=${DEPLOY_GPU_SPOT}, ODCR=${DEPLOY_GPU_ODCR}, CB=${DEPLOY_GPU_CB}"
+echo "Pricing Options: OD=${DEPLOY_GPU_OD}, Spot=${DEPLOY_GPU_SPOT}, ODCR=${DEPLOY_GPU_ODCR}, CB=${DEPLOY_GPU_CB}"
 
 IFS=',' read -ra GPU_TYPE_ARRAY <<< "$GPU_INSTANCE_TYPES"
 
@@ -791,6 +834,14 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     if [ "$efa_count" -eq 0 ]; then
         echo "WARNING: Unknown GPU type: ${gpu_type}, skipping"
         continue
+    fi
+
+    # Deploy On-Demand node group
+    if [ "${DEPLOY_GPU_OD}" = "true" ]; then
+        echo ""
+        echo "Creating On-Demand node group for ${gpu_type}..."
+        create_gpu_launch_template "$gpu_type" "od" "" ""
+        create_gpu_nodegroup "$gpu_type" "od" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
     fi
 
     # Deploy Spot node group
@@ -914,6 +965,7 @@ echo "Node groups created for:"
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     gpu_type=$(echo "$gpu_type" | tr -d ' ')
     echo "  • ${gpu_type}:"
+    [ "${DEPLOY_GPU_OD}" = "true" ] && echo "    - On-Demand (all AZs)"
     [ "${DEPLOY_GPU_SPOT}" = "true" ] && echo "    - Spot (all AZs)"
 
     if [ "${DEPLOY_GPU_ODCR}" = "true" ]; then
