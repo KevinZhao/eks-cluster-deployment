@@ -17,7 +17,7 @@ echo "Supported GPU types:"
 echo "  • p5.48xlarge:      1 EFA + 31 EFA-only (NetworkCardIndex 0-31)"
 echo "  • p5en.48xlarge:    1 EFA + 15 EFA-only (NetworkCardIndex 0-15)"
 echo "  • p6-b200.48xlarge: 1 EFA + 7 EFA-only  (NetworkCardIndex 0-7)"
-echo "  • p6-b300.48xlarge: 1 EFA + 16 EFA-only (NetworkCardIndex 0-16)"
+echo "  • p6-b300.48xlarge: 16 EFA-only on NIC 1-16 (NIC 0 = ENA only; MaxEFA=16)"
 echo "  • g7e.48xlarge:     1 EFA + 3 EFA-only  (NetworkCardIndex 0-3)"
 echo ""
 echo "Pricing options (mutually exclusive - choose ONE):"
@@ -442,15 +442,25 @@ instance_type = "${instance_type}"
 embed_instance_type = "${embed_instance_type}" == "true"
 
 # Network interfaces configuration
-# Primary: NetworkCardIndex=0, DeviceIndex=0, InterfaceType=efa (not efa-only!)
+# Primary: NetworkCardIndex=0, DeviceIndex=0
+#   - Most GPU instance types: InterfaceType=efa (EFA + ENA on same primary NIC)
+#   - p6-b300.48xlarge: InterfaceType=interface (ENA only) — Network Card 0 does
+#     NOT accept EFA on this type (MaximumEfaInterfaces=16 but MaximumNetworkCards=17;
+#     EFA is only allowed on NetworkCardIndex 1..16). Using InterfaceType=efa on
+#     NIC 0 yields `AttachmentLimitExceeded: Network Card 0 (requested: 1, limit: 0)`
 # Additional: NetworkCardIndex=1..N, DeviceIndex=1, InterfaceType=efa-only
 network_interfaces = []
 
-# Primary network card (EFA with ENA capability)
+# Primary network card — type depends on the instance
+if instance_type == "p6-b300.48xlarge":
+    primary_interface_type = "interface"   # pure ENA, no EFA on NIC 0
+else:
+    primary_interface_type = "efa"         # EFA + ENA on NIC 0
+
 network_interfaces.append({
     "NetworkCardIndex": 0,
     "DeviceIndex": 0,
-    "InterfaceType": "efa",
+    "InterfaceType": primary_interface_type,
     "DeleteOnTermination": True,
     "Groups": [gpu_sg_id, cluster_sg_id],
 })
