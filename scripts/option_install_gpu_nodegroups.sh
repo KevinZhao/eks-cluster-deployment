@@ -81,6 +81,20 @@ DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
 EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
 
+# Local NVMe Instance Store LVM configuration.
+# When enabled, all Instance Store NVMe disks are striped into one VG/LV
+# and mounted at ${GPU_LOCAL_LVM_MOUNT} (default /data) for scratch use
+# (training checkpoints, shuffle, dataset cache, etc.).
+# Instance Store is ephemeral: state is lost on instance stop/start, so the
+# volume is re-initialized via a systemd oneshot on every boot rather than
+# via /etc/fstab.
+GPU_ENABLE_LOCAL_LVM="${GPU_ENABLE_LOCAL_LVM:-true}"
+GPU_LOCAL_LVM_VG_NAME="${GPU_LOCAL_LVM_VG_NAME:-vg_local}"
+GPU_LOCAL_LVM_LV_NAME="${GPU_LOCAL_LVM_LV_NAME:-lv_scratch}"
+GPU_LOCAL_LVM_MOUNT="${GPU_LOCAL_LVM_MOUNT:-/data}"
+GPU_LOCAL_LVM_FS="${GPU_LOCAL_LVM_FS:-xfs}"
+GPU_LOCAL_LVM_STRIPE_SIZE_KB="${GPU_LOCAL_LVM_STRIPE_SIZE_KB:-256}"
+
 # Validate: only one pricing option should be enabled (mutually exclusive)
 ENABLED_COUNT=0
 [ "${DEPLOY_GPU_OD}" = "true" ] && ENABLED_COUNT=$((ENABLED_COUNT + 1))
@@ -310,27 +324,35 @@ echo "=== Starting GPU Node LVM Setup ==="
 # Stop containerd first
 systemctl stop containerd || true
 
-# Wait for data disk to be available (max 60 seconds)
-# Find NVMe disk that has NO partitions (the data disk is unpartitioned)
-echo "Waiting for data disk..."
+# Wait for EBS data disk to be available (max 60 seconds).
+# On GPU instances we must distinguish EBS from Instance Store, because
+# both appear as unpartitioned NVMe devices. Use the device model:
+#   - EBS:            "Amazon Elastic Block Store"
+#   - Instance Store: "Amazon EC2 NVMe Instance Storage"
+echo "Waiting for EBS data disk..."
 for i in {1..60}; do
-  # Find all NVMe disks, then filter to those without partitions
-  for dev in \$(lsblk -dpno NAME | grep nvme); do
-    # Check if this disk has any partitions
+  for sys_path in /sys/block/nvme*n1; do
+    [ -e "\$sys_path" ] || continue
+    MODEL=\$(cat "\$sys_path/device/model" 2>/dev/null | xargs)
+    case "\$MODEL" in
+      *"Elastic Block Store"*) ;;
+      *) continue ;;
+    esac
+    dev="/dev/\$(basename "\$sys_path")"
+    # Skip the root disk (the one with partitions, e.g. /dev/nvme0n1p1)
     PARTS=\$(lsblk -no NAME "\$dev" 2>/dev/null | wc -l)
     if [ "\$PARTS" -eq 1 ]; then
-      # Only the disk itself, no partitions - this is our data disk
       DISK="\$dev"
-      echo "Found unpartitioned data disk: \$DISK"
+      echo "Found EBS data disk: \$DISK (model: \$MODEL)"
       break 2
     fi
   done
-  echo "Attempt \$i/60: Data disk not found yet, waiting..."
+  echo "Attempt \$i/60: EBS data disk not found yet, waiting..."
   sleep 1
 done
 
 if [ -z "\$DISK" ]; then
-  echo "ERROR: No unpartitioned data disk found after 60 seconds"
+  echo "ERROR: No EBS data disk found after 60 seconds"
   echo "Available disks:"
   lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
   systemctl start containerd
@@ -383,6 +405,137 @@ fi
 
 echo "=== LVM Setup Complete ==="
 
+# ============================================================
+# Local Instance Store LVM Setup (scratch volume at ${GPU_LOCAL_LVM_MOUNT})
+# ============================================================
+# Instance Store is ephemeral (data lost on stop/start) so we do NOT
+# write /etc/fstab. Instead we install a systemd oneshot that re-runs
+# the init-or-remount logic on every boot.
+LOCAL_SSD_TOTAL_GB=0
+if [ "${GPU_ENABLE_LOCAL_LVM}" = "true" ]; then
+  echo "=== Setting up Local Instance Store LVM ==="
+
+  # Ensure lvm2 is present (usually already installed by EBS LVM step above)
+  command -v lvcreate >/dev/null || dnf install -y lvm2
+
+  install -m 0755 /dev/stdin /usr/local/sbin/setup-local-lvm.sh <<'SETUP_LOCAL_LVM'
+#!/bin/bash
+# Initialize or remount the local Instance Store LVM volume.
+# Safe to run on every boot: if the VG/LV no longer exists (fresh stop/start),
+# it rebuilds from scratch; otherwise it just remounts.
+set -e
+
+VG_NAME="__VG_NAME__"
+LV_NAME="__LV_NAME__"
+MOUNT_POINT="__MOUNT_POINT__"
+FS_TYPE="__FS_TYPE__"
+STRIPE_KB="__STRIPE_KB__"
+
+log() { echo "[local-lvm] \$*"; }
+
+# Collect Instance Store NVMe disks by model string (reliable across kernels)
+LOCAL_DISKS=()
+for sys_path in /sys/block/nvme*n1; do
+  [ -e "\$sys_path" ] || continue
+  model=\$(cat "\$sys_path/device/model" 2>/dev/null | xargs)
+  case "\$model" in
+    *"Instance Storage"*) LOCAL_DISKS+=("/dev/\$(basename "\$sys_path")") ;;
+  esac
+done
+
+if [ \${#LOCAL_DISKS[@]} -eq 0 ]; then
+  log "No Instance Store NVMe disks detected; skipping"
+  exit 0
+fi
+log "Detected \${#LOCAL_DISKS[@]} local NVMe disk(s): \${LOCAL_DISKS[*]}"
+
+mkdir -p "\$MOUNT_POINT"
+
+# Fast path: already mounted
+if mountpoint -q "\$MOUNT_POINT"; then
+  log "\$MOUNT_POINT already mounted"
+  exit 0
+fi
+
+# If VG still exists from a prior activation this boot, just mount
+if vgs "\$VG_NAME" >/dev/null 2>&1; then
+  log "VG \$VG_NAME already exists, activating and mounting"
+  vgchange -ay "\$VG_NAME"
+  mount -o noatime,nodiratime,discard "/dev/\$VG_NAME/\$LV_NAME" "\$MOUNT_POINT"
+  exit 0
+fi
+
+# Fresh build
+log "Building \$VG_NAME across \${#LOCAL_DISKS[@]} disk(s)"
+for d in "\${LOCAL_DISKS[@]}"; do
+  # Wipe any stale signatures (Instance Store carries over FS headers
+  # from previous tenants on the same hardware slot in rare cases)
+  wipefs -a "\$d" || true
+  pvcreate -ff -y "\$d"
+done
+
+vgcreate "\$VG_NAME" "\${LOCAL_DISKS[@]}"
+
+if [ \${#LOCAL_DISKS[@]} -gt 1 ]; then
+  lvcreate -y -i "\${#LOCAL_DISKS[@]}" -I "\${STRIPE_KB}" -l 100%FREE -n "\$LV_NAME" "\$VG_NAME"
+else
+  lvcreate -y -l 100%FREE -n "\$LV_NAME" "\$VG_NAME"
+fi
+
+case "\$FS_TYPE" in
+  xfs)  mkfs.xfs -f "/dev/\$VG_NAME/\$LV_NAME" ;;
+  ext4) mkfs.ext4 -F "/dev/\$VG_NAME/\$LV_NAME" ;;
+  *)    log "Unsupported FS: \$FS_TYPE"; exit 1 ;;
+esac
+
+mount -o noatime,nodiratime,discard "/dev/\$VG_NAME/\$LV_NAME" "\$MOUNT_POINT"
+chmod 1777 "\$MOUNT_POINT"
+log "Mounted /dev/\$VG_NAME/\$LV_NAME at \$MOUNT_POINT"
+df -h "\$MOUNT_POINT"
+SETUP_LOCAL_LVM
+
+  # Substitute config into the script
+  sed -i \\
+    -e "s|__VG_NAME__|${GPU_LOCAL_LVM_VG_NAME}|g" \\
+    -e "s|__LV_NAME__|${GPU_LOCAL_LVM_LV_NAME}|g" \\
+    -e "s|__MOUNT_POINT__|${GPU_LOCAL_LVM_MOUNT}|g" \\
+    -e "s|__FS_TYPE__|${GPU_LOCAL_LVM_FS}|g" \\
+    -e "s|__STRIPE_KB__|${GPU_LOCAL_LVM_STRIPE_SIZE_KB}|g" \\
+    /usr/local/sbin/setup-local-lvm.sh
+
+  cat > /etc/systemd/system/setup-local-lvm.service <<'UNIT'
+[Unit]
+Description=Initialize and mount local NVMe Instance Store LVM
+DefaultDependencies=no
+After=local-fs-pre.target systemd-udev-settle.service
+Before=local-fs.target kubelet.service containerd.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/setup-local-lvm.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=local-fs.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable --now setup-local-lvm.service
+
+  # Compute total local SSD size for node label
+  if [ -b "/dev/${GPU_LOCAL_LVM_VG_NAME}/${GPU_LOCAL_LVM_LV_NAME}" ]; then
+    LOCAL_SSD_TOTAL_BYTES=\$(blockdev --getsize64 "/dev/${GPU_LOCAL_LVM_VG_NAME}/${GPU_LOCAL_LVM_LV_NAME}" 2>/dev/null || echo 0)
+    LOCAL_SSD_TOTAL_GB=\$(( LOCAL_SSD_TOTAL_BYTES / 1024 / 1024 / 1024 ))
+  fi
+  echo "Local SSD total: \${LOCAL_SSD_TOTAL_GB} GB"
+  echo "=== Local Instance Store LVM Setup Complete ==="
+else
+  echo "Local Instance Store LVM disabled (GPU_ENABLE_LOCAL_LVM=${GPU_ENABLE_LOCAL_LVM})"
+fi
+
 # Install lustre-client for FSx Lustre support
 echo "=== Installing Lustre Client ==="
 dnf install -y lustre-client
@@ -391,8 +544,34 @@ echo "Lustre client installed"
 
 echo "=== Starting EKS Node Bootstrap ==="
 
+# Build kubelet node-labels for local SSD awareness.
+# NOTE: kubelet under NodeRestriction can only register labels outside the
+# reserved kubernetes.io / k8s.io / node.kubernetes.io prefixes (except for a
+# small hardcoded whitelist). So we use the unprefixed "local-ssd" namespace.
+# Only emitted when local LVM actually materialized a volume.
+NODE_LABEL_FLAGS=""
+if [ "\${LOCAL_SSD_TOTAL_GB}" -gt 0 ]; then
+  NODE_LABEL_FLAGS="--node-labels=local-ssd=true,local-ssd-size-gb=\${LOCAL_SSD_TOTAL_GB}"
+fi
+
 # Create nodeadm config
 mkdir -p /etc/eks/nodeadm.d
+if [ -n "\${NODE_LABEL_FLAGS}" ]; then
+cat > /etc/eks/nodeadm.d/nodeconfig.yaml <<NODECONFIG
+---
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: ${CLUSTER_NAME}
+    apiServerEndpoint: ${CLUSTER_ENDPOINT}
+    certificateAuthority: ${CLUSTER_CA}
+    cidr: ${SERVICE_IPV4_CIDR}
+  kubelet:
+    flags:
+      - "\${NODE_LABEL_FLAGS}"
+NODECONFIG
+else
 cat > /etc/eks/nodeadm.d/nodeconfig.yaml <<NODECONFIG
 ---
 apiVersion: node.eks.aws/v1alpha1
@@ -404,6 +583,7 @@ spec:
     certificateAuthority: ${CLUSTER_CA}
     cidr: ${SERVICE_IPV4_CIDR}
 NODECONFIG
+fi
 
 echo "NodeConfig written to /etc/eks/nodeadm.d/nodeconfig.yaml"
 cat /etc/eks/nodeadm.d/nodeconfig.yaml
@@ -1099,6 +1279,10 @@ echo "  • IAM Role: ${GPU_NODE_ROLE_NAME}"
 echo "  • Security Group: ${GPU_SG_ID}"
 echo "  • GPU AMI: ${GPU_AMI_ID}"
 [ "${INSTALL_EFA_DEVICE_PLUGIN}" = "true" ] && echo "  • EFA Device Plugin: aws-efa-k8s-device-plugin-daemonset (${EFA_DEVICE_PLUGIN_VERSION})"
+if [ "${GPU_ENABLE_LOCAL_LVM}" = "true" ]; then
+    echo "  • Local NVMe LVM: ${GPU_LOCAL_LVM_VG_NAME}/${GPU_LOCAL_LVM_LV_NAME} (striped, ${GPU_LOCAL_LVM_FS}) → ${GPU_LOCAL_LVM_MOUNT}"
+    echo "  • Node labels:    local-ssd=true, local-ssd-size-gb=<total>"
+fi
 echo ""
 echo "Node groups created for:"
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
@@ -1142,6 +1326,12 @@ echo ""
 echo "To verify nodes:"
 echo "  kubectl get nodes -l workload-type=gpu"
 echo ""
+if [ "${GPU_ENABLE_LOCAL_LVM}" = "true" ]; then
+    echo "To verify local NVMe LVM on a node:"
+    echo "  kubectl debug node/\${NODE} -it --image=amazonlinux -- chroot /host sh -c 'vgs; lvs; df -h ${GPU_LOCAL_LVM_MOUNT}'"
+    echo "  kubectl get nodes -l local-ssd=true -L local-ssd-size-gb"
+    echo ""
+fi
 echo "To verify EFA on node:"
 echo "  kubectl debug node/\${NODE} -it --image=amazonlinux -- chroot /host ls /sys/class/infiniband/"
 echo ""
