@@ -132,7 +132,9 @@ spec:
   metadataOptions:
     httpEndpoint: enabled
     httpProtocolIPv6: disabled
-    httpPutResponseHopLimit: 1
+    # hop limit must be >= 2: Pod Identity / IRSA traffic from pods traverses
+    # the container network namespace (1 hop) before reaching IMDS.
+    httpPutResponseHopLimit: 2
     httpTokens: required
 
   tags:
