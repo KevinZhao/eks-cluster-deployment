@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 # Get script directory and project root

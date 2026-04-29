@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 # 日志函数
@@ -83,12 +84,9 @@ export ALB_CONTROLLER_CHART_VERSION="${ALB_CONTROLLER_CHART_VERSION:-1.16.0}"
 # Karpenter
 export KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
 
-# CSI Drivers (EKS Managed Addons - versions managed by AWS)
-# Note: EFS, FSx, S3 CSI drivers are installed as EKS managed addons
-# Version is automatically selected by AWS based on EKS version compatibility
-
-# Metrics Server
-export METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-v0.7.2}"
+# CSI Drivers, CoreDNS, and Metrics Server are installed as EKS Managed Addons.
+# Versions are automatically selected by AWS based on EKS version compatibility —
+# no manual version configuration needed.
 
 # 6. 检测 AZ 数量并自动推导 AZ（支持2-4个AZ）
 # 始终设置 A 和 B（必需）

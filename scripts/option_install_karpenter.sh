@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 # 获取脚本所在目录的父目录（项目根目录）

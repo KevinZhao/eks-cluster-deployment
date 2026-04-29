@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

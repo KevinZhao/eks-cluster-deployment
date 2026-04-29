@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 # Get script directory and project root
@@ -85,10 +86,10 @@ EOFCONFIG
         -e "s/\${SYSTEM_NODE_LABEL_KEY}/${SYSTEM_NODE_LABEL_KEY}/g" \
         -e "s/\${SYSTEM_NODE_LABEL_VALUE}/${SYSTEM_NODE_LABEL_VALUE}/g")
 
+    # Omit --addon-version so AWS selects the default compatible version for K8S_VERSION.
     aws eks create-addon \
         --cluster-name "${CLUSTER_NAME}" \
         --addon-name coredns \
-        --addon-version "$(aws eks describe-addon-versions --kubernetes-version "${K8S_VERSION}" --addon-name coredns --region "${AWS_REGION}" --query 'addons[0].addonVersions[0].addonVersion' --output text)" \
         --configuration-values "$COREDNS_CONFIG" \
         --region "${AWS_REGION}"
     echo "✓ coredns addon created"
@@ -120,10 +121,10 @@ EOFCONFIG
         -e "s/\${SYSTEM_NODE_LABEL_KEY}/${SYSTEM_NODE_LABEL_KEY}/g" \
         -e "s/\${SYSTEM_NODE_LABEL_VALUE}/${SYSTEM_NODE_LABEL_VALUE}/g")
 
+    # Omit --addon-version so AWS selects the default compatible version for K8S_VERSION.
     aws eks create-addon \
         --cluster-name "${CLUSTER_NAME}" \
         --addon-name metrics-server \
-        --addon-version "$(aws eks describe-addon-versions --kubernetes-version "${K8S_VERSION}" --addon-name metrics-server --region "${AWS_REGION}" --query 'addons[0].addonVersions[0].addonVersion' --output text)" \
         --configuration-values "$METRICS_SERVER_CONFIG" \
         --region "${AWS_REGION}"
     echo "✓ metrics-server addon created"

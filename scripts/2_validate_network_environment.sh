@@ -6,6 +6,7 @@
 #
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 # Colors for output

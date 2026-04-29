@@ -81,6 +81,12 @@ DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
 EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
 
+# NVIDIA Kubernetes device plugin. Override NVIDIA_DEVICE_PLUGIN_IMAGE when
+# deploying to regions where nvcr.io is unreachable (e.g. cn-*) and mirror
+# the image into a reachable registry (ECR/Harbor/etc).
+NVIDIA_DEVICE_PLUGIN_VERSION="${NVIDIA_DEVICE_PLUGIN_VERSION:-v0.15.0}"
+NVIDIA_DEVICE_PLUGIN_IMAGE="${NVIDIA_DEVICE_PLUGIN_IMAGE:-nvcr.io/nvidia/k8s-device-plugin:${NVIDIA_DEVICE_PLUGIN_VERSION}}"
+
 # Local NVMe Instance Store LVM configuration.
 # When enabled, all Instance Store NVMe disks are striped into one VG/LV
 # and mounted at ${GPU_LOCAL_LVM_MOUNT} (default /data) for scratch use
@@ -873,7 +879,8 @@ install_nvidia_device_plugin() {
     # Apply custom NVIDIA device plugin with host library symlinks
     # Required for EKS optimized GPU AMI where NVML libraries are on the host
     echo "Applying NVIDIA Device Plugin DaemonSet (with host library symlinks)..."
-    kubectl apply -f - <<'EOF'
+    echo "  Image: ${NVIDIA_DEVICE_PLUGIN_IMAGE}"
+    kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -899,7 +906,7 @@ spec:
       priorityClassName: system-node-critical
       hostPID: true
       containers:
-      - image: nvcr.io/nvidia/k8s-device-plugin:v0.15.0
+      - image: ${NVIDIA_DEVICE_PLUGIN_IMAGE}
         name: nvidia-device-plugin-ctr
         command: ["/bin/sh", "-c"]
         args:
@@ -1278,6 +1285,7 @@ echo "Created resources:"
 echo "  • IAM Role: ${GPU_NODE_ROLE_NAME}"
 echo "  • Security Group: ${GPU_SG_ID}"
 echo "  • GPU AMI: ${GPU_AMI_ID}"
+echo "  • NVIDIA Device Plugin: nvidia-device-plugin-daemonset (${NVIDIA_DEVICE_PLUGIN_VERSION})"
 [ "${INSTALL_EFA_DEVICE_PLUGIN}" = "true" ] && echo "  • EFA Device Plugin: aws-efa-k8s-device-plugin-daemonset (${EFA_DEVICE_PLUGIN_VERSION})"
 if [ "${GPU_ENABLE_LOCAL_LVM}" = "true" ]; then
     echo "  • Local NVMe LVM: ${GPU_LOCAL_LVM_VG_NAME}/${GPU_LOCAL_LVM_LV_NAME} (striped, ${GPU_LOCAL_LVM_FS}) → ${GPU_LOCAL_LVM_MOUNT}"

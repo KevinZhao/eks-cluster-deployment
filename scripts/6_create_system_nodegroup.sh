@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -o pipefail
 
 # Disable AWS CLI pager to prevent blocking on JSON output
 export AWS_PAGER=""

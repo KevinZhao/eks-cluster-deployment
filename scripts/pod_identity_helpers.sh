@@ -4,6 +4,7 @@
 # 提供可重用的 Pod Identity 设置函数，用于所有 EKS add-ons
 
 set -e
+set -o pipefail
 export AWS_PAGER=""
 
 # ============================================
