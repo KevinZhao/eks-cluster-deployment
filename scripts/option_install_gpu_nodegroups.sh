@@ -378,13 +378,18 @@ verify_topology() {
 
         case "${gate}" in
             strict)
-                echo "  strict mode → scaling NG ${ng_name} to 0 to release bad placement"
+                # Scale desired to 0 to release the misplaced capacity.
+                # EKS update-nodegroup-config rejects maxSize=0 (min valid is 1),
+                # so we keep maxSize=1 and only zero minSize+desiredSize.
+                # Operator decides whether to delete-nodegroup or retry.
+                echo "  strict mode → scaling NG ${ng_name} desired=0 to release bad placement"
                 aws eks update-nodegroup-config \
                     --cluster-name "${CLUSTER_NAME}" \
                     --nodegroup-name "${ng_name}" \
                     --region "${AWS_REGION}" \
-                    --scaling-config minSize=0,maxSize=0,desiredSize=0 \
-                    >/dev/null 2>&1 || true
+                    --scaling-config minSize=0,maxSize=1,desiredSize=0 \
+                    >/dev/null 2>&1 || \
+                    echo "  WARN: failed to scale NG to 0; operator must do it manually"
                 return 1
                 ;;
             warn)
