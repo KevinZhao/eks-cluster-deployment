@@ -86,6 +86,30 @@ DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
 EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
 
+# Install the full EFA userspace (libfabric-aws + openmpi5-aws + utils
+# under /opt/amazon/efa/) in the node userdata. The EKS GPU AMI ships
+# only kernel-side EFA; this adds `fi_info`, `fi_pingpong`, etc. for
+# host-level diagnostics and for workloads that rely on host libfabric.
+# Discovered 2026-05-03 on p5 usw2-az1 that the AMI alone gives no
+# /opt/amazon/efa/ — same as the long-noted Ohio p5en gap.
+GPU_INSTALL_EFA_USERSPACE="${GPU_INSTALL_EFA_USERSPACE:-true}"
+
+# ------------------------------------------------------------
+# Nodegroup suffix + AZ narrowing (for multi-run coexistence)
+# ------------------------------------------------------------
+# GPU_NG_SUFFIX: optional suffix appended to NG/LT/PG names, e.g. "-az3-p3"
+#   Lets multiple NGs of the same (gpu_type, purchase_option) coexist
+#   without colliding. ODCR/CB paths already auto-suffix per reservation;
+#   OD and Spot paths use this env.
+GPU_NG_SUFFIX="${GPU_NG_SUFFIX:-}"
+
+# GPU_TARGET_AZ: optional AZ suffix letter (a|b|c|d) to narrow deployments
+#   to a single subnet. When set, OD and Spot paths use ONLY the matching
+#   PRIVATE_SUBNET_${AZ} (required for cluster-PG eligibility — a single
+#   cluster PG spans one AZ). Example: GPU_TARGET_AZ=c → uses PRIVATE_SUBNET_C.
+#   When empty, multi-AZ behavior is preserved (old default).
+GPU_TARGET_AZ="${GPU_TARGET_AZ:-}"
+
 # ------------------------------------------------------------
 # Placement Group (cluster strategy) — for EFA same-leaf locality
 # ------------------------------------------------------------
@@ -876,6 +900,34 @@ cat /etc/eks/nodeadm.d/nodeconfig.yaml
 echo "Running nodeadm init..."
 nodeadm init --config-source file:///etc/eks/nodeadm.d/nodeconfig.yaml
 
+# ============================================================
+# EFA userspace packages (libfabric-aws, openmpi5-aws, etc.)
+# ============================================================
+# The EKS GPU AMI ships only the kernel-side EFA driver, which is
+# enough for containerized workloads that bring their own libfabric
+# (NCCL images usually do). But for host-level diagnostics like
+# \`/opt/amazon/efa/bin/fi_info -p efa\`, or for workloads that rely
+# on the host's libfabric, we need the full userspace install.
+#
+# Enable with GPU_INSTALL_EFA_USERSPACE=true (default: true).
+if [ "${GPU_INSTALL_EFA_USERSPACE}" = "true" ] && [ ! -x /opt/amazon/efa/bin/fi_info ]; then
+  echo "=== Installing EFA userspace (libfabric-aws + openmpi5-aws) ==="
+  # --skip-kmod = don't rebuild kernel module (AMI already has it)
+  # -y = non-interactive
+  ( cd /tmp && \
+    curl -fsSLO https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz && \
+    tar -xf aws-efa-installer-latest.tar.gz && \
+    cd aws-efa-installer && \
+    ./efa_installer.sh -y --skip-kmod --minimal 2>&1 | tail -20 ) || \
+    echo "WARN: efa_installer failed; containers with their own libfabric will still work"
+  if [ -x /opt/amazon/efa/bin/fi_info ]; then
+    echo "EFA userspace installed at /opt/amazon/efa/"
+    /opt/amazon/efa/bin/fi_info --version 2>&1 | head -1 || true
+  fi
+else
+  echo "Skipping EFA userspace install (already present or GPU_INSTALL_EFA_USERSPACE!=true)"
+fi
+
 # Enable services for reboot persistence
 echo "Enabling kubelet and containerd services..."
 systemctl enable kubelet containerd
@@ -1460,6 +1512,19 @@ SUBNET_MAP["b"]="${PRIVATE_SUBNET_B}"
 [ -n "${PRIVATE_SUBNET_C:-}" ] && SUBNET_MAP["c"]="${PRIVATE_SUBNET_C}"
 [ -n "${PRIVATE_SUBNET_D:-}" ] && SUBNET_MAP["d"]="${PRIVATE_SUBNET_D}"
 
+# GPU_TARGET_AZ: if set, narrow ALL_SUBNETS to that single AZ's subnet.
+# Required for cluster-PG eligibility — cluster PG is single-AZ-only.
+if [ -n "${GPU_TARGET_AZ}" ]; then
+    _target_subnet="${SUBNET_MAP[${GPU_TARGET_AZ}]:-}"
+    if [ -z "${_target_subnet}" ]; then
+        echo "ERROR: GPU_TARGET_AZ='${GPU_TARGET_AZ}' set but PRIVATE_SUBNET_${GPU_TARGET_AZ^^} is empty"
+        exit 1
+    fi
+    echo "GPU_TARGET_AZ=${GPU_TARGET_AZ} → narrowing OD/Spot deploys to subnet ${_target_subnet}"
+    ALL_SUBNETS=("${_target_subnet}")
+    unset _target_subnet
+fi
+
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     gpu_type=$(echo "$gpu_type" | tr -d ' ')
     echo ""
@@ -1475,18 +1540,18 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     if [ "${DEPLOY_GPU_OD}" = "true" ]; then
         echo ""
         echo "Creating On-Demand node group for ${gpu_type}..."
-        od_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "od" "" "${ALL_SUBNETS[@]}")
-        create_gpu_launch_template "$gpu_type" "od" "" "" "$od_pg_name"
-        create_gpu_nodegroup "$gpu_type" "od" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
+        od_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "od" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}")
+        create_gpu_launch_template "$gpu_type" "od" "" "${GPU_NG_SUFFIX}" "$od_pg_name"
+        create_gpu_nodegroup "$gpu_type" "od" "$LT_ID" "$LT_VERSION" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}"
     fi
 
     # Deploy Spot node group
     if [ "${DEPLOY_GPU_SPOT}" = "true" ]; then
         echo ""
         echo "Creating Spot node group for ${gpu_type}..."
-        spot_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "spot" "" "${ALL_SUBNETS[@]}")
-        create_gpu_launch_template "$gpu_type" "spot" "" "" "$spot_pg_name"
-        create_gpu_nodegroup "$gpu_type" "spot" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
+        spot_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "spot" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}")
+        create_gpu_launch_template "$gpu_type" "spot" "" "${GPU_NG_SUFFIX}" "$spot_pg_name"
+        create_gpu_nodegroup "$gpu_type" "spot" "$LT_ID" "$LT_VERSION" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}"
     fi
 
     # Deploy ODCR node group(s) - supports multiple reservations
