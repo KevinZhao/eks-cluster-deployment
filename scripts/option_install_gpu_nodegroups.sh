@@ -81,6 +81,28 @@ DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
 EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
 
+# ------------------------------------------------------------
+# Placement Group (cluster strategy) — for EFA same-leaf locality
+# ------------------------------------------------------------
+# GPU_PG_STRATEGY:
+#   cluster             force all nodes in a per-AZ cluster PG (default; fail
+#                       if EC2 can't fit nodes in PG)
+#   cluster_best_effort try cluster PG, fallback to no PG if capacity short
+#   none                no PG (old behavior)
+GPU_PG_STRATEGY="${GPU_PG_STRATEGY:-cluster}"
+GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
+
+# ------------------------------------------------------------
+# Topology gate — verify nodes land under same network topology node
+# ------------------------------------------------------------
+# GPU_TOPOLOGY_GATE:
+#   strict  fail and scale NG to 0 on mismatch (default)
+#   warn    log a warning but continue
+#   off     skip the check entirely
+# GPU_TOPOLOGY_GATE_LEVEL: L1 (spine) | L2 (aggregator) | L3 (leaf / ToR)
+GPU_TOPOLOGY_GATE="${GPU_TOPOLOGY_GATE:-strict}"
+GPU_TOPOLOGY_GATE_LEVEL="${GPU_TOPOLOGY_GATE_LEVEL:-L3}"
+
 # NVIDIA Kubernetes device plugin. Override NVIDIA_DEVICE_PLUGIN_IMAGE when
 # deploying to regions where nvcr.io is unreachable (e.g. cn-*) and mirror
 # the image into a reachable registry (ECR/Harbor/etc).
@@ -141,6 +163,239 @@ get_efa_only_card_count() {
 # Convert instance type to resource-safe name (replace dots with dashes)
 get_resource_name() {
     echo "${1//./-}"
+}
+
+# ===================================================================
+# Placement Group helpers
+# ===================================================================
+# Idempotently ensure a cluster-strategy placement group exists for
+# (gpu_type, AZ, suffix). Echoes the PG name on stdout on success,
+# or empty string if GPU_PG_STRATEGY=none.
+#
+# Args:
+#   $1 gpu_type    e.g. p5en.48xlarge
+#   $2 az          full zone name, e.g. us-west-2c
+#   $3 suffix      optional, e.g. "-1"
+ensure_cluster_pg() {
+    local gpu_type=$1
+    local az=$2
+    local suffix=${3:-}
+
+    if [ "${GPU_PG_STRATEGY}" = "none" ]; then
+        echo ""
+        return 0
+    fi
+
+    local resource_name=$(get_resource_name "$gpu_type")
+    local pg_name="${GPU_PG_NAME_PREFIX}-${resource_name}-${az}${suffix}-cg"
+
+    if aws ec2 describe-placement-groups \
+        --region "${AWS_REGION}" \
+        --group-names "${pg_name}" &>/dev/null; then
+        echo "Placement group ${pg_name} already exists" >&2
+    else
+        echo "Creating cluster placement group: ${pg_name}" >&2
+        aws ec2 create-placement-group \
+            --region "${AWS_REGION}" \
+            --group-name "${pg_name}" \
+            --strategy cluster \
+            --tag-specifications "ResourceType=placement-group,Tags=[{Key=Cluster,Value=${CLUSTER_NAME}},{Key=AZ,Value=${az}},{Key=gpu-instance-type,Value=${gpu_type}},{Key=managed-by,Value=eks-cluster-deployment},{Key=business,Value=middleware},{Key=resource,Value=eks}]" \
+            >/dev/null
+    fi
+
+    echo "${pg_name}"
+}
+
+# Delete placement group if empty (idempotent; AWS will refuse if still used).
+# Safe to call in teardown paths.
+delete_cluster_pg_if_empty() {
+    local pg_name=$1
+    if [ -z "${pg_name}" ]; then
+        return 0
+    fi
+    aws ec2 delete-placement-group \
+        --region "${AWS_REGION}" \
+        --group-name "${pg_name}" 2>/dev/null || \
+        echo "  (placement group ${pg_name} still has instances or does not exist; skipped)" >&2
+}
+
+# Plan the PG for a nodegroup based on strategy and subnet list.
+# Echoes PG name on stdout (empty = no PG).
+# Cluster-strategy PGs are AZ-specific, so we only attach one when the
+# target subnet list resolves to a single AZ. Multi-AZ calls get no PG
+# and a warning — user should narrow subnets to get PG.
+#
+# Args:
+#   $1 gpu_type
+#   $2 purchase_option  (od|spot|odcr|cb)
+#   $3 suffix
+#   $4+ one or more subnet IDs
+plan_pg_for_nodegroup() {
+    local gpu_type=$1
+    local purchase_option=$2
+    local suffix=$3
+    shift 3
+    local subnets=("$@")
+
+    if [ "${GPU_PG_STRATEGY}" = "none" ]; then
+        echo ""
+        return 0
+    fi
+
+    if [ ${#subnets[@]} -eq 0 ]; then
+        echo ""
+        return 0
+    fi
+
+    # Resolve AZ for each subnet; cluster PG only valid if all subnets in same AZ
+    local azs=()
+    for sn in "${subnets[@]}"; do
+        local az
+        az=$(aws ec2 describe-subnets \
+            --region "${AWS_REGION}" \
+            --subnet-ids "${sn}" \
+            --query 'Subnets[0].AvailabilityZone' \
+            --output text 2>/dev/null)
+        if [ -n "${az}" ] && [ "${az}" != "None" ]; then
+            azs+=("${az}")
+        fi
+    done
+
+    local unique_azs
+    unique_azs=$(printf '%s\n' "${azs[@]}" | sort -u)
+    local unique_count
+    unique_count=$(echo "${unique_azs}" | wc -l)
+
+    if [ "${unique_count}" -ne 1 ]; then
+        echo "  plan_pg: ${unique_count} distinct AZs in subnet list (${unique_azs//$'\n'/,}) — cluster PG requires single AZ; skipping PG" >&2
+        echo ""
+        return 0
+    fi
+
+    local az="${unique_azs}"
+    # Full PG suffix includes purchase_option for uniqueness (od/spot/odcr/cb)
+    local full_suffix="-${purchase_option}${suffix}"
+    ensure_cluster_pg "${gpu_type}" "${az}" "${full_suffix}"
+}
+
+# ===================================================================
+# Topology gate
+# ===================================================================
+# Verify all instances in a nodegroup share the same network-topology
+# ancestor at the requested level. Uses ec2:DescribeInstanceTopology
+# which returns up to 3 NetworkNodes per instance: [spine, aggregator, leaf].
+#
+# Args:
+#   $1 ng_name   EKS nodegroup name
+#   $2 gate      strict | warn | off
+#   $3 level     L1 | L2 | L3
+verify_topology() {
+    local ng_name=$1
+    local gate=${2:-strict}
+    local level=${3:-L3}
+
+    if [ "${gate}" = "off" ]; then
+        return 0
+    fi
+
+    # Map L1/L2/L3 to array index in NetworkNodes[].
+    # describe-instance-topology returns NetworkNodes[] in spine → leaf order.
+    local level_idx
+    case "${level}" in
+        L1) level_idx=0 ;;
+        L2) level_idx=1 ;;
+        L3) level_idx=2 ;;
+        *)  echo "ERROR: invalid GPU_TOPOLOGY_GATE_LEVEL='${level}' (expected L1|L2|L3)"; return 1 ;;
+    esac
+
+    echo "Topology gate: verifying NG=${ng_name} at level=${level} (gate=${gate})"
+
+    # Get ASG name → instance IDs
+    local asg_name
+    asg_name=$(aws eks describe-nodegroup \
+        --cluster-name "${CLUSTER_NAME}" \
+        --nodegroup-name "${ng_name}" \
+        --region "${AWS_REGION}" \
+        --query 'nodegroup.resources.autoScalingGroups[0].name' \
+        --output text 2>/dev/null)
+
+    if [ -z "${asg_name}" ] || [ "${asg_name}" = "None" ]; then
+        echo "  WARN: could not resolve ASG for NG ${ng_name}; skipping gate"
+        return 0
+    fi
+
+    local instance_ids
+    instance_ids=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "${asg_name}" \
+        --region "${AWS_REGION}" \
+        --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+        --output text)
+
+    if [ -z "${instance_ids}" ]; then
+        echo "  WARN: no InService instances in ASG ${asg_name}; skipping gate"
+        return 0
+    fi
+
+    local num_instances
+    num_instances=$(echo "${instance_ids}" | wc -w)
+
+    if [ "${num_instances}" -lt 2 ]; then
+        echo "  only ${num_instances} instance(s); topology gate trivially passes"
+        return 0
+    fi
+
+    # Query topology
+    local topology_json
+    topology_json=$(aws ec2 describe-instance-topology \
+        --region "${AWS_REGION}" \
+        --instance-ids ${instance_ids} \
+        --output json 2>/dev/null)
+
+    if [ -z "${topology_json}" ]; then
+        echo "  WARN: describe-instance-topology returned empty; skipping gate"
+        return 0
+    fi
+
+    # Count unique nodes at requested level
+    local unique_nodes
+    unique_nodes=$(echo "${topology_json}" \
+        | jq -r ".Instances[].NetworkNodes[${level_idx}] // \"__missing__\"" \
+        | sort -u)
+    local unique_count
+    unique_count=$(echo "${unique_nodes}" | wc -l)
+
+    # Print the full topology map for operator visibility
+    echo "  Topology map (level=${level}):"
+    echo "${topology_json}" \
+        | jq -r ".Instances[] | \"    \(.InstanceId)  AZ=\(.AvailabilityZone)  L1=\(.NetworkNodes[0])  L2=\(.NetworkNodes[1])  L3=\(.NetworkNodes[2])\""
+
+    if [ "${unique_count}" -gt 1 ]; then
+        echo ""
+        echo "  ❌ Topology gate FAILED: ${num_instances} instances spread across ${unique_count} ${level} nodes"
+        echo "     Unique ${level} nodes:"
+        echo "${unique_nodes}" | sed 's/^/       /'
+        echo ""
+
+        case "${gate}" in
+            strict)
+                echo "  strict mode → scaling NG ${ng_name} to 0 to release bad placement"
+                aws eks update-nodegroup-config \
+                    --cluster-name "${CLUSTER_NAME}" \
+                    --nodegroup-name "${ng_name}" \
+                    --region "${AWS_REGION}" \
+                    --scaling-config minSize=0,maxSize=0,desiredSize=0 \
+                    >/dev/null 2>&1 || true
+                return 1
+                ;;
+            warn)
+                echo "  warn mode → continuing despite topology mismatch"
+                return 0
+                ;;
+        esac
+    fi
+
+    echo "  ✅ Topology gate PASSED: all ${num_instances} instance(s) share the same ${level} node"
+    return 0
 }
 
 # ===================================================================
@@ -287,7 +542,8 @@ create_gpu_launch_template() {
     local gpu_type=$1
     local purchase_option=$2
     local capacity_reservation_id=${3:-}
-    local suffix=${4:-}  # Optional suffix for multiple reservations (e.g., "-1", "-2")
+    local suffix=${4:-}     # Optional suffix for multiple reservations (e.g., "-1", "-2")
+    local pg_name=${5:-}    # Optional cluster placement-group name (empty = no PG)
 
     local instance_type="$gpu_type"
     local resource_name=$(get_resource_name "$gpu_type")
@@ -626,6 +882,7 @@ userdata_b64 = "${userdata_b64}"
 ec2_key_name = "${EC2_KEY_NAME:-}"
 instance_type = "${instance_type}"
 embed_instance_type = "${embed_instance_type}" == "true"
+pg_name = "${pg_name}"
 
 # Network interfaces configuration
 # Primary: NetworkCardIndex=0, DeviceIndex=0
@@ -736,6 +993,13 @@ if embed_instance_type:
     lt_data["InstanceType"] = instance_type
     lt_data["InstanceMarketOptions"] = {
         "MarketType": "capacity-block"
+    }
+
+# Cluster placement group (forces same-leaf placement for EFA locality)
+if pg_name:
+    lt_data["Placement"] = {
+        "GroupName": pg_name,
+        "Tenancy": "default"
     }
 
 print(json.dumps(lt_data, indent=2))
@@ -861,6 +1125,12 @@ create_gpu_nodegroup() {
         --region "${AWS_REGION}"
 
     echo "Nodegroup ${ng_name} created"
+
+    # Topology gate: verify same-leaf (or other level) placement.
+    # Runs after NG is ACTIVE — if instances are not yet InService, it
+    # will skip rather than fail (InService is strictly after ACTIVE).
+    # The gate itself honors GPU_TOPOLOGY_GATE=off|warn|strict.
+    verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
 }
 
 # ===================================================================
@@ -1162,7 +1432,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     if [ "${DEPLOY_GPU_OD}" = "true" ]; then
         echo ""
         echo "Creating On-Demand node group for ${gpu_type}..."
-        create_gpu_launch_template "$gpu_type" "od" "" ""
+        od_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "od" "" "${ALL_SUBNETS[@]}")
+        create_gpu_launch_template "$gpu_type" "od" "" "" "$od_pg_name"
         create_gpu_nodegroup "$gpu_type" "od" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
     fi
 
@@ -1170,7 +1441,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     if [ "${DEPLOY_GPU_SPOT}" = "true" ]; then
         echo ""
         echo "Creating Spot node group for ${gpu_type}..."
-        create_gpu_launch_template "$gpu_type" "spot" "" ""
+        spot_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "spot" "" "${ALL_SUBNETS[@]}")
+        create_gpu_launch_template "$gpu_type" "spot" "" "" "$spot_pg_name"
         create_gpu_nodegroup "$gpu_type" "spot" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
     fi
 
@@ -1211,7 +1483,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
                     echo "  AZ: ${odcr_az}"
 
                     if [ -n "${odcr_subnet}" ]; then
-                        create_gpu_launch_template "$gpu_type" "odcr" "${odcr_id}" "${suffix}"
+                        odcr_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "odcr" "${suffix}" "$odcr_subnet")
+                        create_gpu_launch_template "$gpu_type" "odcr" "${odcr_id}" "${suffix}" "$odcr_pg_name"
                         create_gpu_nodegroup "$gpu_type" "odcr" "$LT_ID" "$LT_VERSION" "${suffix}" "$odcr_subnet"
                     else
                         echo "WARNING: No subnet found for ODCR AZ ${odcr_az}"
@@ -1258,7 +1531,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
                     echo "  AZ: ${cb_az}"
 
                     if [ -n "${cb_subnet}" ]; then
-                        create_gpu_launch_template "$gpu_type" "cb" "${cb_id}" "${suffix}"
+                        cb_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "cb" "${suffix}" "$cb_subnet")
+                        create_gpu_launch_template "$gpu_type" "cb" "${cb_id}" "${suffix}" "$cb_pg_name"
                         create_gpu_nodegroup "$gpu_type" "cb" "$LT_ID" "$LT_VERSION" "${suffix}" "$cb_subnet"
                     else
                         echo "WARNING: No subnet found for Capacity Block AZ ${cb_az}"
