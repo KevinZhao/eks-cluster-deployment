@@ -919,6 +919,8 @@ spec:
         env:
         - name: FAIL_ON_INIT_ERROR
           value: "false"
+        - name: PASS_DEVICE_SPECS
+          value: "true"
         securityContext:
           privileged: true
         volumeMounts:
