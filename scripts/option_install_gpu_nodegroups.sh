@@ -914,11 +914,13 @@ if [ "${GPU_INSTALL_EFA_USERSPACE}" = "true" ] && [ ! -x /opt/amazon/efa/bin/fi_
   echo "=== Installing EFA userspace (libfabric-aws + openmpi5-aws) ==="
   # --skip-kmod = don't rebuild kernel module (AMI already has it)
   # -y = non-interactive
+  # NOTE: do NOT pass --minimal; it excludes libfabric-aws + openmpi5-aws
+  # (the whole point — we want /opt/amazon/efa/bin/fi_info and friends)
   ( cd /tmp && \
     curl -fsSLO https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz && \
     tar -xf aws-efa-installer-latest.tar.gz && \
     cd aws-efa-installer && \
-    ./efa_installer.sh -y --skip-kmod --minimal 2>&1 | tail -20 ) || \
+    ./efa_installer.sh -y --skip-kmod 2>&1 | tail -30 ) || \
     echo "WARN: efa_installer failed; containers with their own libfabric will still work"
   if [ -x /opt/amazon/efa/bin/fi_info ]; then
     echo "EFA userspace installed at /opt/amazon/efa/"
