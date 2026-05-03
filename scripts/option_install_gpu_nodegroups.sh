@@ -30,6 +30,11 @@ echo ""
 # 1. Load environment
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
+# Load topology labeling library (source so label_nodegroup_by_leaf +
+# print_leaf_inventory are available after NG creation)
+# shellcheck source=topology_labeling_lib.sh
+source "${SCRIPT_DIR}/topology_labeling_lib.sh"
+
 export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
@@ -93,13 +98,25 @@ GPU_PG_STRATEGY="${GPU_PG_STRATEGY:-cluster}"
 GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
 
 # ------------------------------------------------------------
-# Topology gate — verify nodes land under same network topology node
+# Topology mode — what to do after NG is ACTIVE
 # ------------------------------------------------------------
+# GPU_TOPOLOGY_MODE:
+#   gate    (default) verify all nodes share the same topology node at
+#           GPU_TOPOLOGY_GATE_LEVEL and honor GPU_TOPOLOGY_GATE; fail
+#           strictly if mismatch (P1 behavior)
+#   label   do NOT fail on mismatch; instead label each K8s node with
+#           its true L3 leaf via efa-leaf-id / efa-az so workloads can
+#           pick same-leaf subsets via nodeAffinity (P3 behavior)
+#   both    run gate (in warn mode regardless of GPU_TOPOLOGY_GATE) AND
+#           label — diagnostic use
+#   off     skip topology checks entirely
+#
 # GPU_TOPOLOGY_GATE:
-#   strict  fail and scale NG to 0 on mismatch (default)
+#   strict  fail and scale NG to 0 on mismatch (default; only in gate/both modes)
 #   warn    log a warning but continue
-#   off     skip the check entirely
+#
 # GPU_TOPOLOGY_GATE_LEVEL: L1 (spine) | L2 (aggregator) | L3 (leaf / ToR)
+GPU_TOPOLOGY_MODE="${GPU_TOPOLOGY_MODE:-gate}"
 GPU_TOPOLOGY_GATE="${GPU_TOPOLOGY_GATE:-strict}"
 GPU_TOPOLOGY_GATE_LEVEL="${GPU_TOPOLOGY_GATE_LEVEL:-L3}"
 
@@ -1131,11 +1148,32 @@ create_gpu_nodegroup() {
 
     echo "Nodegroup ${ng_name} created"
 
-    # Topology gate: verify same-leaf (or other level) placement.
-    # Runs after NG is ACTIVE — if instances are not yet InService, it
-    # will skip rather than fail (InService is strictly after ACTIVE).
-    # The gate itself honors GPU_TOPOLOGY_GATE=off|warn|strict.
-    verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+    # Post-ACTIVE topology handling. Dispatched by GPU_TOPOLOGY_MODE.
+    #   gate    run verify_topology with GPU_TOPOLOGY_GATE (strict/warn)
+    #   label   run label_nodegroup_by_leaf (no fail) + print inventory
+    #   both    verify (warn only) + label + inventory  (diagnostic)
+    #   off     skip all topology work
+    case "${GPU_TOPOLOGY_MODE}" in
+        gate)
+            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+            ;;
+        label)
+            label_nodegroup_by_leaf "${ng_name}"
+            print_leaf_inventory
+            ;;
+        both)
+            verify_topology "${ng_name}" "warn" "${GPU_TOPOLOGY_GATE_LEVEL}" || true
+            label_nodegroup_by_leaf "${ng_name}"
+            print_leaf_inventory
+            ;;
+        off)
+            echo "GPU_TOPOLOGY_MODE=off; skipping topology verification + labeling"
+            ;;
+        *)
+            echo "WARN: unknown GPU_TOPOLOGY_MODE='${GPU_TOPOLOGY_MODE}'; defaulting to gate"
+            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+            ;;
+    esac
 }
 
 # ===================================================================
