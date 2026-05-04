@@ -105,29 +105,41 @@ GPU_NG_SUFFIX="${GPU_NG_SUFFIX:-}"
 
 # GPU_TARGET_AZ: optional AZ suffix letter (a|b|c|d) to narrow deployments
 #   to a single subnet. When set, OD and Spot paths use ONLY the matching
-#   PRIVATE_SUBNET_${AZ} (required for cluster-PG eligibility — a single
-#   cluster PG spans one AZ). Example: GPU_TARGET_AZ=c → uses PRIVATE_SUBNET_C.
+#   PRIVATE_SUBNET_${AZ}. Example: GPU_TARGET_AZ=c → uses PRIVATE_SUBNET_C.
 #   When empty, multi-AZ behavior is preserved (old default).
 GPU_TARGET_AZ="${GPU_TARGET_AZ:-}"
 
 # ------------------------------------------------------------
-# Placement Group (cluster strategy) — for EFA same-leaf locality
+# Placement Group — NOT recommended, default off
 # ------------------------------------------------------------
+# Empirical finding (2026-05-03, 3 independent runs on p5/p5en in 3
+# different AZs): cluster-strategy placement groups do NOT guarantee
+# same-leaf (L3) on p5-class instances. All 3 runs placed 2 instances
+# in the same PG but landed on different L3 leaves. PG only enforces
+# same-aggregator (L2) in practice — which doesn't give the perf
+# benefit that would justify its constraints (tighter capacity,
+# possible InsufficientInstanceCapacity even when SPS=9).
+#
+# We therefore default to NO PG and rely on the topology labeling
+# mode (see GPU_TOPOLOGY_MODE) to let workloads pick same-leaf subsets.
+#
 # GPU_PG_STRATEGY:
-#   cluster             force all nodes in a per-AZ cluster PG (default; fail
-#                       if EC2 can't fit nodes in PG)
-#   cluster_best_effort try cluster PG, fallback to no PG if capacity short
-#   none                no PG (old behavior)
-GPU_PG_STRATEGY="${GPU_PG_STRATEGY:-cluster}"
+#   none      (default) do not create or attach a placement group
+#   cluster   try to force all nodes into a per-AZ cluster PG; NG will
+#             fail if EC2 cannot fit nodes (rare but documented)
+GPU_PG_STRATEGY="${GPU_PG_STRATEGY:-none}"
 GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
 
 # ------------------------------------------------------------
 # Topology mode — what to do after NG is ACTIVE
 # ------------------------------------------------------------
 # GPU_TOPOLOGY_MODE:
-#   gate    (default) verify all nodes share the same topology node at
+#   label   (default) stamp efa-leaf-id / efa-az labels on K8s nodes
+#           via DescribeInstanceTopology; workloads pick same-leaf
+#           subsets via nodeAffinity on efa-leaf-id. Never fails.
+#   gate    verify all nodes share the same topology node at
 #           GPU_TOPOLOGY_GATE_LEVEL and honor GPU_TOPOLOGY_GATE; fail
-#           strictly if mismatch (P1 behavior)
+#           strictly if mismatch (useful only with GPU_PG_STRATEGY=cluster)
 #   label   do NOT fail on mismatch; instead label each K8s node with
 #           its true L3 leaf via efa-leaf-id / efa-az so workloads can
 #           pick same-leaf subsets via nodeAffinity (P3 behavior)
@@ -136,11 +148,11 @@ GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
 #   off     skip topology checks entirely
 #
 # GPU_TOPOLOGY_GATE:
-#   strict  fail and scale NG to 0 on mismatch (default; only in gate/both modes)
+#   strict  fail and scale NG to 0 on mismatch (only in gate/both modes)
 #   warn    log a warning but continue
 #
 # GPU_TOPOLOGY_GATE_LEVEL: L1 (spine) | L2 (aggregator) | L3 (leaf / ToR)
-GPU_TOPOLOGY_MODE="${GPU_TOPOLOGY_MODE:-gate}"
+GPU_TOPOLOGY_MODE="${GPU_TOPOLOGY_MODE:-label}"
 GPU_TOPOLOGY_GATE="${GPU_TOPOLOGY_GATE:-strict}"
 GPU_TOPOLOGY_GATE_LEVEL="${GPU_TOPOLOGY_GATE_LEVEL:-L3}"
 
