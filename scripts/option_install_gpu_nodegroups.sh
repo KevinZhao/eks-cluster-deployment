@@ -26,9 +26,23 @@ echo "  • Spot:           Cost-effective for fault-tolerant workloads (DEPLOY_
 echo "  • ODCR:           Guaranteed capacity, on-demand pricing (DEPLOY_GPU_ODCR=true)"
 echo "  • Capacity Block: Time-limited reserved capacity (DEPLOY_GPU_CB=true)"
 echo ""
+echo "EFA-topology awareness (default: label mode):"
+echo "  After NG is ACTIVE, DescribeInstanceTopology is queried and each"
+echo "  K8s node is stamped with efa-leaf-id + efa-az labels. Multi-node"
+echo "  GPU workloads select same-leaf subsets via nodeAffinity on"
+echo "  efa-leaf-id. No placement group is created by default — 2026-05-03"
+echo "  empirical data (p5/p5en, 3 independent runs, 3 AZs) showed cluster"
+echo "  PG does NOT guarantee same-leaf on p5-class instances."
+echo "  Override: GPU_PG_STRATEGY={cluster|none}, GPU_TOPOLOGY_MODE={label|gate|both|off}"
+echo ""
 
 # 1. Load environment
 source "${SCRIPT_DIR}/0_setup_env.sh"
+
+# Load topology labeling library (source so label_nodegroup_by_leaf +
+# print_leaf_inventory are available after NG creation)
+# shellcheck source=topology_labeling_lib.sh
+source "${SCRIPT_DIR}/topology_labeling_lib.sh"
 
 export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
@@ -80,6 +94,76 @@ DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 
 INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
 EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
+
+# Install the full EFA userspace (libfabric-aws + openmpi5-aws + utils
+# under /opt/amazon/efa/) in the node userdata. The EKS GPU AMI ships
+# only kernel-side EFA; this adds `fi_info`, `fi_pingpong`, etc. for
+# host-level diagnostics and for workloads that rely on host libfabric.
+# Discovered 2026-05-03 on p5 usw2-az1 that the AMI alone gives no
+# /opt/amazon/efa/ — same as the long-noted Ohio p5en gap.
+GPU_INSTALL_EFA_USERSPACE="${GPU_INSTALL_EFA_USERSPACE:-true}"
+
+# ------------------------------------------------------------
+# Nodegroup suffix + AZ narrowing (for multi-run coexistence)
+# ------------------------------------------------------------
+# GPU_NG_SUFFIX: optional suffix appended to NG/LT/PG names, e.g. "-az3-p3"
+#   Lets multiple NGs of the same (gpu_type, purchase_option) coexist
+#   without colliding. ODCR/CB paths already auto-suffix per reservation;
+#   OD and Spot paths use this env.
+GPU_NG_SUFFIX="${GPU_NG_SUFFIX:-}"
+
+# GPU_TARGET_AZ: optional AZ suffix letter (a|b|c|d) to narrow deployments
+#   to a single subnet. When set, OD and Spot paths use ONLY the matching
+#   PRIVATE_SUBNET_${AZ}. Example: GPU_TARGET_AZ=c → uses PRIVATE_SUBNET_C.
+#   When empty, multi-AZ behavior is preserved (old default).
+GPU_TARGET_AZ="${GPU_TARGET_AZ:-}"
+
+# ------------------------------------------------------------
+# Placement Group — NOT recommended, default off
+# ------------------------------------------------------------
+# Empirical finding (2026-05-03, 3 independent runs on p5/p5en in 3
+# different AZs): cluster-strategy placement groups do NOT guarantee
+# same-leaf (L3) on p5-class instances. All 3 runs placed 2 instances
+# in the same PG but landed on different L3 leaves. PG only enforces
+# same-aggregator (L2) in practice — which doesn't give the perf
+# benefit that would justify its constraints (tighter capacity,
+# possible InsufficientInstanceCapacity even when SPS=9).
+#
+# We therefore default to NO PG and rely on the topology labeling
+# mode (see GPU_TOPOLOGY_MODE) to let workloads pick same-leaf subsets.
+#
+# GPU_PG_STRATEGY:
+#   none      (default) do not create or attach a placement group
+#   cluster   try to force all nodes into a per-AZ cluster PG; NG will
+#             fail if EC2 cannot fit nodes (rare but documented)
+GPU_PG_STRATEGY="${GPU_PG_STRATEGY:-none}"
+GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
+
+# ------------------------------------------------------------
+# Topology mode — what to do after NG is ACTIVE
+# ------------------------------------------------------------
+# GPU_TOPOLOGY_MODE:
+#   label   (default) stamp efa-leaf-id / efa-az labels on K8s nodes
+#           via DescribeInstanceTopology; workloads pick same-leaf
+#           subsets via nodeAffinity on efa-leaf-id. Never fails.
+#   gate    verify all nodes share the same topology node at
+#           GPU_TOPOLOGY_GATE_LEVEL and honor GPU_TOPOLOGY_GATE; fail
+#           strictly if mismatch (useful only with GPU_PG_STRATEGY=cluster)
+#   label   do NOT fail on mismatch; instead label each K8s node with
+#           its true L3 leaf via efa-leaf-id / efa-az so workloads can
+#           pick same-leaf subsets via nodeAffinity (P3 behavior)
+#   both    run gate (in warn mode regardless of GPU_TOPOLOGY_GATE) AND
+#           label — diagnostic use
+#   off     skip topology checks entirely
+#
+# GPU_TOPOLOGY_GATE:
+#   strict  fail and scale NG to 0 on mismatch (only in gate/both modes)
+#   warn    log a warning but continue
+#
+# GPU_TOPOLOGY_GATE_LEVEL: L1 (spine) | L2 (aggregator) | L3 (leaf / ToR)
+GPU_TOPOLOGY_MODE="${GPU_TOPOLOGY_MODE:-label}"
+GPU_TOPOLOGY_GATE="${GPU_TOPOLOGY_GATE:-strict}"
+GPU_TOPOLOGY_GATE_LEVEL="${GPU_TOPOLOGY_GATE_LEVEL:-L3}"
 
 # NVIDIA Kubernetes device plugin. Override NVIDIA_DEVICE_PLUGIN_IMAGE when
 # deploying to regions where nvcr.io is unreachable (e.g. cn-*) and mirror
@@ -141,6 +225,244 @@ get_efa_only_card_count() {
 # Convert instance type to resource-safe name (replace dots with dashes)
 get_resource_name() {
     echo "${1//./-}"
+}
+
+# ===================================================================
+# Placement Group helpers
+# ===================================================================
+# Idempotently ensure a cluster-strategy placement group exists for
+# (gpu_type, AZ, suffix). Echoes the PG name on stdout on success,
+# or empty string if GPU_PG_STRATEGY=none.
+#
+# Args:
+#   $1 gpu_type    e.g. p5en.48xlarge
+#   $2 az          full zone name, e.g. us-west-2c
+#   $3 suffix      optional, e.g. "-1"
+ensure_cluster_pg() {
+    local gpu_type=$1
+    local az=$2
+    local suffix=${3:-}
+
+    if [ "${GPU_PG_STRATEGY}" = "none" ]; then
+        echo ""
+        return 0
+    fi
+
+    local resource_name=$(get_resource_name "$gpu_type")
+    local pg_name="${GPU_PG_NAME_PREFIX}-${resource_name}-${az}${suffix}-cg"
+
+    if aws ec2 describe-placement-groups \
+        --region "${AWS_REGION}" \
+        --group-names "${pg_name}" &>/dev/null; then
+        echo "Placement group ${pg_name} already exists" >&2
+    else
+        echo "Creating cluster placement group: ${pg_name}" >&2
+        aws ec2 create-placement-group \
+            --region "${AWS_REGION}" \
+            --group-name "${pg_name}" \
+            --strategy cluster \
+            --tag-specifications "ResourceType=placement-group,Tags=[{Key=Cluster,Value=${CLUSTER_NAME}},{Key=AZ,Value=${az}},{Key=gpu-instance-type,Value=${gpu_type}},{Key=managed-by,Value=eks-cluster-deployment},{Key=business,Value=middleware},{Key=resource,Value=eks}]" \
+            >/dev/null
+    fi
+
+    echo "${pg_name}"
+}
+
+# Delete placement group if empty (idempotent; AWS will refuse if still used).
+# Safe to call in teardown paths.
+delete_cluster_pg_if_empty() {
+    local pg_name=$1
+    if [ -z "${pg_name}" ]; then
+        return 0
+    fi
+    aws ec2 delete-placement-group \
+        --region "${AWS_REGION}" \
+        --group-name "${pg_name}" 2>/dev/null || \
+        echo "  (placement group ${pg_name} still has instances or does not exist; skipped)" >&2
+}
+
+# Plan the PG for a nodegroup based on strategy and subnet list.
+# Echoes PG name on stdout (empty = no PG).
+# Cluster-strategy PGs are AZ-specific, so we only attach one when the
+# target subnet list resolves to a single AZ. Multi-AZ calls get no PG
+# and a warning — user should narrow subnets to get PG.
+#
+# Args:
+#   $1 gpu_type
+#   $2 purchase_option  (od|spot|odcr|cb)
+#   $3 suffix
+#   $4+ one or more subnet IDs
+plan_pg_for_nodegroup() {
+    local gpu_type=$1
+    local purchase_option=$2
+    local suffix=$3
+    shift 3
+    local subnets=("$@")
+
+    if [ "${GPU_PG_STRATEGY}" = "none" ]; then
+        echo ""
+        return 0
+    fi
+
+    if [ ${#subnets[@]} -eq 0 ]; then
+        echo ""
+        return 0
+    fi
+
+    # Resolve AZ for each subnet; cluster PG only valid if all subnets in same AZ
+    local azs=()
+    for sn in "${subnets[@]}"; do
+        local az
+        az=$(aws ec2 describe-subnets \
+            --region "${AWS_REGION}" \
+            --subnet-ids "${sn}" \
+            --query 'Subnets[0].AvailabilityZone' \
+            --output text 2>/dev/null)
+        if [ -n "${az}" ] && [ "${az}" != "None" ]; then
+            azs+=("${az}")
+        fi
+    done
+
+    local unique_azs
+    unique_azs=$(printf '%s\n' "${azs[@]}" | sort -u)
+    local unique_count
+    unique_count=$(echo "${unique_azs}" | wc -l)
+
+    if [ "${unique_count}" -ne 1 ]; then
+        echo "  plan_pg: ${unique_count} distinct AZs in subnet list (${unique_azs//$'\n'/,}) — cluster PG requires single AZ; skipping PG" >&2
+        echo ""
+        return 0
+    fi
+
+    local az="${unique_azs}"
+    # Full PG suffix includes purchase_option for uniqueness (od/spot/odcr/cb)
+    local full_suffix="-${purchase_option}${suffix}"
+    ensure_cluster_pg "${gpu_type}" "${az}" "${full_suffix}"
+}
+
+# ===================================================================
+# Topology gate
+# ===================================================================
+# Verify all instances in a nodegroup share the same network-topology
+# ancestor at the requested level. Uses ec2:DescribeInstanceTopology
+# which returns up to 3 NetworkNodes per instance: [spine, aggregator, leaf].
+#
+# Args:
+#   $1 ng_name   EKS nodegroup name
+#   $2 gate      strict | warn | off
+#   $3 level     L1 | L2 | L3
+verify_topology() {
+    local ng_name=$1
+    local gate=${2:-strict}
+    local level=${3:-L3}
+
+    if [ "${gate}" = "off" ]; then
+        return 0
+    fi
+
+    # Map L1/L2/L3 to array index in NetworkNodes[].
+    # describe-instance-topology returns NetworkNodes[] in spine → leaf order.
+    local level_idx
+    case "${level}" in
+        L1) level_idx=0 ;;
+        L2) level_idx=1 ;;
+        L3) level_idx=2 ;;
+        *)  echo "ERROR: invalid GPU_TOPOLOGY_GATE_LEVEL='${level}' (expected L1|L2|L3)"; return 1 ;;
+    esac
+
+    echo "Topology gate: verifying NG=${ng_name} at level=${level} (gate=${gate})"
+
+    # Get ASG name → instance IDs
+    local asg_name
+    asg_name=$(aws eks describe-nodegroup \
+        --cluster-name "${CLUSTER_NAME}" \
+        --nodegroup-name "${ng_name}" \
+        --region "${AWS_REGION}" \
+        --query 'nodegroup.resources.autoScalingGroups[0].name' \
+        --output text 2>/dev/null)
+
+    if [ -z "${asg_name}" ] || [ "${asg_name}" = "None" ]; then
+        echo "  WARN: could not resolve ASG for NG ${ng_name}; skipping gate"
+        return 0
+    fi
+
+    local instance_ids
+    instance_ids=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "${asg_name}" \
+        --region "${AWS_REGION}" \
+        --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+        --output text)
+
+    if [ -z "${instance_ids}" ]; then
+        echo "  WARN: no InService instances in ASG ${asg_name}; skipping gate"
+        return 0
+    fi
+
+    local num_instances
+    num_instances=$(echo "${instance_ids}" | wc -w)
+
+    if [ "${num_instances}" -lt 2 ]; then
+        echo "  only ${num_instances} instance(s); topology gate trivially passes"
+        return 0
+    fi
+
+    # Query topology
+    local topology_json
+    topology_json=$(aws ec2 describe-instance-topology \
+        --region "${AWS_REGION}" \
+        --instance-ids ${instance_ids} \
+        --output json 2>/dev/null)
+
+    if [ -z "${topology_json}" ]; then
+        echo "  WARN: describe-instance-topology returned empty; skipping gate"
+        return 0
+    fi
+
+    # Count unique nodes at requested level
+    local unique_nodes
+    unique_nodes=$(echo "${topology_json}" \
+        | jq -r ".Instances[].NetworkNodes[${level_idx}] // \"__missing__\"" \
+        | sort -u)
+    local unique_count
+    unique_count=$(echo "${unique_nodes}" | wc -l)
+
+    # Print the full topology map for operator visibility
+    echo "  Topology map (level=${level}):"
+    echo "${topology_json}" \
+        | jq -r ".Instances[] | \"    \(.InstanceId)  AZ=\(.AvailabilityZone)  L1=\(.NetworkNodes[0])  L2=\(.NetworkNodes[1])  L3=\(.NetworkNodes[2])\""
+
+    if [ "${unique_count}" -gt 1 ]; then
+        echo ""
+        echo "  ❌ Topology gate FAILED: ${num_instances} instances spread across ${unique_count} ${level} nodes"
+        echo "     Unique ${level} nodes:"
+        echo "${unique_nodes}" | sed 's/^/       /'
+        echo ""
+
+        case "${gate}" in
+            strict)
+                # Scale desired to 0 to release the misplaced capacity.
+                # EKS update-nodegroup-config rejects maxSize=0 (min valid is 1),
+                # so we keep maxSize=1 and only zero minSize+desiredSize.
+                # Operator decides whether to delete-nodegroup or retry.
+                echo "  strict mode → scaling NG ${ng_name} desired=0 to release bad placement"
+                aws eks update-nodegroup-config \
+                    --cluster-name "${CLUSTER_NAME}" \
+                    --nodegroup-name "${ng_name}" \
+                    --region "${AWS_REGION}" \
+                    --scaling-config minSize=0,maxSize=1,desiredSize=0 \
+                    >/dev/null 2>&1 || \
+                    echo "  WARN: failed to scale NG to 0; operator must do it manually"
+                return 1
+                ;;
+            warn)
+                echo "  warn mode → continuing despite topology mismatch"
+                return 0
+                ;;
+        esac
+    fi
+
+    echo "  ✅ Topology gate PASSED: all ${num_instances} instance(s) share the same ${level} node"
+    return 0
 }
 
 # ===================================================================
@@ -287,7 +609,8 @@ create_gpu_launch_template() {
     local gpu_type=$1
     local purchase_option=$2
     local capacity_reservation_id=${3:-}
-    local suffix=${4:-}  # Optional suffix for multiple reservations (e.g., "-1", "-2")
+    local suffix=${4:-}     # Optional suffix for multiple reservations (e.g., "-1", "-2")
+    local pg_name=${5:-}    # Optional cluster placement-group name (empty = no PG)
 
     local instance_type="$gpu_type"
     local resource_name=$(get_resource_name "$gpu_type")
@@ -598,6 +921,36 @@ cat /etc/eks/nodeadm.d/nodeconfig.yaml
 echo "Running nodeadm init..."
 nodeadm init --config-source file:///etc/eks/nodeadm.d/nodeconfig.yaml
 
+# ============================================================
+# EFA userspace packages (libfabric-aws, openmpi5-aws, etc.)
+# ============================================================
+# The EKS GPU AMI ships only the kernel-side EFA driver, which is
+# enough for containerized workloads that bring their own libfabric
+# (NCCL images usually do). But for host-level diagnostics like
+# \`/opt/amazon/efa/bin/fi_info -p efa\`, or for workloads that rely
+# on the host's libfabric, we need the full userspace install.
+#
+# Enable with GPU_INSTALL_EFA_USERSPACE=true (default: true).
+if [ "${GPU_INSTALL_EFA_USERSPACE}" = "true" ] && [ ! -x /opt/amazon/efa/bin/fi_info ]; then
+  echo "=== Installing EFA userspace (libfabric-aws + openmpi5-aws) ==="
+  # --skip-kmod = don't rebuild kernel module (AMI already has it)
+  # -y = non-interactive
+  # NOTE: do NOT pass --minimal; it excludes libfabric-aws + openmpi5-aws
+  # (the whole point — we want /opt/amazon/efa/bin/fi_info and friends)
+  ( cd /tmp && \
+    curl -fsSLO https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz && \
+    tar -xf aws-efa-installer-latest.tar.gz && \
+    cd aws-efa-installer && \
+    ./efa_installer.sh -y --skip-kmod 2>&1 | tail -30 ) || \
+    echo "WARN: efa_installer failed; containers with their own libfabric will still work"
+  if [ -x /opt/amazon/efa/bin/fi_info ]; then
+    echo "EFA userspace installed at /opt/amazon/efa/"
+    /opt/amazon/efa/bin/fi_info --version 2>&1 | head -1 || true
+  fi
+else
+  echo "Skipping EFA userspace install (already present or GPU_INSTALL_EFA_USERSPACE!=true)"
+fi
+
 # Enable services for reboot persistence
 echo "Enabling kubelet and containerd services..."
 systemctl enable kubelet containerd
@@ -626,6 +979,7 @@ userdata_b64 = "${userdata_b64}"
 ec2_key_name = "${EC2_KEY_NAME:-}"
 instance_type = "${instance_type}"
 embed_instance_type = "${embed_instance_type}" == "true"
+pg_name = "${pg_name}"
 
 # Network interfaces configuration
 # Primary: NetworkCardIndex=0, DeviceIndex=0
@@ -736,6 +1090,13 @@ if embed_instance_type:
     lt_data["InstanceType"] = instance_type
     lt_data["InstanceMarketOptions"] = {
         "MarketType": "capacity-block"
+    }
+
+# Cluster placement group (forces same-leaf placement for EFA locality)
+if pg_name:
+    lt_data["Placement"] = {
+        "GroupName": pg_name,
+        "Tenancy": "default"
     }
 
 print(json.dumps(lt_data, indent=2))
@@ -861,6 +1222,130 @@ create_gpu_nodegroup() {
         --region "${AWS_REGION}"
 
     echo "Nodegroup ${ng_name} created"
+
+    # Post-ACTIVE topology handling. Dispatched by GPU_TOPOLOGY_MODE.
+    #   gate    run verify_topology with GPU_TOPOLOGY_GATE (strict/warn)
+    #   label   run label_nodegroup_by_leaf (no fail) + print inventory
+    #   both    verify (warn only) + label + inventory  (diagnostic)
+    #   off     skip all topology work
+    case "${GPU_TOPOLOGY_MODE}" in
+        gate)
+            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+            ;;
+        label)
+            label_nodegroup_by_leaf "${ng_name}"
+            print_leaf_inventory
+            ;;
+        both)
+            verify_topology "${ng_name}" "warn" "${GPU_TOPOLOGY_GATE_LEVEL}" || true
+            label_nodegroup_by_leaf "${ng_name}"
+            print_leaf_inventory
+            ;;
+        off)
+            echo "GPU_TOPOLOGY_MODE=off; skipping topology verification + labeling"
+            ;;
+        *)
+            echo "WARN: unknown GPU_TOPOLOGY_MODE='${GPU_TOPOLOGY_MODE}'; defaulting to gate"
+            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+            ;;
+    esac
+
+    # Device-plugin time-race mitigation (Blackwell B300 observed 2026-05-04):
+    # nvidia-device-plugin pod can start before /dev/nvidia* appears, log
+    # "No devices found. Waiting indefinitely." and never re-register until
+    # bounced. Delete any such pods on this NG's nodes; they get recreated
+    # in seconds and see the devices. Safe/idempotent on p5/p5en (healthy
+    # pods aren't affected because they won't land in the bad state again
+    # after their second start).
+    if [ "${GPU_BOUNCE_NVIDIA_DEVICE_PLUGIN:-true}" = "true" ]; then
+        bounce_nvidia_device_plugin_for_ng "${ng_name}" || true
+    fi
+}
+
+# ===================================================================
+# NVIDIA device plugin bounce (Blackwell time-race mitigation)
+# ===================================================================
+# On p6-b300 (Blackwell), nvidia-device-plugin may start before
+# /dev/nvidia* devices are created by kernel modules, log
+# "ERROR_DRIVER_NOT_LOADED / No devices found. Waiting indefinitely."
+# and then never re-register the GPU resources. Kicking the pod with
+# kubectl delete is the known workaround. Harmless on p5/p5en where
+# the timing was never observed to fail.
+bounce_nvidia_device_plugin_for_ng() {
+    local ng_name=$1
+    echo ""
+    echo "Checking nvidia-device-plugin pods on NG=${ng_name} for stuck-at-init state..."
+
+    # Wait up to 3 min for nodes to show up with resource entries
+    local deadline=$(( $(date +%s) + 180 ))
+    local node_names=""
+    while [ $(date +%s) -lt ${deadline} ]; do
+        node_names=$(kubectl get nodes \
+            -l "eks.amazonaws.com/nodegroup=${ng_name}" \
+            -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null)
+        if [ -n "${node_names}" ]; then
+            break
+        fi
+        sleep 10
+    done
+
+    if [ -z "${node_names}" ]; then
+        echo "  no K8s nodes for NG ${ng_name} yet; skipping device-plugin bounce"
+        return 0
+    fi
+
+    local bounced=0
+    for node in ${node_names}; do
+        # Look up device plugin pod on this node
+        local dp_pod
+        dp_pod=$(kubectl get pods -n kube-system \
+            -l name=nvidia-device-plugin-ds \
+            --field-selector spec.nodeName="${node}" \
+            -o name 2>/dev/null | head -1)
+        if [ -z "${dp_pod}" ]; then
+            echo "  ${node}: no nvidia-device-plugin pod yet (will be restarted later if needed)"
+            continue
+        fi
+
+        # Check if this node advertises nvidia.com/gpu > 0 in allocatable.
+        # If yes, plugin is healthy; leave it alone.
+        local gpu_count
+        gpu_count=$(kubectl get node "${node}" \
+            -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null)
+        gpu_count=${gpu_count:-0}
+
+        if [ "${gpu_count}" -gt 0 ] 2>/dev/null; then
+            echo "  ${node}: nvidia.com/gpu=${gpu_count} (healthy, no bounce needed)"
+            continue
+        fi
+
+        # Unhealthy: allocatable shows 0 GPUs. Grep pod logs for the
+        # known failure mode to confirm before bouncing.
+        local log_tail
+        log_tail=$(kubectl logs -n kube-system "${dp_pod}" --tail=30 2>/dev/null || echo "")
+        if echo "${log_tail}" | grep -qE 'No devices found|ERROR_DRIVER_NOT_LOADED|Failed to initialize NVML'; then
+            echo "  ${node}: device-plugin stuck at init (matched known symptom); deleting pod to bounce"
+            kubectl delete "${dp_pod}" -n kube-system --wait=false >/dev/null 2>&1 || true
+            bounced=$((bounced + 1))
+        else
+            echo "  ${node}: allocatable nvidia.com/gpu=0 but pod logs don't match known symptom; leaving alone"
+            echo "    (manual check: kubectl logs -n kube-system ${dp_pod})"
+        fi
+    done
+
+    if [ "${bounced}" -gt 0 ]; then
+        echo "  bounced ${bounced} device-plugin pod(s); waiting 30s for re-registration..."
+        sleep 30
+        echo "  post-bounce GPU allocatable:"
+        for node in ${node_names}; do
+            local gpu_now
+            gpu_now=$(kubectl get node "${node}" \
+                -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo 0)
+            echo "    ${node}: nvidia.com/gpu=${gpu_now:-0}"
+        done
+    else
+        echo "  no bounce needed"
+    fi
 }
 
 # ===================================================================
@@ -1147,6 +1632,19 @@ SUBNET_MAP["b"]="${PRIVATE_SUBNET_B}"
 [ -n "${PRIVATE_SUBNET_C:-}" ] && SUBNET_MAP["c"]="${PRIVATE_SUBNET_C}"
 [ -n "${PRIVATE_SUBNET_D:-}" ] && SUBNET_MAP["d"]="${PRIVATE_SUBNET_D}"
 
+# GPU_TARGET_AZ: if set, narrow ALL_SUBNETS to that single AZ's subnet.
+# Required for cluster-PG eligibility — cluster PG is single-AZ-only.
+if [ -n "${GPU_TARGET_AZ}" ]; then
+    _target_subnet="${SUBNET_MAP[${GPU_TARGET_AZ}]:-}"
+    if [ -z "${_target_subnet}" ]; then
+        echo "ERROR: GPU_TARGET_AZ='${GPU_TARGET_AZ}' set but PRIVATE_SUBNET_${GPU_TARGET_AZ^^} is empty"
+        exit 1
+    fi
+    echo "GPU_TARGET_AZ=${GPU_TARGET_AZ} → narrowing OD/Spot deploys to subnet ${_target_subnet}"
+    ALL_SUBNETS=("${_target_subnet}")
+    unset _target_subnet
+fi
+
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     gpu_type=$(echo "$gpu_type" | tr -d ' ')
     echo ""
@@ -1162,16 +1660,18 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     if [ "${DEPLOY_GPU_OD}" = "true" ]; then
         echo ""
         echo "Creating On-Demand node group for ${gpu_type}..."
-        create_gpu_launch_template "$gpu_type" "od" "" ""
-        create_gpu_nodegroup "$gpu_type" "od" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
+        od_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "od" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}")
+        create_gpu_launch_template "$gpu_type" "od" "" "${GPU_NG_SUFFIX}" "$od_pg_name"
+        create_gpu_nodegroup "$gpu_type" "od" "$LT_ID" "$LT_VERSION" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}"
     fi
 
     # Deploy Spot node group
     if [ "${DEPLOY_GPU_SPOT}" = "true" ]; then
         echo ""
         echo "Creating Spot node group for ${gpu_type}..."
-        create_gpu_launch_template "$gpu_type" "spot" "" ""
-        create_gpu_nodegroup "$gpu_type" "spot" "$LT_ID" "$LT_VERSION" "" "${ALL_SUBNETS[@]}"
+        spot_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "spot" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}")
+        create_gpu_launch_template "$gpu_type" "spot" "" "${GPU_NG_SUFFIX}" "$spot_pg_name"
+        create_gpu_nodegroup "$gpu_type" "spot" "$LT_ID" "$LT_VERSION" "${GPU_NG_SUFFIX}" "${ALL_SUBNETS[@]}"
     fi
 
     # Deploy ODCR node group(s) - supports multiple reservations
@@ -1211,7 +1711,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
                     echo "  AZ: ${odcr_az}"
 
                     if [ -n "${odcr_subnet}" ]; then
-                        create_gpu_launch_template "$gpu_type" "odcr" "${odcr_id}" "${suffix}"
+                        odcr_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "odcr" "${suffix}" "$odcr_subnet")
+                        create_gpu_launch_template "$gpu_type" "odcr" "${odcr_id}" "${suffix}" "$odcr_pg_name"
                         create_gpu_nodegroup "$gpu_type" "odcr" "$LT_ID" "$LT_VERSION" "${suffix}" "$odcr_subnet"
                     else
                         echo "WARNING: No subnet found for ODCR AZ ${odcr_az}"
@@ -1258,7 +1759,8 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
                     echo "  AZ: ${cb_az}"
 
                     if [ -n "${cb_subnet}" ]; then
-                        create_gpu_launch_template "$gpu_type" "cb" "${cb_id}" "${suffix}"
+                        cb_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "cb" "${suffix}" "$cb_subnet")
+                        create_gpu_launch_template "$gpu_type" "cb" "${cb_id}" "${suffix}" "$cb_pg_name"
                         create_gpu_nodegroup "$gpu_type" "cb" "$LT_ID" "$LT_VERSION" "${suffix}" "$cb_subnet"
                     else
                         echo "WARNING: No subnet found for Capacity Block AZ ${cb_az}"

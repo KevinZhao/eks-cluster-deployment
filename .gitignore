@@ -46,6 +46,7 @@ logs/
 # Backup files
 *.bak
 *.backup
+.env.bak.*
 
 # Temporary files
 /tmp/

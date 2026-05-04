@@ -12,11 +12,39 @@ warn() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] WARN: $*" >&2; }
 log "Loading environment configuration..."
 
 # 1. 尝试从 .env 文件加载配置（如果存在）
+# IMPORTANT: .env entries with empty values (e.g. GPU_INSTANCE_TYPES=)
+# must NOT clobber values the caller has already exported. Pre-snapshot
+# non-empty env, source the file, then restore snapshotted values so
+# explicit `export FOO=bar; bash script.sh` takes precedence over blank
+# lines in .env. Discovered 2026-05-04 p6-b300 D-task: .env shipped
+# with blank GPU_INSTANCE_TYPES= silently clobbered the exported value
+# and created a stray p5 NG.
 if [ -f .env ]; then
-    log "Loading configuration from .env file..."
+    log "Loading configuration from .env file (caller exports take precedence)..."
+    # Snapshot currently-set (non-empty) env vars that .env might touch
+    _env_snapshot_file=$(mktemp /tmp/env_snap.XXXXXX)
+    # Extract variable names mentioned in .env (LHS of 'FOO=...' lines)
+    _env_keys=$(grep -E '^[A-Z_][A-Z0-9_]*=' .env | cut -d= -f1 | sort -u)
+    for _k in $_env_keys; do
+        _v="${!_k:-}"
+        if [ -n "$_v" ]; then
+            printf '%s=%q\n' "$_k" "$_v" >> "$_env_snapshot_file"
+        fi
+    done
     set -a
     source .env
     set +a
+    # Restore snapshotted non-empty values (only if .env blanked them or
+    # if .env set them to a value different from the caller's explicit one)
+    if [ -s "$_env_snapshot_file" ]; then
+        while IFS='=' read -r _k _v_quoted; do
+            # Re-export at runtime: eval is safe here because source keys
+            # come from a grep against .env regex
+            eval "export $_k=$_v_quoted"
+        done < "$_env_snapshot_file"
+    fi
+    rm -f "$_env_snapshot_file"
+    unset _env_snapshot_file _env_keys _k _v _v_quoted
 fi
 
 # 2. 动态获取 AWS Account ID（如果未设置）

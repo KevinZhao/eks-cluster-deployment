@@ -56,6 +56,7 @@ kubectl get pods -A
 - ✅ **自动扩缩容** - Cluster Autoscaler 自动管理节点
 - ✅ **完整 CSI 支持** - EBS/EFS/FSx/S3 存储驱动
 - ✅ **GPU 节点支持** - P5/P5en/P6/G7e 实例 + EFA 多网卡 + `vpc.amazonaws.com/efa` 设备插件
+- ✅ **EFA 拓扑感知调度** - NG 起来后自动给节点打 `efa-leaf-id` / `efa-az` 标签；workload 用 nodeAffinity 挑同 leaf (`GPU_TOPOLOGY_MODE=label`)
 
 ### 集群架构
 
