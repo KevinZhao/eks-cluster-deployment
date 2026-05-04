@@ -1249,6 +1249,103 @@ create_gpu_nodegroup() {
             verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
             ;;
     esac
+
+    # Device-plugin time-race mitigation (Blackwell B300 observed 2026-05-04):
+    # nvidia-device-plugin pod can start before /dev/nvidia* appears, log
+    # "No devices found. Waiting indefinitely." and never re-register until
+    # bounced. Delete any such pods on this NG's nodes; they get recreated
+    # in seconds and see the devices. Safe/idempotent on p5/p5en (healthy
+    # pods aren't affected because they won't land in the bad state again
+    # after their second start).
+    if [ "${GPU_BOUNCE_NVIDIA_DEVICE_PLUGIN:-true}" = "true" ]; then
+        bounce_nvidia_device_plugin_for_ng "${ng_name}" || true
+    fi
+}
+
+# ===================================================================
+# NVIDIA device plugin bounce (Blackwell time-race mitigation)
+# ===================================================================
+# On p6-b300 (Blackwell), nvidia-device-plugin may start before
+# /dev/nvidia* devices are created by kernel modules, log
+# "ERROR_DRIVER_NOT_LOADED / No devices found. Waiting indefinitely."
+# and then never re-register the GPU resources. Kicking the pod with
+# kubectl delete is the known workaround. Harmless on p5/p5en where
+# the timing was never observed to fail.
+bounce_nvidia_device_plugin_for_ng() {
+    local ng_name=$1
+    echo ""
+    echo "Checking nvidia-device-plugin pods on NG=${ng_name} for stuck-at-init state..."
+
+    # Wait up to 3 min for nodes to show up with resource entries
+    local deadline=$(( $(date +%s) + 180 ))
+    local node_names=""
+    while [ $(date +%s) -lt ${deadline} ]; do
+        node_names=$(kubectl get nodes \
+            -l "eks.amazonaws.com/nodegroup=${ng_name}" \
+            -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null)
+        if [ -n "${node_names}" ]; then
+            break
+        fi
+        sleep 10
+    done
+
+    if [ -z "${node_names}" ]; then
+        echo "  no K8s nodes for NG ${ng_name} yet; skipping device-plugin bounce"
+        return 0
+    fi
+
+    local bounced=0
+    for node in ${node_names}; do
+        # Look up device plugin pod on this node
+        local dp_pod
+        dp_pod=$(kubectl get pods -n kube-system \
+            -l name=nvidia-device-plugin-ds \
+            --field-selector spec.nodeName="${node}" \
+            -o name 2>/dev/null | head -1)
+        if [ -z "${dp_pod}" ]; then
+            echo "  ${node}: no nvidia-device-plugin pod yet (will be restarted later if needed)"
+            continue
+        fi
+
+        # Check if this node advertises nvidia.com/gpu > 0 in allocatable.
+        # If yes, plugin is healthy; leave it alone.
+        local gpu_count
+        gpu_count=$(kubectl get node "${node}" \
+            -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null)
+        gpu_count=${gpu_count:-0}
+
+        if [ "${gpu_count}" -gt 0 ] 2>/dev/null; then
+            echo "  ${node}: nvidia.com/gpu=${gpu_count} (healthy, no bounce needed)"
+            continue
+        fi
+
+        # Unhealthy: allocatable shows 0 GPUs. Grep pod logs for the
+        # known failure mode to confirm before bouncing.
+        local log_tail
+        log_tail=$(kubectl logs -n kube-system "${dp_pod}" --tail=30 2>/dev/null || echo "")
+        if echo "${log_tail}" | grep -qE 'No devices found|ERROR_DRIVER_NOT_LOADED|Failed to initialize NVML'; then
+            echo "  ${node}: device-plugin stuck at init (matched known symptom); deleting pod to bounce"
+            kubectl delete "${dp_pod}" -n kube-system --wait=false >/dev/null 2>&1 || true
+            bounced=$((bounced + 1))
+        else
+            echo "  ${node}: allocatable nvidia.com/gpu=0 but pod logs don't match known symptom; leaving alone"
+            echo "    (manual check: kubectl logs -n kube-system ${dp_pod})"
+        fi
+    done
+
+    if [ "${bounced}" -gt 0 ]; then
+        echo "  bounced ${bounced} device-plugin pod(s); waiting 30s for re-registration..."
+        sleep 30
+        echo "  post-bounce GPU allocatable:"
+        for node in ${node_names}; do
+            local gpu_now
+            gpu_now=$(kubectl get node "${node}" \
+                -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo 0)
+            echo "    ${node}: nvidia.com/gpu=${gpu_now:-0}"
+        done
+    else
+        echo "  no bounce needed"
+    fi
 }
 
 # ===================================================================
