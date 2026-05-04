@@ -1,5 +1,23 @@
 # P2 — Topology retry loop + best-effort strategy
 
+> **⚠️ LARGELY SUPERSEDED (2026-05-03)**
+>
+> This plan was written under the assumption that same-leaf placement
+> could be reliably obtained by retrying PG-gated NG creation a few times.
+> Subsequent runs (3 independent, across 3 AZs, p5 + p5en) showed that
+> cluster PG itself does NOT guarantee same-leaf on p5-class instances —
+> retrying does not converge on same-leaf any faster than not retrying.
+>
+> The final design in commit `f3a9270` **abandons PG** as the primary
+> mechanism and switches to label-based same-leaf discovery after NG
+> creation (`GPU_TOPOLOGY_MODE=label`, default). Workloads pick a leaf
+> via `efa-leaf-id` nodeAffinity from the inventory.
+>
+> This doc is retained as a historical record of the reasoning. A
+> future P2b could re-explore retry loops in the context of the label
+> pipeline (e.g. "retry until inventory shows a leaf with ≥N nodes")
+> but that is fundamentally a different scope.
+
 ## Background
 
 P1 (merged as branch `feat/placement-group-and-topology-gate`) added:

@@ -26,6 +26,15 @@ echo "  • Spot:           Cost-effective for fault-tolerant workloads (DEPLOY_
 echo "  • ODCR:           Guaranteed capacity, on-demand pricing (DEPLOY_GPU_ODCR=true)"
 echo "  • Capacity Block: Time-limited reserved capacity (DEPLOY_GPU_CB=true)"
 echo ""
+echo "EFA-topology awareness (default: label mode):"
+echo "  After NG is ACTIVE, DescribeInstanceTopology is queried and each"
+echo "  K8s node is stamped with efa-leaf-id + efa-az labels. Multi-node"
+echo "  GPU workloads select same-leaf subsets via nodeAffinity on"
+echo "  efa-leaf-id. No placement group is created by default — 2026-05-03"
+echo "  empirical data (p5/p5en, 3 independent runs, 3 AZs) showed cluster"
+echo "  PG does NOT guarantee same-leaf on p5-class instances."
+echo "  Override: GPU_PG_STRATEGY={cluster|none}, GPU_TOPOLOGY_MODE={label|gate|both|off}"
+echo ""
 
 # 1. Load environment
 source "${SCRIPT_DIR}/0_setup_env.sh"
