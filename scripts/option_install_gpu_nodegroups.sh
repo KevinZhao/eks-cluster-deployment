@@ -149,9 +149,6 @@ GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
 #   gate    verify all nodes share the same topology node at
 #           GPU_TOPOLOGY_GATE_LEVEL and honor GPU_TOPOLOGY_GATE; fail
 #           strictly if mismatch (useful only with GPU_PG_STRATEGY=cluster)
-#   label   do NOT fail on mismatch; instead label each K8s node with
-#           its true L3 leaf via efa-leaf-id / efa-az so workloads can
-#           pick same-leaf subsets via nodeAffinity (P3 behavior)
 #   both    run gate (in warn mode regardless of GPU_TOPOLOGY_GATE) AND
 #           label — diagnostic use
 #   off     skip topology checks entirely
@@ -326,8 +323,16 @@ plan_pg_for_nodegroup() {
     local unique_azs
     unique_azs=$(printf '%s\n' "${azs[@]}" | sort -u)
     local unique_count
-    unique_count=$(echo "${unique_azs}" | wc -l)
+    # grep -c . counts non-empty lines (wc -l would count 1 for empty input
+    # due to trailing newline from echo/printf, falsely triggering PG create
+    # when all describe-subnets lookups failed)
+    unique_count=$(printf '%s\n' "${azs[@]}" | grep -c . || true)
 
+    if [ "${unique_count}" -eq 0 ]; then
+        echo "  plan_pg: could not resolve any subnet to an AZ; skipping PG" >&2
+        echo ""
+        return 0
+    fi
     if [ "${unique_count}" -ne 1 ]; then
         echo "  plan_pg: ${unique_count} distinct AZs in subnet list (${unique_azs//$'\n'/,}) — cluster PG requires single AZ; skipping PG" >&2
         echo ""
@@ -423,8 +428,14 @@ verify_topology() {
     unique_nodes=$(echo "${topology_json}" \
         | jq -r ".Instances[].NetworkNodes[${level_idx}] // \"__missing__\"" \
         | sort -u)
+    # grep -c . counts non-empty lines (wc -l would count 1 for empty input)
     local unique_count
-    unique_count=$(echo "${unique_nodes}" | wc -l)
+    unique_count=$(printf '%s\n' "${unique_nodes}" | grep -c . || true)
+
+    if [ "${unique_count}" -eq 0 ]; then
+        echo "  WARN: topology API returned 0 network nodes at level ${level}; skipping gate"
+        return 0
+    fi
 
     # Print the full topology map for operator visibility
     echo "  Topology map (level=${level}):"

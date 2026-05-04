@@ -35,16 +35,21 @@ if [ -f .env ]; then
     source .env
     set +a
     # Restore snapshotted non-empty values (only if .env blanked them or
-    # if .env set them to a value different from the caller's explicit one)
+    # if .env set them to a value different from the caller's explicit one).
+    # Split on first '=' only via parameter expansion — values may legitimately
+    # contain '=' (e.g. URLs, base64 strings) and IFS='=' read would truncate.
     if [ -s "$_env_snapshot_file" ]; then
-        while IFS='=' read -r _k _v_quoted; do
-            # Re-export at runtime: eval is safe here because source keys
-            # come from a grep against .env regex
+        while IFS= read -r _line; do
+            [ -z "${_line}" ] && continue
+            _k="${_line%%=*}"
+            _v_quoted="${_line#*=}"
+            # eval is safe here because _k is a grep-validated identifier
+            # and _v_quoted came from printf '%q' (shell-escaped)
             eval "export $_k=$_v_quoted"
         done < "$_env_snapshot_file"
     fi
     rm -f "$_env_snapshot_file"
-    unset _env_snapshot_file _env_keys _k _v _v_quoted
+    unset _env_snapshot_file _env_keys _k _v _v_quoted _line
 fi
 
 # 2. 动态获取 AWS Account ID（如果未设置）
