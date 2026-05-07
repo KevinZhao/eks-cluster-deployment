@@ -52,7 +52,7 @@ resources:
 
 ### 3.1 待办任务
 
-- [ ] 创建示例 manifest: `examples/pod-with-storage-limit.yaml`
+- [ ] 创建示例 manifest: `examples/pod-with-storage-limit.yaml` *(尚未实现)*
 - [ ] 添加使用文档
 
 ---
@@ -112,6 +112,11 @@ featureGates:
 ## 6. 测试
 
 ### 6.1 Ephemeral Storage 测试
+
+> **Note**: `examples/pod-with-storage-limit.yaml` 属于 §3.1 的待办项，尚未实现。
+> 下面是该示例就位后的预期用法（用户可按此模式自行编写 PodSpec，加上
+> `spec.containers[].resources.limits["ephemeral-storage"]=10Gi`）。
+
 ```bash
 kubectl apply -f examples/pod-with-storage-limit.yaml
 kubectl exec pod -- dd if=/dev/zero of=/data/file bs=1M count=15000

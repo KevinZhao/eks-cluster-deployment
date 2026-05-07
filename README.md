@@ -66,7 +66,7 @@ EKS Cluster (Kubernetes 1.35)
 │   └── 私有 API Endpoint (10.0.x.x)
 │
 ├── 系统节点组 (eks-utils)
-│   ├── 实例: 3x m7i.2xlarge (Intel)
+│   ├── 实例: m8g.xlarge (默认, Graviton4 ARM64) — 可通过 SYSTEM_NODE_INSTANCE_TYPE 切换为 m7i 等 Intel 机型
 │   ├── 存储: 50GB 根卷 + 100GB LVM 数据卷
 │   ├── 标签: app=eks-utils
 │   └── 运行: CoreDNS, Cluster Autoscaler, LB Controller, CSI Drivers
@@ -127,6 +127,9 @@ EKS Cluster (Kubernetes 1.35)
 | `option_create_bastion.sh` | 创建堡垒机 | VPC 外 |
 | `option_install_csi_drivers.sh` | 安装 EFS/FSx/S3 CSI Driver | VPC 内 |
 | `option_install_karpenter.sh` | 安装 Karpenter 自动扩缩容 | VPC 内 |
+| `option_install_gpu_nodegroups.sh` | 创建 GPU 托管节点组（EFA + 拓扑感知）| VPC 内 |
+| `option_label_nodegroup_topology.sh` | 为节点组打 EFA leaf / AZ 拓扑标签 | VPC 内 |
+| `option_configure_ssm_patch.sh` | 配置 SSM Patch Manager 自动补丁 | VPC 内 |
 | `examples/option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | VPC 内 |
 | `examples/option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | VPC 内 |
 
@@ -194,7 +197,7 @@ kubectl delete namespace game-2048
 
 **原因**: 集群使用私有 API，必须从 VPC 内部访问
 
-**解决**: 使用堡垒机执行，参考 [DEPLOYMENT_SOP.md - 第一阶段](DEPLOYMENT_SOP.md#第一阶段准备堡垒机)
+**解决**: 使用堡垒机执行，参考 [DEPLOYMENT_SOP.md - 第一阶段](docs/DEPLOYMENT_SOP.md#第一阶段准备堡垒机)
 
 ### 问题 2: Session Manager 无法连接堡垒机
 
@@ -218,7 +221,7 @@ aws ssm start-session --target $INSTANCE_ID
 sudo journalctl -u kubelet -f
 ```
 
-更多故障排查请参考 [DEPLOYMENT_SOP.md - 常见问题排查](DEPLOYMENT_SOP.md#常见问题排查)
+更多故障排查请参考 [DEPLOYMENT_SOP.md - 常见问题排查](docs/DEPLOYMENT_SOP.md#常见问题排查)
 
 ---
 
@@ -264,37 +267,45 @@ eks-cluster-deployment/
 ├── .env.example                       # 环境变量模板
 │
 ├── scripts/
-│   ├── 0_setup_env.sh                 # 环境变量加载
-│   ├── 1_enable_vpc_dns.sh            # 启用 VPC DNS
-│   ├── 2_validate_network_environment.sh  # 验证网络配置
-│   ├── 3_create_vpc_endpoints.sh      # 创建 VPC Endpoints
-│   ├── 5_check_environment.sh         # 检查本地环境
-│   ├── 4_install_eks_cluster.sh       # 创建集群控制平面
-│   ├── 6_create_system_nodegroup.sh   # 创建系统节点组（LVM）
-│   ├── 7_install_eks_addon.sh         # 安装核心组件
-│   ├── option_create_bastion.sh       # 创建堡垒机（可选）
-│   ├── option_install_csi_drivers.sh  # 安装 EFS/FSx/S3 CSI（可选）
-│   ├── option_install_karpenter.sh    # 安装 Karpenter（可选）
-│   └── pod_identity_helpers.sh        # Pod Identity 辅助函数
+│   ├── 0_setup_env.sh                      # 环境变量加载
+│   ├── 1_enable_vpc_dns.sh                 # 启用 VPC DNS
+│   ├── 2_validate_network_environment.sh   # 验证网络配置
+│   ├── 3_create_vpc_endpoints.sh           # 创建 VPC Endpoints
+│   ├── 4_install_eks_cluster.sh            # 创建集群控制平面
+│   ├── 5_check_environment.sh              # 检查本地环境
+│   ├── 6_create_system_nodegroup.sh        # 创建系统节点组（LVM）
+│   ├── 7_install_eks_addon.sh              # 安装核心组件
+│   ├── option_create_bastion.sh            # 创建堡垒机（可选）
+│   ├── option_install_csi_drivers.sh       # 安装 EFS/FSx/S3 CSI（可选）
+│   ├── option_install_karpenter.sh         # 安装 Karpenter（可选）
+│   ├── option_install_gpu_nodegroups.sh    # 创建 GPU 节点组 + EFA（可选）
+│   ├── option_label_nodegroup_topology.sh  # EFA 拓扑标签（可选）
+│   ├── option_configure_ssm_patch.sh       # SSM Patch Manager（可选）
+│   ├── instance_arch_lib.sh                # 共享库：实例架构检测
+│   ├── disk_detection_lib.sh               # 共享库：NVMe 数据盘识别
+│   ├── pod_identity_helpers.sh             # 共享库：Pod Identity
+│   └── topology_labeling_lib.sh            # 共享库：GPU 拓扑标签
 │
-├── examples/
-│   ├── option_test_pod_scheduling.sh  # 测试 Pod 调度
-│   └── option_test_karpenter_pools.sh # 测试 Karpenter 节点池
+├── examples/                               # 参考 manifest 与测试脚本
+│   ├── option_test_pod_scheduling.sh       # 测试 Pod 调度
+│   ├── option_test_karpenter_pools.sh      # 测试 Karpenter 节点池
+│   ├── {ebs,efs,fsx,s3,nlb}-app.yaml       # 各类存储/LB 示例应用
+│   └── test-{graviton,x86}-pod.yaml        # 架构调度示例
 │
 ├── manifests/
-│   ├── addons/
-│   │   ├── cluster-autoscaler-rbac.yaml   # Cluster Autoscaler RBAC
-│   │   └── cluster-autoscaler.yaml        # Cluster Autoscaler 部署
-│   │   # Note: EFS/FSx/S3 CSI drivers installed as EKS managed addons
+│   ├── addons/                             # Cluster Autoscaler
+│   ├── iam/                                # IAM 策略 JSON（ALB、FSx）
+│   ├── karpenter/                          # Karpenter NodePool / EC2NodeClass
+│   └── storage/                            # StorageClass
 │
-└── docs/                                  # 详细文档
-    ├── DEPLOYMENT_SOP.md                  # 完整部署流程
-    ├── DESIGN.md                          # 架构设计
-    ├── VPC_SETUP.md                       # VPC 创建指南
-    └── COLLABORATION.md                   # 协作指南
+└── docs/                                   # 详细文档
+    ├── DEPLOYMENT_SOP.md                   # 完整部署流程
+    ├── DESIGN.md                           # 架构设计
+    ├── P2_TOPOLOGY_RETRY_PLAN.md           # GPU 拓扑重试方案
+    └── COLLABORATION.md                    # 协作指南
 ```
 
-> **Note**: VPC 创建请参考 [terraform-aws-modules/vpc](https://github.com/terraform-aws-modules/terraform-aws-vpc)，详见 [docs/VPC_SETUP.md](docs/VPC_SETUP.md)
+> **Note**: 本仓库不包含 VPC 创建代码，请自行准备 VPC 后再运行脚本。推荐使用 [terraform-aws-modules/vpc](https://github.com/terraform-aws-modules/terraform-aws-vpc)。
 
 ---
 
@@ -302,7 +313,7 @@ eks-cluster-deployment/
 
 ### v2.0 (2025-12-29)
 - ✅ 重构部署流程，分离控制平面和节点组创建
-- ✅ 系统节点组自动配置 LVM（m7i.2xlarge + 100GB 数据卷）
+- ✅ 系统节点组自动配置 LVM（默认 m8g.xlarge + 100GB 数据卷，可切换为 m7i 等 Intel 机型）
 - ✅ 所有脚本支持非交互模式（自动化友好）
 - ✅ 统一使用 Pod Identity 认证（替代 IRSA）
 - ✅ 简化 README，详细流程移至 DEPLOYMENT_SOP.md

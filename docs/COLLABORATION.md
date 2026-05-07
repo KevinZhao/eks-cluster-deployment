@@ -234,21 +234,33 @@ eksctl delete cluster \
 
 ## 📚 项目结构
 
+完整的项目结构见 [README.md](../README.md#项目结构)。此处仅列出几个贡献者最常接触的入口：
+
 ```
 eks-cluster-deployment/
 ├── scripts/
-│   ├── 0_setup_env.sh              # 环境变量加载
-│   ├── 4_install_eks_cluster.sh    # 标准部署（最常用）
-│   ├── 6_install_eks_with_custom_nodegroup.sh  # Launch Template 部署
-│   ├── 7_install_optional_csi_drivers.sh       # 可选 CSI
-│   └── pod_identity_helpers.sh     # Pod Identity 核心函数
+│   ├── 0_setup_env.sh                   # 环境变量加载与校验
+│   ├── 4_install_eks_cluster.sh         # 控制平面创建
+│   ├── 6_create_system_nodegroup.sh     # 系统节点组（LVM + Launch Template）
+│   ├── 7_install_eks_addon.sh           # 核心 addon 安装
+│   ├── option_*.sh                      # 可选功能（bastion、CSI、Karpenter、GPU 等）
+│   ├── instance_arch_lib.sh             # 共享库：架构检测
+│   ├── disk_detection_lib.sh            # 共享库：数据盘识别
+│   ├── pod_identity_helpers.sh          # 共享库：Pod Identity
+│   └── topology_labeling_lib.sh         # 共享库：GPU 拓扑标签
 ├── manifests/
-│   ├── cluster/                    # 集群配置
-│   └── addons/                     # 组件配置
-├── docs/
-│   └── VPC_SETUP.md               # VPC 创建指南（引用外部模块）
-└── README.md                       # 主文档
+│   ├── addons/                          # Cluster Autoscaler 等
+│   ├── iam/                             # IAM 策略 JSON
+│   ├── karpenter/                       # Karpenter NodePool / EC2NodeClass
+│   └── storage/                         # StorageClass
+├── examples/                            # 参考 manifest 与测试脚本
+└── docs/
+    ├── DEPLOYMENT_SOP.md                # 完整部署 SOP
+    ├── DESIGN.md                        # 架构决策
+    └── P2_TOPOLOGY_RETRY_PLAN.md        # GPU 拓扑重试方案
 ```
+
+> **Note**: 本仓库不包含 VPC 创建代码，请自行准备 VPC 后再运行脚本。
 
 ---
 
