@@ -12,9 +12,17 @@
 *.pem
 *.key
 credentials.json
+# Ignore every .env variant (per-region, per-env, .local, backups, etc.)
+# and only allow the checked-in template.
+#
+# Note: this also ignores .env.local, which the Node/Next.js/Vite
+# ecosystem normally uses as a non-secret local override. This project
+# does not follow that convention — every .env.* here holds real
+# deployment identifiers (VPC IDs, cluster names, etc.) and is treated
+# as secret.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Generated files
 eksctl_cluster_final.yaml
@@ -43,10 +51,14 @@ kubeconfig
 *.log
 logs/
 
+# Internal validation reports and deployment snapshots (contain real
+# account IDs, VPC IDs, bastion instance IDs, etc.). Keep locally under
+# docs/history/ for reference but never commit.
+docs/history/
+
 # Backup files
 *.bak
 *.backup
-.env.bak.*
 
 # Temporary files
 /tmp/
@@ -59,6 +71,3 @@ __pycache__/
 *.pyc
 dist/
 build/
-.env.oregon
-.env.ohio
-.env.tokyo

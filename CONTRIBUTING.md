@@ -42,6 +42,35 @@ git remote -v
 # upstream  https://github.com/KevinZhao/eks-cluster-deployment.git (push)
 ```
 
+### 安装 pre-commit 钩子（强烈推荐）
+
+本仓库提供 [pre-commit](https://pre-commit.com/) 配置，在本地每次 `git commit` 时自动执行密钥扫描与基础静态检查：**gitleaks** 阻止 AWS Key / Token / `.env.*` 泄漏，**shellcheck** 检查 bash 脚本，`check-yaml` 校验 manifest 语法。
+
+当前仓库没有服务端（CI）层面的强制门禁，所以这套钩子是**每位贡献者自愿 opt-in** 的客户端防线——请在第一次 clone 后立刻启用，避免把密钥意外推到 remote。
+
+```bash
+# 安装 pre-commit 本体。AL2023 / 最新 macOS 的系统 Python 启用了 PEP 668
+# "externally-managed-environment"，直接 pip install 会被拒绝，推荐 pipx：
+pipx install pre-commit
+# 或：brew install pre-commit
+# 若坚持用 pip，需要先装 pipx 或加 --break-system-packages，不推荐。
+
+# 在仓库根目录启用钩子
+cd eks-cluster-deployment
+pre-commit install
+
+# 首次对全仓库跑一遍（可选，但强烈建议）
+pre-commit run --all-files
+```
+
+> ⚠️ **不要使用 `git commit --no-verify`** 绕过检查。如果 gitleaks 报误报，请在 `.gitleaks.toml` 的 `[allowlist]` 中加白名单，而非跳过。
+
+### `.env.*` 文件的私密性
+
+- **任何 `.env.*` 文件（除 `.env.example` 外）都视为机密**，包含真实的 `VPC_ID`、`CLUSTER_NAME`、subnet ID 等部署指纹。
+- `.gitignore` 使用 `.env.*` 通配匹配；`!.env.example` 作为白名单允许模板被追踪。
+- 本地 `.env.<region>` 文件建议 `chmod 600`，新脚本不要把 region/VPC/账号信息硬编码。
+
 ---
 
 ## 🤝 贡献方式
