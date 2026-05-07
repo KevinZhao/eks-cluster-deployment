@@ -1597,29 +1597,48 @@ create_gpu_security_group
 echo ""
 echo "Step 4: Getting GPU-optimized AMI..."
 
-# Detect architecture from the first configured GPU instance type rather
-# than hard-coding x86_64. All GPU types in GPU_INSTANCE_TYPES must share
-# the same architecture (they share one AMI / Launch Template).
-IFS=',' read -r _first_gpu_type _rest_gpu_types <<< "${GPU_INSTANCE_TYPES}"
-GPU_AMI_ARCH=$(detect_instance_arch "${_first_gpu_type}") || {
-    echo "ERROR: Could not detect architecture for ${_first_gpu_type}"
+# Detect architecture from the configured GPU instance types rather than
+# hard-coding x86_64. All GPU types in GPU_INSTANCE_TYPES must share the
+# same architecture (they share one AMI / Launch Template).
+#
+# Normalize the comma-separated list first: strip whitespace around each
+# entry and drop empty elements. This turns accidental leading/trailing
+# commas and ", ,"-style typos into a clean list so the architecture
+# helper never has to handle empty input.
+_gpu_types_clean=()
+IFS=',' read -ra _gpu_types_raw <<< "${GPU_INSTANCE_TYPES}"
+for _t in "${_gpu_types_raw[@]}"; do
+    # Trim leading/trailing whitespace
+    _t="${_t#"${_t%%[![:space:]]*}"}"
+    _t="${_t%"${_t##*[![:space:]]}"}"
+    [ -n "${_t}" ] && _gpu_types_clean+=("${_t}")
+done
+
+if [ ${#_gpu_types_clean[@]} -eq 0 ]; then
+    echo "ERROR: GPU_INSTANCE_TYPES is empty or contains only whitespace/commas."
+    echo "       Set it to a comma-separated list, e.g. 'p5.48xlarge,p5en.48xlarge'."
+    exit 1
+fi
+
+GPU_AMI_ARCH=$(detect_instance_arch "${_gpu_types_clean[0]}") || {
+    echo "ERROR: Could not detect architecture for ${_gpu_types_clean[0]}"
     exit 1
 }
 
 # Validate that all GPU instance types agree on architecture, since a
 # single AMI is used for the whole group.
-if [ -n "${_rest_gpu_types}" ]; then
-    IFS=',' read -ra _rest_arr <<< "${_rest_gpu_types}"
-    for _t in "${_rest_arr[@]}"; do
-        _a=$(detect_instance_arch "${_t}") || exit 1
-        if [ "${_a}" != "${GPU_AMI_ARCH}" ]; then
-            echo "ERROR: GPU_INSTANCE_TYPES mixes architectures — ${_first_gpu_type}=${GPU_AMI_ARCH} but ${_t}=${_a}."
-            echo "       Split into separate runs with homogeneous GPU_INSTANCE_TYPES."
-            exit 1
-        fi
-    done
-fi
-unset _first_gpu_type _rest_gpu_types _rest_arr _t _a
+for _t in "${_gpu_types_clean[@]:1}"; do
+    _a=$(detect_instance_arch "${_t}") || {
+        echo "ERROR: Could not detect architecture for GPU type '${_t}'"
+        exit 1
+    }
+    if [ "${_a}" != "${GPU_AMI_ARCH}" ]; then
+        echo "ERROR: GPU_INSTANCE_TYPES mixes architectures — ${_gpu_types_clean[0]}=${GPU_AMI_ARCH} but ${_t}=${_a}."
+        echo "       Split into separate runs with homogeneous GPU_INSTANCE_TYPES."
+        exit 1
+    fi
+done
+unset _gpu_types_raw _gpu_types_clean _t _a
 
 GPU_AMI_ID=$(aws ssm get-parameter \
     --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/${GPU_AMI_ARCH}/nvidia/recommended/image_id" \
