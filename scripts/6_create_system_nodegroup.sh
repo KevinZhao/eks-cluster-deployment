@@ -29,6 +29,17 @@ echo ""
 # 1. 设置环境变量
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
+# Load instance architecture detection helpers (detect_instance_arch,
+# instance_arch_to_go_arch). Queries the EC2 API so we never miss new
+# Graviton / GPU families that break string-matching heuristics.
+source "${SCRIPT_DIR}/instance_arch_lib.sh"
+
+# Load NVMe data-disk detection snippet for user-data. Distinguishes EBS
+# from Instance Store via device model, so families like *d / *gd that
+# expose unpartitioned ephemeral NVMe disks don't silently win the
+# "first nvme without partitions" race against the real EBS data disk.
+source "${SCRIPT_DIR}/disk_detection_lib.sh"
+
 # 1.1 设置 KUBECONFIG 环境变量
 export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
@@ -333,32 +344,20 @@ echo "=== Starting LVM Setup ==="
 # Stop containerd
 systemctl stop containerd || true
 
-# Wait for data disk to be available (max 60 seconds)
-# Find NVMe disk that has NO partitions (the data disk is unpartitioned)
-echo "Waiting for data disk..."
-for i in {1..60}; do
-  # Find all NVMe disks, then filter to those without partitions
-  for dev in \$(lsblk -dpno NAME | grep nvme); do
-    # Check if this disk has any partitions
-    PARTS=\$(lsblk -no NAME "\$dev" 2>/dev/null | wc -l)
-    if [ "\$PARTS" -eq 1 ]; then
-      # Only the disk itself, no partitions - this is our data disk
-      DISK="\$dev"
-      echo "Found unpartitioned data disk: \$DISK"
-      break 2
-    fi
-  done
-  echo "Attempt \$i/60: Data disk not found yet, waiting..."
-  sleep 1
-done
+# Wait for EBS data disk to be available (max 60 seconds).
+# Must distinguish EBS from Instance Store by device model, because families
+# like m6gd / m7gd expose ephemeral NVMe that also has no partitions.
+${EBS_DATA_DISK_DETECT_SNIPPET}
 
-if [ -z "\$DISK" ]; then
-  echo "ERROR: No unpartitioned data disk found after 60 seconds"
+echo "Waiting for EBS data disk..."
+DISK=\$(detect_ebs_data_disk 60) || {
+  echo "ERROR: No EBS data disk found after 60 seconds"
   echo "Available disks:"
-  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL
   systemctl start containerd
   exit 1
-fi
+}
+echo "Found EBS data disk: \$DISK"
 
 # Check if LVM already configured
 if vgs vg_data &>/dev/null; then
@@ -836,15 +835,10 @@ validate_instance_profile_exists "${INSTANCE_PROFILE_NAME}"
 echo ""
 echo "Step 3: Getting latest EKS optimized AMI..."
 
-# 根据实例类型自动检测架构
-# Graviton实例类型包含'g'后缀（如m6g, m7g, m8g, c6g, r6g, t4g等）
-if [[ "${SYSTEM_NODE_INSTANCE_TYPE}" =~ ^[a-z][0-9]+g ]]; then
-    AMI_ARCH="arm64"
-    NODE_ARCH="arm64"
-else
-    AMI_ARCH="x86_64"
-    NODE_ARCH="amd64"
-fi
+# 根据实例类型自动检测架构（查询 EC2 API，避免字符串启发式对 hpc7g 等
+# family 的误判，以及未来新 family 的静默错配）。
+AMI_ARCH=$(detect_instance_arch "${SYSTEM_NODE_INSTANCE_TYPE}") || exit 1
+NODE_ARCH=$(instance_arch_to_go_arch "${AMI_ARCH}") || exit 1
 
 echo "Instance Type: ${SYSTEM_NODE_INSTANCE_TYPE}"
 echo "Detected Architecture: ${AMI_ARCH}"

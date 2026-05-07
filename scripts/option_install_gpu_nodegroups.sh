@@ -44,6 +44,17 @@ source "${SCRIPT_DIR}/0_setup_env.sh"
 # shellcheck source=topology_labeling_lib.sh
 source "${SCRIPT_DIR}/topology_labeling_lib.sh"
 
+# Load instance architecture detection helpers. Used to pick the correct
+# GPU AMI variant (x86_64 vs arm64) instead of hard-coding x86_64.
+# shellcheck source=instance_arch_lib.sh
+source "${SCRIPT_DIR}/instance_arch_lib.sh"
+
+# Load NVMe data-disk detection snippet (shared with system nodegroup).
+# Picks the EBS data disk by device model so we never stripe containerd
+# onto ephemeral Instance Store on *d / *gd / i4g-class GPU families.
+# shellcheck source=disk_detection_lib.sh
+source "${SCRIPT_DIR}/disk_detection_lib.sh"
+
 export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
 
@@ -665,39 +676,20 @@ echo "=== Starting GPU Node LVM Setup ==="
 systemctl stop containerd || true
 
 # Wait for EBS data disk to be available (max 60 seconds).
-# On GPU instances we must distinguish EBS from Instance Store, because
-# both appear as unpartitioned NVMe devices. Use the device model:
-#   - EBS:            "Amazon Elastic Block Store"
-#   - Instance Store: "Amazon EC2 NVMe Instance Storage"
-echo "Waiting for EBS data disk..."
-for i in {1..60}; do
-  for sys_path in /sys/block/nvme*n1; do
-    [ -e "\$sys_path" ] || continue
-    MODEL=\$(cat "\$sys_path/device/model" 2>/dev/null | xargs)
-    case "\$MODEL" in
-      *"Elastic Block Store"*) ;;
-      *) continue ;;
-    esac
-    dev="/dev/\$(basename "\$sys_path")"
-    # Skip the root disk (the one with partitions, e.g. /dev/nvme0n1p1)
-    PARTS=\$(lsblk -no NAME "\$dev" 2>/dev/null | wc -l)
-    if [ "\$PARTS" -eq 1 ]; then
-      DISK="\$dev"
-      echo "Found EBS data disk: \$DISK (model: \$MODEL)"
-      break 2
-    fi
-  done
-  echo "Attempt \$i/60: EBS data disk not found yet, waiting..."
-  sleep 1
-done
+# GPU instance families routinely expose both EBS and Instance Store as
+# unpartitioned NVMe devices, so we disambiguate by device model inside
+# the shared detect_ebs_data_disk helper (see disk_detection_lib.sh).
+${EBS_DATA_DISK_DETECT_SNIPPET}
 
-if [ -z "\$DISK" ]; then
+echo "Waiting for EBS data disk..."
+DISK=\$(detect_ebs_data_disk 60) || {
   echo "ERROR: No EBS data disk found after 60 seconds"
   echo "Available disks:"
-  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL
   systemctl start containerd
   exit 1
-fi
+}
+echo "Found EBS data disk: \$DISK"
 
 # Check if LVM already configured
 if vgs vg_data &>/dev/null; then
@@ -1605,18 +1597,42 @@ create_gpu_security_group
 echo ""
 echo "Step 4: Getting GPU-optimized AMI..."
 
+# Detect architecture from the first configured GPU instance type rather
+# than hard-coding x86_64. All GPU types in GPU_INSTANCE_TYPES must share
+# the same architecture (they share one AMI / Launch Template).
+IFS=',' read -r _first_gpu_type _rest_gpu_types <<< "${GPU_INSTANCE_TYPES}"
+GPU_AMI_ARCH=$(detect_instance_arch "${_first_gpu_type}") || {
+    echo "ERROR: Could not detect architecture for ${_first_gpu_type}"
+    exit 1
+}
+
+# Validate that all GPU instance types agree on architecture, since a
+# single AMI is used for the whole group.
+if [ -n "${_rest_gpu_types}" ]; then
+    IFS=',' read -ra _rest_arr <<< "${_rest_gpu_types}"
+    for _t in "${_rest_arr[@]}"; do
+        _a=$(detect_instance_arch "${_t}") || exit 1
+        if [ "${_a}" != "${GPU_AMI_ARCH}" ]; then
+            echo "ERROR: GPU_INSTANCE_TYPES mixes architectures — ${_first_gpu_type}=${GPU_AMI_ARCH} but ${_t}=${_a}."
+            echo "       Split into separate runs with homogeneous GPU_INSTANCE_TYPES."
+            exit 1
+        fi
+    done
+fi
+unset _first_gpu_type _rest_gpu_types _rest_arr _t _a
+
 GPU_AMI_ID=$(aws ssm get-parameter \
-    --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/x86_64/nvidia/recommended/image_id" \
+    --name "/aws/service/eks/optimized-ami/${K8S_VERSION}/amazon-linux-2023/${GPU_AMI_ARCH}/nvidia/recommended/image_id" \
     --region "${AWS_REGION}" \
     --query 'Parameter.Value' \
     --output text)
 
 if [ -z "${GPU_AMI_ID}" ] || [ "${GPU_AMI_ID}" = "None" ]; then
-    echo "ERROR: Could not retrieve GPU AMI ID"
+    echo "ERROR: Could not retrieve GPU AMI ID for arch=${GPU_AMI_ARCH}, K8S=${K8S_VERSION}"
     exit 1
 fi
 
-echo "GPU AMI ID: ${GPU_AMI_ID}"
+echo "GPU AMI ID: ${GPU_AMI_ID} (arch=${GPU_AMI_ARCH})"
 
 # Step 5: Create node groups
 echo ""
