@@ -2,6 +2,22 @@ apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: x86
+# -----------------------------------------------------------------------------
+# EXAMPLE ONLY — tune these requirements for your workload.
+#
+# This NodePool intentionally keeps the allowed instance set small (4-16 vCPU,
+# r-/c-/m- families on Intel/AMD x86) to show a reasonable starting point
+# that is more available than a single instance type. In production you
+# almost certainly want to:
+#   - narrow `instance-family` to just the families your workloads have been
+#     validated on (mixing c/m/r families means the selected instance's
+#     memory:cpu ratio varies a lot),
+#   - widen or narrow `instance-cpu` based on typical pod sizes,
+#   - consider enabling spot capacity by adding "spot" to `capacity-type`
+#     values if your workloads tolerate interruption,
+#   - set `limits.cpu` / `limits.memory` to match your budget and cluster
+#     headroom.
+# -----------------------------------------------------------------------------
 spec:
   template:
     metadata:
@@ -16,33 +32,53 @@ spec:
         name: x86
 
       requirements:
-        # 固定实例类型 r7i.8xlarge
-        - key: node.kubernetes.io/instance-type
+        # Architecture — x86_64 only.
+        - key: kubernetes.io/arch
           operator: In
-          values: ["r7i.8xlarge"]
+          values: ["amd64"]
 
-        # On-demand 实例
+        # Families — limited to r/c/m Intel (i) general-purpose families.
+        # Add AMD (a) families like m7a/c7a/r7a if you want a broader
+        # bin-packing surface; the memory:cpu ratio matches Intel peers.
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["r7i", "r6i", "c7i", "c6i", "m7i", "m6i"]
+
+        # vCPU band 4-16. Adjust to match typical pod resource requests.
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: In
+          values: ["4", "8", "16"]
+
+        # Nitro hypervisor only — required for EBS gp3 and modern features.
+        - key: karpenter.k8s.aws/instance-hypervisor
+          operator: In
+          values: ["nitro"]
+
+        # On-demand only. To enable spot, add "spot" below; Karpenter will
+        # prefer spot when capacity is available.
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
 
-        # 可用区
+        # Availability zones. Keep the three AZs the cluster was built in.
         - key: topology.kubernetes.io/zone
           operator: In
           values: ["${AWS_REGION}a", "${AWS_REGION}b", "${AWS_REGION}c"]
 
-      # Taints - 移除 taints，使用 nodeSelector 就足够了
-      # 如果需要专用节点，请给 Pod 添加对应的 tolerations
+      # Taints — not used here. If you want dedicated amd64 nodes, add a
+      # taint and matching tolerations on workloads.
       # taints:
       #   - key: arch
       #     value: amd64
       #     effect: NoSchedule
 
+  # Cluster-wide cap on this pool's total capacity. Adjust to your budget.
   limits:
     cpu: "1000"
     memory: 1000Gi
 
-  # 中断处理 - 节点空闲1小时后缩容
+  # Disruption — default to empty-only consolidation. Consider switching to
+  # WhenEmptyOrUnderutilized to let Karpenter actively bin-pack.
   disruption:
     consolidationPolicy: WhenEmpty
     consolidateAfter: 1h
