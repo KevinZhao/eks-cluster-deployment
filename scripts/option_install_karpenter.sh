@@ -165,16 +165,154 @@ KARPENTER_CONTROLLER_POLICY="KarpenterControllerPolicy-${CLUSTER_NAME}"
 # 生成策略文档（使用 mktemp 避免临时文件冲突）
 KARPENTER_CONTROLLER_POLICY_FILE=$(mktemp /tmp/karpenter-controller-policy.XXXXXX.json)
 
+# This policy follows the least-privilege structure of the upstream
+# Karpenter v1 CloudFormation template
+# (https://karpenter.sh/docs/reference/cloudformation/). Each write
+# action is constrained to resources that Karpenter itself created
+# (identified by the cluster-owner and per-nodepool tags that Karpenter
+# attaches automatically: `kubernetes.io/cluster/<cluster>=owned`,
+# `karpenter.sh/nodepool=<name>`, `karpenter.k8s.aws/ec2nodeclass=<name>`).
+#
+# Effect of the constraints:
+#   - The controller cannot terminate instances / delete LaunchTemplates /
+#     delete or modify InstanceProfiles outside this cluster.
+#   - CreateTags can only ride along with a RunInstances/CreateFleet/
+#     CreateLaunchTemplate call in the same request (ec2:CreateAction)
+#     or target instances already tagged as owned by this cluster.
+#   - Read-only describe calls are scoped to the cluster's region.
 cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "AllowScopedEC2InstanceAccessActions",
       "Effect": "Allow",
       "Action": [
+        "ec2:RunInstances",
+        "ec2:CreateFleet"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${AWS_REGION}::image/*",
+        "arn:aws:ec2:${AWS_REGION}::snapshot/*",
+        "arn:aws:ec2:${AWS_REGION}:*:security-group/*",
+        "arn:aws:ec2:${AWS_REGION}:*:subnet/*",
+        "arn:aws:ec2:${AWS_REGION}:*:capacity-reservation/*"
+      ]
+    },
+    {
+      "Sid": "AllowScopedEC2LaunchTemplateAccessActions",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:CreateFleet"
+      ],
+      "Resource": "arn:aws:ec2:${AWS_REGION}:*:launch-template/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned"
+        },
+        "StringLike": {
+          "aws:ResourceTag/karpenter.sh/nodepool": "*"
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedEC2InstanceActionsWithTags",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
         "ec2:CreateFleet",
-        "ec2:CreateLaunchTemplate",
-        "ec2:CreateTags",
+        "ec2:CreateLaunchTemplate"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${AWS_REGION}:*:fleet/*",
+        "arn:aws:ec2:${AWS_REGION}:*:instance/*",
+        "arn:aws:ec2:${AWS_REGION}:*:volume/*",
+        "arn:aws:ec2:${AWS_REGION}:*:network-interface/*",
+        "arn:aws:ec2:${AWS_REGION}:*:launch-template/*",
+        "arn:aws:ec2:${AWS_REGION}:*:spot-instances-request/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned",
+          "aws:RequestTag/eks:eks-cluster-name": "${CLUSTER_NAME}"
+        },
+        "StringLike": {
+          "aws:RequestTag/karpenter.sh/nodepool": "*"
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedResourceCreationTagging",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:${AWS_REGION}:*:fleet/*",
+        "arn:aws:ec2:${AWS_REGION}:*:instance/*",
+        "arn:aws:ec2:${AWS_REGION}:*:volume/*",
+        "arn:aws:ec2:${AWS_REGION}:*:network-interface/*",
+        "arn:aws:ec2:${AWS_REGION}:*:launch-template/*",
+        "arn:aws:ec2:${AWS_REGION}:*:spot-instances-request/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned",
+          "aws:RequestTag/eks:eks-cluster-name": "${CLUSTER_NAME}",
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateFleet",
+            "CreateLaunchTemplate"
+          ]
+        },
+        "StringLike": {
+          "aws:RequestTag/karpenter.sh/nodepool": "*"
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedResourceTagging",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:${AWS_REGION}:*:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned"
+        },
+        "StringLike": {
+          "aws:ResourceTag/karpenter.sh/nodepool": "*"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "karpenter.sh/nodeclaim",
+            "Name"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedDeletion",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:DeleteLaunchTemplate"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${AWS_REGION}:*:instance/*",
+        "arn:aws:ec2:${AWS_REGION}:*:launch-template/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned"
+        },
+        "StringLike": {
+          "aws:ResourceTag/karpenter.sh/nodepool": "*"
+        }
+      }
+    },
+    {
+      "Sid": "AllowRegionalReadActions",
+      "Effect": "Allow",
+      "Action": [
         "ec2:DescribeAvailabilityZones",
         "ec2:DescribeImages",
         "ec2:DescribeInstances",
@@ -183,26 +321,29 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
         "ec2:DescribeLaunchTemplates",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeSpotPriceHistory",
-        "ec2:DescribeSubnets",
-        "ec2:RunInstances",
-        "ec2:TerminateInstances",
-        "ec2:DeleteLaunchTemplate"
+        "ec2:DescribeSubnets"
       ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${AWS_REGION}"
+        }
+      }
+    },
+    {
+      "Sid": "AllowSSMReadActions",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/eks/*"
+    },
+    {
+      "Sid": "AllowPricingReadActions",
+      "Effect": "Allow",
+      "Action": "pricing:GetProducts",
       "Resource": "*"
     },
     {
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "eks:DescribeCluster"
-      ],
-      "Resource": "arn:aws:eks:${AWS_REGION}:${ACCOUNT_ID}:cluster/${CLUSTER_NAME}"
-    },
-    {
+      "Sid": "AllowInterruptionQueueActions",
       "Effect": "Allow",
       "Action": [
         "sqs:CreateQueue",
@@ -217,6 +358,13 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
       "Resource": "arn:aws:sqs:${AWS_REGION}:${ACCOUNT_ID}:Karpenter-${CLUSTER_NAME}-*"
     },
     {
+      "Sid": "AllowAPIServerEndpointDiscovery",
+      "Effect": "Allow",
+      "Action": "eks:DescribeCluster",
+      "Resource": "arn:aws:eks:${AWS_REGION}:${ACCOUNT_ID}:cluster/${CLUSTER_NAME}"
+    },
+    {
+      "Sid": "AllowEventBridgeRuleActions",
       "Effect": "Allow",
       "Action": [
         "events:PutRule",
@@ -225,37 +373,78 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
         "events:RemoveTargets",
         "events:DescribeRule"
       ],
-      "Resource": [
-        "arn:aws:events:${AWS_REGION}:${ACCOUNT_ID}:rule/KarpenterInterruptionQueue-${CLUSTER_NAME}"
-      ]
+      "Resource": "arn:aws:events:${AWS_REGION}:${ACCOUNT_ID}:rule/KarpenterInterruptionQueue-${CLUSTER_NAME}"
     },
     {
+      "Sid": "AllowPassingInstanceRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedInstanceProfileCreationActions",
+      "Effect": "Allow",
+      "Action": "iam:CreateInstanceProfile",
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:instance-profile/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned",
+          "aws:RequestTag/eks:eks-cluster-name": "${CLUSTER_NAME}",
+          "aws:RequestTag/topology.kubernetes.io/region": "${AWS_REGION}"
+        },
+        "StringLike": {
+          "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass": "*"
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedInstanceProfileTagActions",
+      "Effect": "Allow",
+      "Action": "iam:TagInstanceProfile",
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:instance-profile/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned",
+          "aws:ResourceTag/topology.kubernetes.io/region": "${AWS_REGION}"
+        },
+        "StringLike": {
+          "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass": "*"
+        }
+      }
+    },
+    {
+      "Sid": "AllowScopedInstanceProfileActions",
       "Effect": "Allow",
       "Action": [
-        "pricing:GetProducts"
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:instance-profile/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kubernetes.io/cluster/${CLUSTER_NAME}": "owned",
+          "aws:ResourceTag/topology.kubernetes.io/region": "${AWS_REGION}"
+        },
+        "StringLike": {
+          "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass": "*"
+        }
+      }
     },
     {
-      "Effect": "Allow",
-      "Action": [
-        "ssm:GetParameter"
-      ],
-      "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/eks/*"
-    },
-    {
+      "Sid": "AllowInstanceProfileReadActions",
       "Effect": "Allow",
       "Action": [
         "iam:GetInstanceProfile",
-        "iam:CreateInstanceProfile",
-        "iam:AddRoleToInstanceProfile",
-        "iam:RemoveRoleFromInstanceProfile",
-        "iam:DeleteInstanceProfile",
-        "iam:TagInstanceProfile",
         "iam:ListInstanceProfiles",
         "iam:ListInstanceProfileTags"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:instance-profile/*"
     }
   ]
 }
