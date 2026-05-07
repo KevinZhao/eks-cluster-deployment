@@ -381,15 +381,30 @@ else
     echo -e "${YELLOW}Installing deployment tools on bastion...${NC}"
     echo "  This may take 1-2 minutes..."
 
+    # Resolve the latest kubectl patch release that matches K8S_VERSION
+    # (e.g. K8S_VERSION=1.35 -> v1.35.x). kubectl officially supports ±1
+    # minor skew against the cluster, so following the cluster minor keeps
+    # the bastion safe for cluster upgrades. Fall back to v1.35.0 if the
+    # resolver request fails (e.g. bastion builds without internet during
+    # a dev run).
+    KUBECTL_VERSION=$(curl -fsSL --max-time 10 \
+        "https://dl.k8s.io/release/stable-${K8S_VERSION}.txt" 2>/dev/null \
+        || echo "v${K8S_VERSION}.0")
+    echo "  Installing kubectl ${KUBECTL_VERSION} (matches cluster minor ${K8S_VERSION})"
+
+    # Close the outer single quotes around --parameters for the URL
+    # segments so ${KUBECTL_VERSION} expands on the control host, then
+    # reopen single quotes so "$(cat kubectl.sha256)" continues to run
+    # on the bastion (SSM remote) rather than locally.
     INSTALL_COMMAND_ID=$(aws ssm send-command \
         --instance-ids ${INSTANCE_ID} \
         --region ${AWS_REGION} \
         --document-name "AWS-RunShellScript" \
         --timeout-seconds 600 \
         --parameters 'commands=[
-            "echo Installing kubectl for ARM64...",
-            "curl -fLO --retry 3 --retry-delay 5 https://dl.k8s.io/release/v1.31.0/bin/linux/arm64/kubectl",
-            "curl -fLO --retry 3 --retry-delay 5 https://dl.k8s.io/release/v1.31.0/bin/linux/arm64/kubectl.sha256",
+            "echo Installing kubectl '"${KUBECTL_VERSION}"' for ARM64...",
+            "curl -fLO --retry 3 --retry-delay 5 https://dl.k8s.io/release/'"${KUBECTL_VERSION}"'/bin/linux/arm64/kubectl",
+            "curl -fLO --retry 3 --retry-delay 5 https://dl.k8s.io/release/'"${KUBECTL_VERSION}"'/bin/linux/arm64/kubectl.sha256",
             "echo \"$(cat kubectl.sha256)  kubectl\" | sha256sum --check || { echo ERROR: kubectl checksum verification failed; exit 1; }",
             "sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl",
             "rm -f kubectl kubectl.sha256",

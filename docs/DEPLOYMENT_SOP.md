@@ -15,7 +15,7 @@
 ```
 EKS Cluster (K8s 1.35)
 ├── 控制平面 (AWS 托管，私有 API Endpoint)
-├── 系统节点组 (eks-utils): m7i.2xlarge × 3，50GB 根卷 + 100GB LVM 数据卷
+├── 系统节点组 (eks-utils): m8g.xlarge × 3（默认 Graviton4，可改 m7i 等 Intel 机型），50GB 根卷 + 100GB LVM 数据卷
 └── 核心组件: CoreDNS, Cluster Autoscaler, ALB Controller, EBS CSI Driver
 ```
 
@@ -71,9 +71,13 @@ module "vpc" {
 # Amazon Linux 2023 一键安装
 sudo yum update -y && sudo yum install -y git unzip tar gzip jq
 
-# kubectl (with checksum verification)
-curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+# kubectl — pick the latest patch matching the cluster minor (K8S_VERSION
+# in .env, e.g. 1.35). kubectl supports ±1 minor skew, so following the
+# cluster minor keeps the bastion safe across cluster upgrades.
+: "${K8S_VERSION:=1.35}"
+KUBECTL_VERSION=$(curl -fsSL "https://dl.k8s.io/release/stable-${K8S_VERSION}.txt")
+curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
 echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
 sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl kubectl.sha256
 
@@ -243,9 +247,9 @@ kubectl delete namespace game-2048
 
 **EBS**：
 ```bash
-kubectl apply -f examples/ebs-test.yaml
+kubectl apply -f examples/ebs-app.yaml
 kubectl get pvc
-kubectl delete -f examples/ebs-test.yaml
+kubectl delete -f examples/ebs-app.yaml
 ```
 
 **EFS**（需先安装驱动）：
