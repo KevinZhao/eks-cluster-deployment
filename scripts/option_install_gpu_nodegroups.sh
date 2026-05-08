@@ -1220,7 +1220,7 @@ create_gpu_nodegroup() {
     aws eks create-nodegroup \
         --cluster-name "${CLUSTER_NAME}" \
         --nodegroup-name "${ng_name}" \
-        --subnets ${subnets[*]} \
+        --subnets "${subnets[@]}" \
         --node-role "${GPU_NODE_ROLE_ARN}" \
         --launch-template "id=${lt_id},version=${lt_version}" \
         "${instance_types_arg[@]}" \

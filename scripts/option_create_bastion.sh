@@ -81,6 +81,15 @@ AMI_ID=$(aws ec2 describe-images \
     --output text \
     --region ${AWS_REGION})
 
+# describe-images returns the literal string "None" (not empty) when no
+# image matches — feeding that to run-instances yields an opaque API
+# error several lines later. Fail fast with a useful message instead.
+if [ -z "${AMI_ID}" ] || [ "${AMI_ID}" = "None" ]; then
+    echo "❌ ERROR: No AL2023 ARM64 AMI found in ${AWS_REGION}" >&2
+    echo "   Check that the region supports AL2023 ARM64 (e.g. ap-northeast-3 does not)." >&2
+    exit 1
+fi
+
 echo "AMI ID: ${AMI_ID}"
 echo ""
 
@@ -391,12 +400,26 @@ else
     KUBECTL_VERSION=$(curl -fsSL --max-time 10 \
         "https://dl.k8s.io/release/stable-${K8S_VERSION}.txt" 2>/dev/null \
         || echo "v${K8S_VERSION}.0")
+
+    # Pin eksctl and helm versions so bastion builds are reproducible
+    # and supply-chain attacks against `main`/`latest` can't execute
+    # on new bastions. Bump these periodically — the caller can
+    # override via .env (EKSCTL_VERSION / HELM_VERSION) without
+    # editing this script.
+    #   eksctl: ships eksctl_checksums.txt alongside the tarball.
+    #   helm:   get-helm-3 honours DESIRED_VERSION and verifies the
+    #           installed binary's own .sha256 internally, so pinning
+    #           the script tag + DESIRED_VERSION gives us defense-in-depth.
+    EKSCTL_VERSION_PIN="${EKSCTL_VERSION:-v0.195.0}"
+    HELM_VERSION_PIN="${HELM_VERSION:-v3.17.3}"
     echo "  Installing kubectl ${KUBECTL_VERSION} (matches cluster minor ${K8S_VERSION})"
+    echo "  Installing eksctl ${EKSCTL_VERSION_PIN}, helm ${HELM_VERSION_PIN}"
 
     # Close the outer single quotes around --parameters for the URL
-    # segments so ${KUBECTL_VERSION} expands on the control host, then
-    # reopen single quotes so "$(cat kubectl.sha256)" continues to run
-    # on the bastion (SSM remote) rather than locally.
+    # segments so ${KUBECTL_VERSION}/${EKSCTL_VERSION_PIN}/${HELM_VERSION_PIN}
+    # expand on the control host, then reopen single quotes so
+    # "$(cat kubectl.sha256)" continues to run on the bastion (SSM
+    # remote) rather than locally.
     INSTALL_COMMAND_ID=$(aws ssm send-command \
         --instance-ids ${INSTANCE_ID} \
         --region ${AWS_REGION} \
@@ -409,13 +432,18 @@ else
             "echo \"$(cat kubectl.sha256)  kubectl\" | sha256sum --check || { echo ERROR: kubectl checksum verification failed; exit 1; }",
             "sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl",
             "rm -f kubectl kubectl.sha256",
-            "echo Installing eksctl for ARM64...",
-            "curl -fsLO --retry 3 --retry-delay 5 https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_arm64.tar.gz",
+            "echo Installing eksctl '"${EKSCTL_VERSION_PIN}"' for ARM64...",
+            "curl -fsLO --retry 3 --retry-delay 5 https://github.com/eksctl-io/eksctl/releases/download/'"${EKSCTL_VERSION_PIN}"'/eksctl_Linux_arm64.tar.gz",
+            "curl -fsLO --retry 3 --retry-delay 5 https://github.com/eksctl-io/eksctl/releases/download/'"${EKSCTL_VERSION_PIN}"'/eksctl_checksums.txt",
+            "grep \"  eksctl_Linux_arm64.tar.gz$\" eksctl_checksums.txt | sha256sum --check || { echo ERROR: eksctl checksum verification failed; exit 1; }",
             "tar -xzf eksctl_Linux_arm64.tar.gz",
             "sudo mv eksctl /usr/local/bin/",
-            "rm eksctl_Linux_arm64.tar.gz",
-            "echo Installing helm...",
-            "curl -fsSL --retry 3 --retry-delay 5 https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
+            "rm -f eksctl_Linux_arm64.tar.gz eksctl_checksums.txt",
+            "echo Installing helm '"${HELM_VERSION_PIN}"'...",
+            "curl -fsSL --retry 3 --retry-delay 5 https://raw.githubusercontent.com/helm/helm/refs/tags/'"${HELM_VERSION_PIN}"'/scripts/get-helm-3 -o /tmp/get-helm-3",
+            "chmod +x /tmp/get-helm-3",
+            "DESIRED_VERSION='"${HELM_VERSION_PIN}"' /tmp/get-helm-3",
+            "rm -f /tmp/get-helm-3",
             "echo Installing additional tools...",
             "sudo yum install -y git jq gettext",
             "echo --- Tool Versions ---",
