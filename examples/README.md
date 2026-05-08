@@ -5,8 +5,8 @@
 ## 测试文件
 
 ### 单个Pod测试
-- `test-graviton-pod.yaml` - 测试 Graviton NodePool (r8g.8xlarge)
-- `test-x86-pod.yaml` - 测试 x86 NodePool (r7i.8xlarge)
+- `test-graviton-pod.yaml` - 测试 Graviton NodePool（Karpenter 从 `r/c/m` Graviton family 的 4-16 vCPU 实例中选择）
+- `test-x86-pod.yaml` - 测试 x86 NodePool（Karpenter 从 `r/c/m` Intel 6/7 代 family 的 4-16 vCPU 实例中选择）
 
 ### Deployment测试
 - `test-deployment-graviton.yaml` - 3副本测试 Graviton NodePool
@@ -14,7 +14,7 @@
 
 ## 使用方法
 
-### 测试 Graviton NodePool (r8g.8xlarge)
+### 测试 Graviton NodePool
 
 1. **部署单个Pod**:
 ```bash
@@ -46,7 +46,7 @@ kubectl get node <node-name> -o json | jq '.metadata.labels'
 kubectl delete -f examples/test-graviton-pod.yaml
 ```
 
-### 测试 x86 NodePool (r7i.8xlarge)
+### 测试 x86 NodePool
 
 1. **部署单个Pod**:
 ```bash
@@ -159,12 +159,13 @@ kubectl delete -f examples/test-deployment-x86.yaml
 ## 预期行为
 
 ### 节点创建
-- Karpenter 会根据 Pod 的资源请求和 toleration 自动选择合适的 NodePool
-- Graviton Pod 只会调度到 r8g.8xlarge 节点 (256GB内存, 32vCPU)
-- x86 Pod 只会调度到 r7i.8xlarge 节点 (256GB内存, 32vCPU)
+- Karpenter 会根据 Pod 的资源请求和 nodeSelector 自动选择合适的 NodePool
+- Graviton Pod 只会调度到 Graviton NodePool 的节点 (arm64, r/c/m family, 4-16 vCPU)
+- x86 Pod 只会调度到 x86 NodePool 的节点 (amd64, r/c/m Intel family, 4-16 vCPU)
+- 具体实例由 Karpenter 按成本/容量选择；memory 敏感的 Pod 请在 resources.requests 里显式声明 memory，避免被调度到 c-family 实例上 OOM
 
 ### 节点缩容
-- 节点变空或低利用率后，等待 1 分钟
+- 节点空闲后等待 `consolidateAfter`（NodePool 默认 1 小时）
 - Karpenter 会自动删除空闲节点
 - 每次最多删除 10% 的节点（budget 配置）
 
@@ -198,22 +199,20 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -f
 ## 注意事项
 
 1. **Taints 和 Tolerations**:
-   - Graviton NodePool 有 `arch=arm64:NoSchedule` taint
-   - x86 NodePool 有 `arch=amd64:NoSchedule` taint
-   - 测试 Pod 必须包含对应的 toleration
+   - 当前 NodePool **没有**设置 taint（manifest 里已注释掉）
+   - 如需专用节点，请在 NodePool.spec.template.spec.taints 下启用，并给测试 Pod 加对应 toleration
 
 2. **节点选择器**:
-   - 使用 `node-type` 标签确保 Pod 调度到正确的 NodePool
+   - 使用 `node-type=graviton` / `node-type=x86` 标签确保 Pod 调度到正确的 NodePool
 
 3. **缩容时间**:
-   - consolidateAfter 设置为 1 分钟
-   - 删除 Pod 后，需要等待至少 1 分钟才会触发缩容
+   - consolidateAfter 默认 1 小时
+   - 删除 Pod 后，需要等待至少 1 小时才会触发缩容（可在 NodePool.spec.disruption 下调整）
 
 4. **资源限制**:
-   - 每个 NodePool 最多创建 1000 个 CPU 和 1000Gi 内存的节点
-   - r8g.8xlarge: 32 vCPU, 256GB → 最多约 31 个节点
-   - r7i.8xlarge: 32 vCPU, 256GB → 最多约 31 个节点
+   - 每个 NodePool 默认 1000 vCPU / 1000Gi 内存上限（`spec.limits`）
+   - 具体节点数取决于 Karpenter 实际选到的实例规格，按实例的 vCPU × 实例数量加总 ≤ limits
 
 5. **成本控制**:
-   - r8g.8xlarge 和 r7i.8xlarge 都是较大的实例类型
+   - NodePool 当前仅允许 on-demand；若可接受中断可在 `capacity-type` 加入 `spot`
    - 测试完成后请及时清理资源

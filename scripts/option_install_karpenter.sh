@@ -294,7 +294,8 @@ cat > "${KARPENTER_CONTROLLER_POLICY_FILE}" <<EOF
       "Effect": "Allow",
       "Action": [
         "ec2:TerminateInstances",
-        "ec2:DeleteLaunchTemplate"
+        "ec2:DeleteLaunchTemplate",
+        "ec2:DeleteLaunchTemplateVersions"
       ],
       "Resource": [
         "arn:aws:ec2:${AWS_REGION}:*:instance/*",
@@ -643,7 +644,7 @@ if [[ -n "${SSH_PUBLIC_KEY:-}" ]]; then
     echo "  SSH public key will be injected into Karpenter nodes"
 fi
 
-# 部署 Graviton 专用配置 (r8g.8xlarge)
+# 部署 Graviton NodePool（r/c/m Graviton family，4-16 vCPU；详见 manifest 注释）
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
@@ -652,10 +653,10 @@ if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
-    echo "  ✓ Graviton EC2NodeClass and NodePool deployed (r8g.8xlarge)"
+    echo "  ✓ Graviton EC2NodeClass and NodePool deployed (arm64, r/c/m 4-16 vCPU)"
 fi
 
-# 可选：部署 x86 专用配置 (r7i.8xlarge)
+# 可选：部署 x86 NodePool（r/c/m Intel family，4-16 vCPU；详见 manifest 注释）
 if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
@@ -664,7 +665,7 @@ if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         "${PROJECT_ROOT}/manifests/karpenter/nodepool-x86.yaml" | kubectl apply -f -
-    echo "  ✓ x86 EC2NodeClass and NodePool deployed (r7i.8xlarge)"
+    echo "  ✓ x86 EC2NodeClass and NodePool deployed (amd64, r/c/m 4-16 vCPU)"
 fi
 
 # 13. 验证安装
@@ -696,10 +697,10 @@ echo "  Node IAM Role: ${KARPENTER_NODE_ROLE}"
 echo ""
 echo "Installed NodePools:"
 if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
-    echo "  - graviton: ARM64 only (r8g.8xlarge)"
+    echo "  - graviton: arm64, r/c/m Graviton family, 4-16 vCPU, on-demand"
 fi
 if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
-    echo "  - x86: x86-64 only (r7i.8xlarge)"
+    echo "  - x86:      amd64, r/c/m Intel family, 4-16 vCPU, on-demand"
 fi
 echo ""
 echo "Features:"

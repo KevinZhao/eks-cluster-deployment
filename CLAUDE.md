@@ -245,8 +245,8 @@ warn "message"          # Warning logging (no exit)
 
 **CPU Nodes (Graviton/x86):** `option_install_karpenter.sh`
 - EC2NodeClass: `manifests/karpenter/ec2nodeclass-graviton.yaml`, `ec2nodeclass-x86.yaml`
-- Graviton (ARM64): r8g.8xlarge
-- x86 (AMD64): r7i.8xlarge
+- Graviton (arm64): r/c/m Graviton3+Graviton4 family, 4-16 vCPU, on-demand (example defaults — see manifest header)
+- x86 (amd64):      r/c/m Intel 6th+7th gen family, 4-16 vCPU, on-demand
 - LVM configuration for containerd data volume
 
 ## GPU Node Support (Managed Node Groups)
