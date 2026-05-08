@@ -605,15 +605,24 @@ wait_for_eks_addon() {
                 log "✓ ${addon_name} addon is ACTIVE"
                 return 0
                 ;;
-            CREATE_FAILED|UPDATE_FAILED|DEGRADED)
+            CREATE_FAILED|UPDATE_FAILED)
                 warn "${addon_name} addon failed with status: $addon_status"
-                # 获取详细错误信息
                 aws eks describe-addon \
                     --cluster-name "${CLUSTER_NAME}" \
                     --addon-name "${addon_name}" \
                     --region "${AWS_REGION}" \
                     --query 'addon.health' 2>/dev/null || true
                 return 1
+                ;;
+            DEGRADED)
+                # DEGRADED is transient: addon was created before nodes
+                # existed (common with eksctl's --install-addons=true
+                # path in script 4) and EKS hasn't yet observed the
+                # newly-scheduled pods. Keep polling — it resolves to
+                # ACTIVE once the control plane reconciles. Only bail
+                # if it stays DEGRADED for the full window.
+                echo "  Waiting... (Status: DEGRADED, transient, attempt $i/$max_attempts)"
+                sleep $interval
                 ;;
             *)
                 echo "  Waiting... (Status: $addon_status, attempt $i/$max_attempts)"

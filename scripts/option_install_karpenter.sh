@@ -146,14 +146,39 @@ fi
 
 # 添加 KarpenterNodeRole 到 EKS 访问配置（允许节点加入集群）
 echo "  Adding ${KARPENTER_NODE_ROLE} to EKS access entries..."
-if aws eks describe-access-entry --cluster-name "${CLUSTER_NAME}" --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}" &>/dev/null; then
+KARPENTER_NODE_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}"
+if aws eks describe-access-entry --cluster-name "${CLUSTER_NAME}" --principal-arn "${KARPENTER_NODE_ROLE_ARN}" &>/dev/null; then
     echo "  EKS access entry for ${KARPENTER_NODE_ROLE} already exists"
 else
-    aws eks create-access-entry \
-        --cluster-name "${CLUSTER_NAME}" \
-        --principal-arn "arn:aws:iam::${ACCOUNT_ID}:role/${KARPENTER_NODE_ROLE}" \
-        --type EC2_LINUX
-    echo "  ✓ EKS access entry created for ${KARPENTER_NODE_ROLE}"
+    # EKS access entry creation can race with IAM role propagation when
+    # the role was just created a few seconds ago. EKS's API returns
+    # "invalid principalArn" in that window. Retry briefly — the role
+    # normally becomes visible to EKS within 10-30 seconds.
+    for attempt in 1 2 3 4 5 6; do
+        if aws eks create-access-entry \
+            --cluster-name "${CLUSTER_NAME}" \
+            --principal-arn "${KARPENTER_NODE_ROLE_ARN}" \
+            --type EC2_LINUX 2>/tmp/eks-access-entry.err; then
+            echo "  ✓ EKS access entry created for ${KARPENTER_NODE_ROLE}"
+            rm -f /tmp/eks-access-entry.err
+            break
+        fi
+        if grep -q "invalid principalArn\|invalid principal" /tmp/eks-access-entry.err 2>/dev/null; then
+            echo "  IAM role not yet visible to EKS, retrying in 10s (attempt ${attempt}/6)..."
+            sleep 10
+        else
+            cat /tmp/eks-access-entry.err >&2
+            rm -f /tmp/eks-access-entry.err
+            echo "  ✗ EKS access entry creation failed with non-retryable error" >&2
+            exit 1
+        fi
+        if [ "${attempt}" -eq 6 ]; then
+            echo "  ✗ Timed out waiting for IAM role to become visible to EKS" >&2
+            cat /tmp/eks-access-entry.err >&2 2>/dev/null
+            rm -f /tmp/eks-access-entry.err
+            exit 1
+        fi
+    done
 fi
 
 # 6. 创建 Karpenter Controller IAM Policy

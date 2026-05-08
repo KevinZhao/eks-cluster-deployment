@@ -410,7 +410,7 @@ else
     #   helm:   get-helm-3 honours DESIRED_VERSION and verifies the
     #           installed binary's own .sha256 internally, so pinning
     #           the script tag + DESIRED_VERSION gives us defense-in-depth.
-    EKSCTL_VERSION_PIN="${EKSCTL_VERSION:-v0.195.0}"
+    EKSCTL_VERSION_PIN="${EKSCTL_VERSION:-v0.226.0}"
     HELM_VERSION_PIN="${HELM_VERSION:-v3.17.3}"
     echo "  Installing kubectl ${KUBECTL_VERSION} (matches cluster minor ${K8S_VERSION})"
     echo "  Installing eksctl ${EKSCTL_VERSION_PIN}, helm ${HELM_VERSION_PIN}"

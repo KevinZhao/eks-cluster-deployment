@@ -1005,7 +1005,7 @@ pg_name = "${pg_name}"
 #   - p6-b300.48xlarge: InterfaceType=interface (ENA only) — Network Card 0 does
 #     NOT accept EFA on this type (MaximumEfaInterfaces=16 but MaximumNetworkCards=17;
 #     EFA is only allowed on NetworkCardIndex 1..16). Using InterfaceType=efa on
-#     NIC 0 yields `AttachmentLimitExceeded: Network Card 0 (requested: 1, limit: 0)`
+#     NIC 0 yields AttachmentLimitExceeded on Network Card 0 with limit 0.
 # Additional: NetworkCardIndex=1..N, DeviceIndex=1, InterfaceType=efa-only
 network_interfaces = []
 
