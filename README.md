@@ -302,6 +302,7 @@ eks-cluster-deployment/
 │   └── storage/                            # StorageClass
 │
 └── docs/                                   # 详细文档
+    ├── README.md                           # CSI Driver 文档索引
     ├── DEPLOYMENT_SOP.md                   # 完整部署流程
     ├── DESIGN.md                           # 架构设计
     ├── COLLABORATION.md                    # 协作指南

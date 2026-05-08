@@ -108,7 +108,7 @@ kubectl get nodes -l node-type=graviton
 kubectl scale deployment test-graviton-deployment --replicas=1
 ```
 
-6. **等待1分钟后，观察节点自动删除**:
+6. **观察节点自动删除**（NodePool 默认 `consolidateAfter: 1h`，可在 `manifests/karpenter/nodepool-graviton.yaml` 中按需调小）:
 ```bash
 watch kubectl get nodes -l node-type=graviton
 ```
@@ -146,7 +146,7 @@ kubectl get nodes -l node-type=x86
 kubectl scale deployment test-x86-deployment --replicas=1
 ```
 
-6. **等待1分钟后，观察节点自动删除**:
+6. **观察节点自动删除**（NodePool 默认 `consolidateAfter: 1h`，可在 `manifests/karpenter/nodepool-x86.yaml` 中按需调小）:
 ```bash
 watch kubectl get nodes -l node-type=x86
 ```
