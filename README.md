@@ -89,7 +89,7 @@ EKS Cluster (Kubernetes 1.35)
 | Pod Identity Agent | v1.3.4 | IAM 认证 |
 | EBS CSI Driver | v1.37.0 | 块存储 |
 | Cluster Autoscaler | v1.35.0 | 自动扩缩容 |
-| AWS LB Controller | v1.13.0 | 负载均衡 |
+| AWS LB Controller | v2.13.0（helm chart 1.16.0） | 负载均衡 |
 | Metrics Server | v0.7.2 | 资源指标 |
 
 ---
@@ -246,8 +246,8 @@ aws ec2 terminate-instances --instance-ids $(cat /tmp/eks-bastion-instance-id.tx
 ## 📚 文档
 
 - **[docs/DEPLOYMENT_SOP.md](docs/DEPLOYMENT_SOP.md)** - 完整部署标准操作流程（必读）
-- **[docs/DESIGN.md](docs/DESIGN.md)** - 架构设计和技术决策说明
-- **[docs/](docs/)** - CSI Drivers 部署指南、测试报告、S3 Express 指南
+- **[docs/DESIGN.md](docs/DESIGN.md)** - Pod 磁盘配额设计方案
+- **[docs/](docs/)** - CSI Drivers 文档索引、GPU 拓扑重试方案、技术博客提纲
 
 ### 外部参考
 
@@ -264,6 +264,7 @@ aws ec2 terminate-instances --instance-ids $(cat /tmp/eks-bastion-instance-id.tx
 ```
 eks-cluster-deployment/
 ├── README.md                          # 本文档（快速入门）
+├── CONTRIBUTING.md                    # 贡献指南
 ├── .env.example                       # 环境变量模板
 │
 ├── scripts/

@@ -101,9 +101,10 @@ kubectl top pods -A
 
 **Numbered Scripts (0-7)**: Core deployment sequence that must run in order
 - `0_setup_env.sh`: Environment configuration loader and validation functions (always source this first)
-- `1-3`: Network infrastructure setup
-- `4`: Local environment check (alternative to bastion)
-- `5-6`: EKS cluster and system nodegroup creation
+- `1-3`: Network infrastructure setup (VPC DNS, validation, endpoints)
+- `4`: EKS cluster control plane creation
+- `5`: Local environment check (optional; alternative to bastion)
+- `6`: System nodegroup creation (with LVM-backed containerd storage)
 - `7`: Core addon installation (CoreDNS, Cluster Autoscaler, ALB Controller, EBS CSI, Metrics Server)
 
 **option_* Scripts**: Optional features that can be installed after core deployment

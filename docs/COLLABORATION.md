@@ -300,7 +300,7 @@ git log -p scripts/4_install_eks_cluster.sh
 遇到问题可以：
 1. 在 GitHub 创建 Issue
 2. 联系项目维护者: kevin8093@126.com
-3. 查看文档: [README.md](README.md)
+3. 查看文档: [README.md](../README.md)
 
 ---
 
