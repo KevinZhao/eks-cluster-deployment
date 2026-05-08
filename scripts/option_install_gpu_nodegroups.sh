@@ -48,12 +48,21 @@ source "${SCRIPT_DIR}/topology_labeling_lib.sh"
 # GPU AMI variant (x86_64 vs arm64) instead of hard-coding x86_64.
 # shellcheck source=instance_arch_lib.sh
 source "${SCRIPT_DIR}/instance_arch_lib.sh"
+declare -F detect_instance_arch >/dev/null || {
+    echo "ERROR: instance_arch_lib.sh did not export detect_instance_arch()" >&2
+    exit 1
+}
 
 # Load NVMe data-disk detection snippet (shared with system nodegroup).
 # Picks the EBS data disk by device model so we never stripe containerd
 # onto ephemeral Instance Store on *d / *gd / i4g-class GPU families.
 # shellcheck source=disk_detection_lib.sh
 source "${SCRIPT_DIR}/disk_detection_lib.sh"
+if [ -z "${EBS_DATA_DISK_DETECT_SNIPPET:-}" ]; then
+    echo "ERROR: disk_detection_lib.sh did not export EBS_DATA_DISK_DETECT_SNIPPET" >&2
+    echo "       The data-disk detection snippet would be empty in user-data, breaking LVM setup." >&2
+    exit 1
+fi
 
 export KUBECONFIG="${HOME:-/root}/.kube/config"
 echo "KUBECONFIG set to: ${KUBECONFIG}"
@@ -1698,7 +1707,13 @@ if [ -n "${GPU_TARGET_AZ}" ]; then
 fi
 
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
-    gpu_type=$(echo "$gpu_type" | tr -d ' ')
+    # Strip whitespace and skip empty entries. `GPU_INSTANCE_TYPES=",p5.48xlarge,"`
+    # would otherwise yield blank iterations and produce misleading
+    # "Unknown GPU type:" warnings. The stricter normalizer used during
+    # architecture validation (above) already filters these, but the main
+    # loop uses GPU_TYPE_ARRAY directly.
+    gpu_type=$(echo "$gpu_type" | tr -d '[:space:]')
+    [ -z "$gpu_type" ] && continue
     echo ""
     echo "Processing GPU type: ${gpu_type}"
 
@@ -1850,7 +1865,8 @@ fi
 echo ""
 echo "Node groups created for:"
 for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
-    gpu_type=$(echo "$gpu_type" | tr -d ' ')
+    gpu_type=$(echo "$gpu_type" | tr -d '[:space:]')
+    [ -z "$gpu_type" ] && continue
     echo "  • ${gpu_type}:"
     [ "${DEPLOY_GPU_OD}" = "true" ] && echo "    - On-Demand (all AZs)"
     [ "${DEPLOY_GPU_SPOT}" = "true" ] && echo "    - Spot (all AZs)"

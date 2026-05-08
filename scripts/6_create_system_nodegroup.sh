@@ -33,12 +33,21 @@ source "${SCRIPT_DIR}/0_setup_env.sh"
 # instance_arch_to_go_arch). Queries the EC2 API so we never miss new
 # Graviton / GPU families that break string-matching heuristics.
 source "${SCRIPT_DIR}/instance_arch_lib.sh"
+declare -F detect_instance_arch >/dev/null || {
+    echo "❌ ERROR: instance_arch_lib.sh did not export detect_instance_arch()" >&2
+    exit 1
+}
 
 # Load NVMe data-disk detection snippet for user-data. Distinguishes EBS
 # from Instance Store via device model, so families like *d / *gd that
 # expose unpartitioned ephemeral NVMe disks don't silently win the
 # "first nvme without partitions" race against the real EBS data disk.
 source "${SCRIPT_DIR}/disk_detection_lib.sh"
+if [ -z "${EBS_DATA_DISK_DETECT_SNIPPET:-}" ]; then
+    echo "❌ ERROR: disk_detection_lib.sh did not export EBS_DATA_DISK_DETECT_SNIPPET" >&2
+    echo "   The data-disk detection snippet would be empty in user-data, breaking LVM setup." >&2
+    exit 1
+fi
 
 # 1.1 设置 KUBECONFIG 环境变量
 export KUBECONFIG="${HOME:-/root}/.kube/config"

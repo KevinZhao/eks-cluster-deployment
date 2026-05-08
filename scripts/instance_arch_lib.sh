@@ -42,13 +42,17 @@ detect_instance_arch() {
         return 1
     fi
 
+    # Intentionally no `2>/dev/null` — operators need AWS CLI's error text
+    # to tell apart auth denied, throttling, typoed region, typoed instance
+    # type, etc. The helper adds one line of its own context; AWS prints
+    # the root cause on the preceding line(s).
     local arch
     arch=$(aws ec2 describe-instance-types \
         --instance-types "${instance_type}" \
         --region "${region}" \
         --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures[0]' \
-        --output text 2>/dev/null) || {
-        echo "detect_instance_arch: aws ec2 describe-instance-types failed for ${instance_type} in ${region}" >&2
+        --output text) || {
+        echo "detect_instance_arch: cannot determine arch for '${instance_type}' in ${region} (see AWS CLI error above)" >&2
         return 1
     }
 
