@@ -221,7 +221,7 @@ aws ssm start-session --target $INSTANCE_ID
 sudo journalctl -u kubelet -f
 ```
 
-更多故障排查请参考 [DEPLOYMENT_SOP.md - 常见问题排查](docs/DEPLOYMENT_SOP.md#常见问题排查)
+更多故障排查请参考 [DEPLOYMENT_SOP.md - 常见问题](docs/DEPLOYMENT_SOP.md#常见问题)
 
 ---
 
@@ -287,10 +287,13 @@ eks-cluster-deployment/
 │   └── topology_labeling_lib.sh            # 共享库：GPU 拓扑标签
 │
 ├── examples/                               # 参考 manifest 与测试脚本
+│   ├── README.md                           # 测试流程说明
 │   ├── option_test_pod_scheduling.sh       # 测试 Pod 调度
 │   ├── option_test_karpenter_pools.sh      # 测试 Karpenter 节点池
 │   ├── {ebs,efs,fsx,s3,nlb}-app.yaml       # 各类存储/LB 示例应用
-│   └── test-{graviton,x86}-pod.yaml        # 架构调度示例
+│   ├── test-{graviton,x86}-pod.yaml        # 架构调度示例（单 Pod）
+│   ├── test-deployment-{graviton,x86}.yaml # 架构调度示例（Deployment）
+│   └── autoscaler.yaml                     # 扩缩容测试示例
 │
 ├── manifests/
 │   ├── addons/                             # Cluster Autoscaler
@@ -301,8 +304,10 @@ eks-cluster-deployment/
 └── docs/                                   # 详细文档
     ├── DEPLOYMENT_SOP.md                   # 完整部署流程
     ├── DESIGN.md                           # 架构设计
+    ├── COLLABORATION.md                    # 协作指南
     ├── P2_TOPOLOGY_RETRY_PLAN.md           # GPU 拓扑重试方案
-    └── COLLABORATION.md                    # 协作指南
+    ├── aws-blog-outline.md                 # 技术博客提纲
+    └── history/                            # 历史评审归档（本地保留，不纳入 git）
 ```
 
 > **Note**: 本仓库不包含 VPC 创建代码，请自行准备 VPC 后再运行脚本。推荐使用 [terraform-aws-modules/vpc](https://github.com/terraform-aws-modules/terraform-aws-vpc)。

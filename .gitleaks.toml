@@ -37,10 +37,13 @@ paths = [
 #   123456789012 — AWS documentation placeholder account ID, used in
 #                  .env.example, examples/*.yaml, and option_install_csi_drivers.sh.
 #   public.ecr.aws/ — public ECR registry host.
+# Word boundaries (\b) ensure we only match the exact ID, not a
+# substring inside an unrelated token (e.g. a future 13-digit secret
+# that happens to contain 123456789012).
 regexes = [
-  '''602401143452''',
-  '''961992271922''',
-  '''123456789012''',
+  '''\b602401143452\b''',
+  '''\b961992271922\b''',
+  '''\b123456789012\b''',
   '''public\.ecr\.aws/''',
 ]
 

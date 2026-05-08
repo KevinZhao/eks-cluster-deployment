@@ -35,6 +35,14 @@ EBS_DATA_DISK_DETECT_SNIPPET=$(cat <<'EBS_DETECT_SNIPPET'
 # Returns non-zero if no EBS data disk is found within the timeout.
 # Distinguishes EBS from Instance Store via /sys/block/*/device/model so we
 # never stripe containerd onto ephemeral storage (would be lost on stop/start).
+#
+# ASSUMPTION: exactly one EBS data disk is attached. If multiple EBS volumes
+# are attached in addition to the root volume, this function returns the
+# first one in /sys/block enumeration order (kernel enumeration is not
+# guaranteed to match the block-device-mapping Nitro assigned). Callers
+# that need deterministic selection across multiple EBS volumes should
+# use instance metadata block-device-mapping or NVMe vendor-specific
+# identifier data instead.
 detect_ebs_data_disk() {
   local timeout="${1:-60}"
   local i sys_path model dev parts

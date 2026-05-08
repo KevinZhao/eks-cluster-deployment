@@ -72,10 +72,11 @@ module "vpc" {
 sudo yum update -y && sudo yum install -y git unzip tar gzip jq
 
 # kubectl — pick the latest patch matching the cluster minor (K8S_VERSION
-# in .env, e.g. 1.35). kubectl supports ±1 minor skew, so following the
-# cluster minor keeps the bastion safe across cluster upgrades.
+# in .env, e.g. 1.35). Following the cluster minor keeps kubectl within
+# the supported skew window across cluster upgrades.
 : "${K8S_VERSION:=1.35}"
-KUBECTL_VERSION=$(curl -fsSL "https://dl.k8s.io/release/stable-${K8S_VERSION}.txt")
+KUBECTL_VERSION=$(curl -fsSL "https://dl.k8s.io/release/stable-${K8S_VERSION}.txt") \
+    || { echo "ERROR: Failed to resolve stable kubectl version for K8S_VERSION=${K8S_VERSION}" >&2; exit 1; }
 curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
 curl -fLO --retry 3 --retry-delay 5 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
 echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
@@ -399,5 +400,5 @@ aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${AWS_REGION}
 |------|------|----------|
 | v1.0 | 2025-12-29 | 初始版本 |
 | v1.1 | 2026-01-10 | 修复脚本编号引用；简化 FSx 测试步骤 |
-| v1.2 | 2026-01-11 | 合并 VPC_SETUP.md；大幅简化文档 |
+| v1.2 | 2026-01-11 | 合并 VPC_SETUP.md（该文件已并入本文件，不再单独存在）；大幅简化文档 |
 | v1.3 | 2026-01-11 | 添加 SSH 密钥配置：系统/GPU 节点组 (EC2_KEY_NAME) 和 Karpenter 节点 (SSH_PUBLIC_KEY) |

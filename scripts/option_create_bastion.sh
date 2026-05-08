@@ -382,11 +382,11 @@ else
     echo "  This may take 1-2 minutes..."
 
     # Resolve the latest kubectl patch release that matches K8S_VERSION
-    # (e.g. K8S_VERSION=1.35 -> v1.35.x). kubectl officially supports ±1
-    # minor skew against the cluster, so following the cluster minor keeps
-    # the bastion safe for cluster upgrades. Fall back to v1.35.0 if the
-    # resolver request fails (e.g. bastion builds without internet during
-    # a dev run).
+    # (e.g. K8S_VERSION=1.35 -> v1.35.x). Kubernetes supports kubectl
+    # within +1/-3 minors of the cluster (k8s 1.28+ skew policy), but
+    # we follow the cluster minor exactly to keep the bastion tidy
+    # across cluster upgrades. Fall back to v${K8S_VERSION}.0 if the
+    # resolver request fails (e.g. bastion builds without internet).
     KUBECTL_VERSION=$(curl -fsSL --max-time 10 \
         "https://dl.k8s.io/release/stable-${K8S_VERSION}.txt" 2>/dev/null \
         || echo "v${K8S_VERSION}.0")

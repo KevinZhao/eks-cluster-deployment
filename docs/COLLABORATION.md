@@ -234,7 +234,7 @@ eksctl delete cluster \
 
 ## 📚 项目结构
 
-完整的项目结构见 [README.md](../README.md#项目结构)。此处仅列出几个贡献者最常接触的入口：
+完整的项目结构见 [README.md](../README.md) 的「项目结构」章节。此处仅列出几个贡献者最常接触的入口：
 
 ```
 eks-cluster-deployment/
