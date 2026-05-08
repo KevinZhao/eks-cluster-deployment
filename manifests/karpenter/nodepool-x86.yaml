@@ -21,8 +21,12 @@ metadata:
 spec:
   template:
     metadata:
+      # Note: karpenter.sh/capacity-type is added automatically by Karpenter
+      # based on the actual capacity type of the launched instance. Do NOT
+      # hard-code it here — doing so would override the system label and
+      # mis-tag spot instances as on-demand if you expand capacity-type
+      # below to include "spot".
       labels:
-        karpenter.sh/capacity-type: on-demand
         node-type: x86
         arch: amd64
     spec:
@@ -60,10 +64,11 @@ spec:
           operator: In
           values: ["on-demand"]
 
-        # Availability zones. Keep the three AZs the cluster was built in.
-        - key: topology.kubernetes.io/zone
-          operator: In
-          values: ["${AWS_REGION}a", "${AWS_REGION}b", "${AWS_REGION}c"]
+      # No topology.kubernetes.io/zone constraint: Karpenter derives the
+      # allowed zones from the EC2NodeClass subnetSelectorTerms, which
+      # already follow the cluster's actual AZ layout (2/3/4 AZs). Adding
+      # a static zone list here would either ignore a 4th AZ or waste
+      # scheduling cycles on a 2-AZ cluster's missing AZ.
 
       # Taints — not used here. If you want dedicated amd64 nodes, add a
       # taint and matching tolerations on workloads.
