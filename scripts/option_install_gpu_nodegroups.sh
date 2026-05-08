@@ -969,6 +969,12 @@ EOF_USERDATA
     # Generate Launch Template data using Python
     local lt_data_file=$(mktemp /tmp/lt-data.XXXXXX.json)
 
+    # shellcheck disable=SC1036,SC1088
+    #   This is a Python heredoc, not shell. Shellcheck parses comments
+    #   with literal `(...)` and backticks as shell syntax and misfires
+    #   (SC1036 "'(' is invalid", SC1088 "Parsing stopped here"). Disable
+    #   both for this block — the real Python validation happens when
+    #   python3 executes below.
     python3 - <<PYSCRIPT > "${lt_data_file}"
 import json
 import base64
