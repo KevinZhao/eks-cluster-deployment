@@ -155,44 +155,102 @@ EOF
       "Action": [
         "eks:DescribeCluster",
         "eks:ListClusters",
+        "eks:DescribeClusterVersions",
         "eks:DescribeNodegroup",
         "eks:ListNodegroups",
+        "eks:CreateNodegroup",
+        "eks:DeleteNodegroup",
         "eks:DescribeAddon",
         "eks:ListAddons",
+        "eks:CreateAddon",
+        "eks:UpdateAddon",
+        "eks:DeleteAddon",
+        "eks:DescribeAddonVersions",
+        "eks:DescribeAddonConfiguration",
         "eks:UpdateClusterConfig",
         "eks:UpdateNodegroupConfig",
         "eks:TagResource",
+        "eks:UntagResource",
+        "eks:ListTagsForResource",
         "eks:ListPodIdentityAssociations",
         "eks:DescribePodIdentityAssociation",
         "eks:CreatePodIdentityAssociation",
-        "eks:UpdatePodIdentityAssociation"
+        "eks:UpdatePodIdentityAssociation",
+        "eks:DeletePodIdentityAssociation",
+        "eks:ListAccessEntries",
+        "eks:DescribeAccessEntry",
+        "eks:CreateAccessEntry",
+        "eks:UpdateAccessEntry",
+        "eks:DeleteAccessEntry",
+        "eks:AssociateAccessPolicy",
+        "eks:DisassociateAccessPolicy",
+        "eks:ListAssociatedAccessPolicies"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "EC2ReadOnly",
+      "Sid": "EC2AndLaunchTemplate",
       "Effect": "Allow",
       "Action": [
         "ec2:Describe*",
         "ec2:AuthorizeSecurityGroupIngress",
         "ec2:RevokeSecurityGroupIngress",
-        "ec2:CreateTags"
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:CreateSecurityGroup",
+        "ec2:DeleteSecurityGroup",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:CreateLaunchTemplate",
+        "ec2:CreateLaunchTemplateVersion",
+        "ec2:ModifyLaunchTemplate",
+        "ec2:DeleteLaunchTemplate",
+        "ec2:DeleteLaunchTemplateVersions",
+        "ec2:CreatePlacementGroup",
+        "ec2:DeletePlacementGroup",
+        "ec2:RunInstances",
+        "ec2:TerminateInstances"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "IAMPodIdentity",
+      "Sid": "IAMRoleAndProfileManagement",
       "Effect": "Allow",
       "Action": [
         "iam:GetRole",
         "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:UpdateAssumeRolePolicy",
         "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
         "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
         "iam:TagRole",
+        "iam:UntagRole",
         "iam:GetPolicy",
         "iam:CreatePolicy",
+        "iam:DeletePolicy",
         "iam:ListPolicies",
-        "iam:ListAttachedRolePolicies"
+        "iam:ListPolicyVersions",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:GetPolicyVersion",
+        "iam:TagPolicy",
+        "iam:UntagPolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:PassRole",
+        "iam:ListInstanceProfiles",
+        "iam:ListInstanceProfilesForRole",
+        "iam:TagInstanceProfile",
+        "iam:UntagInstanceProfile"
       ],
       "Resource": "*"
     },
@@ -205,7 +263,47 @@ EOF
         "autoscaling:DescribeLaunchConfigurations",
         "autoscaling:DescribeTags",
         "autoscaling:SetDesiredCapacity",
+        "autoscaling:UpdateAutoScalingGroup",
         "autoscaling:TerminateInstanceInAutoScalingGroup"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudFormation",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:Describe*",
+        "cloudformation:List*",
+        "cloudformation:GetTemplate*",
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:UpdateTerminationProtection",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DeleteChangeSet"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "S3ForDeploymentArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECRPullForHelmCharts",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr-public:GetAuthorizationToken",
+        "ecr-public:BatchCheckLayerAvailability",
+        "ecr-public:GetDownloadUrlForLayer",
+        "ecr-public:BatchGetImage"
       ],
       "Resource": "*"
     },
@@ -225,6 +323,46 @@ EOF
       "Effect": "Allow",
       "Action": [
         "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SSMPatchManager",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:CreateMaintenanceWindow",
+        "ssm:DeleteMaintenanceWindow",
+        "ssm:UpdateMaintenanceWindow",
+        "ssm:GetMaintenanceWindow",
+        "ssm:DescribeMaintenanceWindows",
+        "ssm:RegisterTargetWithMaintenanceWindow",
+        "ssm:RegisterTaskWithMaintenanceWindow",
+        "ssm:DeregisterTargetFromMaintenanceWindow",
+        "ssm:DeregisterTaskFromMaintenanceWindow",
+        "ssm:DescribeMaintenanceWindowTargets",
+        "ssm:DescribeMaintenanceWindowTasks",
+        "ssm:CreatePatchBaseline",
+        "ssm:DeletePatchBaseline",
+        "ssm:GetPatchBaseline",
+        "ssm:DescribePatchBaselines",
+        "ssm:RegisterPatchBaselineForPatchGroup",
+        "ssm:DeregisterPatchBaselineForPatchGroup",
+        "ssm:ListTagsForResource",
+        "ssm:AddTagsToResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "FSxAndEFSForCSI",
+      "Effect": "Allow",
+      "Action": [
+        "fsx:Describe*",
+        "fsx:List*",
+        "elasticfilesystem:Describe*",
+        "elasticfilesystem:CreateFileSystem",
+        "elasticfilesystem:CreateMountTarget",
+        "elasticfilesystem:DeleteMountTarget",
+        "elasticfilesystem:DeleteFileSystem"
       ],
       "Resource": "*"
     }
@@ -500,8 +638,15 @@ else
     echo ""
 
     echo -e "${YELLOW}To delete the bastion instance later:${NC}"
-    echo "  ./scripts/delete_bastion.sh"
-    echo "  Or manually: aws ec2 terminate-instances --instance-ids ${INSTANCE_ID} --region ${AWS_REGION}"
+    echo "  aws ec2 terminate-instances --instance-ids ${INSTANCE_ID} --region ${AWS_REGION}"
+    echo ""
+    echo -e "${YELLOW}To clean up all deployment resources (IAM roles, instance profiles, etc.):${NC}"
+    echo "  # IAM role EKS-Deploy-Role is shared and safe to leave; delete only if no other bastions:"
+    echo "  aws iam remove-role-from-instance-profile --instance-profile-name EKS-Deploy-Profile --role-name EKS-Deploy-Role"
+    echo "  aws iam delete-instance-profile --instance-profile-name EKS-Deploy-Profile"
+    echo "  aws iam detach-role-policy --role-name EKS-Deploy-Role --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/EKS-Bastion-Deploy-Policy"
+    echo "  aws iam detach-role-policy --role-name EKS-Deploy-Role --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    echo "  aws iam delete-role --role-name EKS-Deploy-Role"
     echo ""
 fi
 
