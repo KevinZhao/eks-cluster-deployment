@@ -276,6 +276,19 @@ EOF
     echo "  - FSx for Lustre: High-performance for HPC/ML (GB/s throughput)"
     echo "  - FSx for NetApp ONTAP: Enterprise features (snapshots, replication)"
     echo ""
+    echo "⚠️  IMPORTANT: FSx Lustre DeploymentType compatibility"
+    echo "   Use PERSISTENT_2 (Lustre 2.15), NOT SCRATCH_2 (Lustre 2.10)."
+    echo "   AL2023's lustre-client package is 2.15.x and will fail to"
+    echo "   mount a 2.10 server with:"
+    echo "     mount.lustre: mount ... failed: Invalid argument"
+    echo "     LustreError: 16a-d: Server MGS version (2.10.5.0) refused"
+    echo "     connection from this client with an incompatible version"
+    echo "     (2.15.6). Client must be recompiled"
+    echo "   Example create command:"
+    echo "     aws fsx create-file-system --file-system-type LUSTRE \\"
+    echo "       --storage-capacity 1200 \\"
+    echo "       --lustre-configuration DeploymentType=PERSISTENT_2,PerUnitStorageThroughput=125"
+    echo ""
 }
 
 # 安装 S3 CSI Driver Addon

@@ -414,6 +414,14 @@ fi
 
 echo "=== LVM Setup Complete ==="
 
+# Install lustre-client so pods that mount FSx Lustre via the FSx CSI
+# driver actually work. Without this, kubelet fails with
+# "mount.lustre: ... : Invalid argument" at PVC attach time.
+# Best-effort — pod scheduling still works without it.
+echo "=== Installing Lustre client (for FSx Lustre CSI) ==="
+dnf install -y lustre-client 2>&1 | tail -5 || echo "WARN: lustre-client install failed (FSx Lustre will not work on this node)"
+modprobe lustre || true
+
 echo "=== Starting EKS Node Bootstrap ==="
 
 # Create nodeadm config

@@ -106,6 +106,12 @@ spec:
     echo "Containerd data migration completed"
     df -h /var/lib/containerd
 
+    # Install lustre-client so pods mounting FSx Lustre via CSI work.
+    # Without this, mount.lustre fails with "Invalid argument" at PVC attach.
+    echo "Installing lustre-client (for FSx Lustre CSI)"
+    dnf install -y lustre-client 2>&1 | tail -3 || echo "WARN: lustre-client install failed"
+    modprobe lustre || true
+
     # Start containerd with migrated data
     systemctl start containerd
 

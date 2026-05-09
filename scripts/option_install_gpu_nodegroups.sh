@@ -226,7 +226,10 @@ if [ "${ENABLED_COUNT}" -eq 0 ]; then
     exit 1
 fi
 
-# Get EFA-only network card count (excluding primary EFA card)
+# Get EFA-only network card count (excluding primary EFA card).
+# Returns 0 for GPU instance types that don't expose EFA-only NICs (e.g.
+# g5/g6/g6e single-GPU shapes, t-series GPU, inf). Those types still get
+# a GPU node group — they just won't have multi-NIC EFA scaffolding.
 get_efa_only_card_count() {
     local instance_type=$1
     case "$instance_type" in
@@ -236,6 +239,20 @@ get_efa_only_card_count() {
         p6-b300.48xlarge) echo 16 ;;   # NetworkCardIndex 1-16
         g7e.48xlarge)     echo 3 ;;    # NetworkCardIndex 1-3
         *)                echo 0 ;;
+    esac
+}
+
+# Sanity-check whether a string looks like a GPU/accelerator instance type.
+# Accepts any EC2 family prefix whose vendor uses it for accelerated compute:
+#   p/g/trn/inf (NVIDIA GPU, AWS Trainium, AWS Inferentia).
+# This is intentionally a loose check — EC2 family names are stable and we
+# prefer to let a bad type fail at launch-template creation (clear AWS error)
+# rather than silently skip it here.
+is_gpu_instance_type() {
+    local t=$1
+    case "$t" in
+        p[0-9]*|p[0-9]-*|g[0-9]*|g[0-9][a-z]*|trn[0-9]*|inf[0-9]*) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
@@ -1001,17 +1018,22 @@ pg_name = "${pg_name}"
 
 # Network interfaces configuration
 # Primary: NetworkCardIndex=0, DeviceIndex=0
-#   - Most GPU instance types: InterfaceType=efa (EFA + ENA on same primary NIC)
+#   - Most multi-NIC EFA GPU types: InterfaceType=efa (EFA + ENA on same primary NIC)
 #   - p6-b300.48xlarge: InterfaceType=interface (ENA only) — Network Card 0 does
 #     NOT accept EFA on this type (MaximumEfaInterfaces=16 but MaximumNetworkCards=17;
 #     EFA is only allowed on NetworkCardIndex 1..16). Using InterfaceType=efa on
 #     NIC 0 yields AttachmentLimitExceeded on Network Card 0 with limit 0.
+#   - Small single-GPU types (g5/g6/g6e.xlarge etc): no EFA support at all
+#     (UnsupportedOperation: "EFA interfaces are not supported on <type>").
+#     Detected via efa_only_count == 0. Fall back to plain ENA on NIC 0.
 # Additional: NetworkCardIndex=1..N, DeviceIndex=1, InterfaceType=efa-only
 network_interfaces = []
 
 # Primary network card — type depends on the instance
 if instance_type == "p6-b300.48xlarge":
     primary_interface_type = "interface"   # pure ENA, no EFA on NIC 0
+elif efa_only_count == 0:
+    primary_interface_type = "interface"   # no EFA support on this type
 else:
     primary_interface_type = "efa"         # EFA + ENA on NIC 0
 
@@ -1717,10 +1739,13 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     echo ""
     echo "Processing GPU type: ${gpu_type}"
 
+    if ! is_gpu_instance_type "$gpu_type"; then
+        echo "WARNING: '${gpu_type}' does not look like a GPU/accelerator instance type (expected p*, g*, trn*, inf*); skipping"
+        continue
+    fi
     efa_count=$(get_efa_only_card_count "$gpu_type")
     if [ "$efa_count" -eq 0 ]; then
-        echo "WARNING: Unknown GPU type: ${gpu_type}, skipping"
-        continue
+        echo "NOTE: ${gpu_type} has no EFA-only NICs — creating GPU node group without multi-NIC EFA scaffolding"
     fi
 
     # Deploy On-Demand node group
@@ -1758,34 +1783,54 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
             if [ ${#ODCR_ID_ARRAY[@]} -ne ${#ODCR_AZ_ARRAY[@]} ]; then
                 echo "ERROR: ODCR_IDS and ODCR_AZS must have the same number of entries"
                 exit 1
-            else
-                odcr_count=${#ODCR_ID_ARRAY[@]}
-                for ((i=0; i<odcr_count; i++)); do
-                    odcr_id=$(echo "${ODCR_ID_ARRAY[$i]}" | tr -d ' ')
-                    odcr_az=$(echo "${ODCR_AZ_ARRAY[$i]}" | tr -d ' ')
-                    odcr_az_suffix="${odcr_az: -1}"
-                    odcr_subnet="${SUBNET_MAP[$odcr_az_suffix]:-}"
-
-                    # Create unique suffix: -1, -2, etc. (only if multiple ODCRs)
-                    suffix=""
-                    if [ $odcr_count -gt 1 ]; then
-                        suffix="-$((i+1))"
-                    fi
-
-                    echo ""
-                    echo "Creating ODCR node group $((i+1))/${odcr_count} for ${gpu_type}..."
-                    echo "  ODCR ID: ${odcr_id}"
-                    echo "  AZ: ${odcr_az}"
-
-                    if [ -n "${odcr_subnet}" ]; then
-                        odcr_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "odcr" "${suffix}" "$odcr_subnet")
-                        create_gpu_launch_template "$gpu_type" "odcr" "${odcr_id}" "${suffix}" "$odcr_pg_name"
-                        create_gpu_nodegroup "$gpu_type" "odcr" "$LT_ID" "$LT_VERSION" "${suffix}" "$odcr_subnet"
-                    else
-                        echo "WARNING: No subnet found for ODCR AZ ${odcr_az}"
-                    fi
-                done
             fi
+            odcr_count=${#ODCR_ID_ARRAY[@]}
+
+            # Pairing rule:
+            #   - Multiple GPU types AND multiple ODCRs with matching list length:
+            #     pair by index (gpu_type[0] ↔ ODCR[0], gpu_type[1] ↔ ODCR[1], ...).
+            #     Each ODCR is attached to EXACTLY one node group that matches
+            #     the instance type the ODCR was reserved for.
+            #   - Single GPU type (or legacy ODCR_ID/ODCR_AZ): every ODCR
+            #     produces a node group for that one type.
+            multi_pair_mode="false"
+            if [ ${#GPU_TYPE_ARRAY[@]} -gt 1 ] && [ ${#GPU_TYPE_ARRAY[@]} -eq $odcr_count ]; then
+                multi_pair_mode="true"
+            fi
+
+            # In multi-pair mode, skip ODCRs that don't match the outer gpu_type.
+            # In single-type mode, iterate every ODCR.
+            for ((i=0; i<odcr_count; i++)); do
+                if [ "$multi_pair_mode" = "true" ]; then
+                    # Resolve paired gpu type; skip ODCRs whose paired type != current outer loop type
+                    paired_gpu=$(echo "${GPU_TYPE_ARRAY[$i]}" | tr -d '[:space:]')
+                    [ "$paired_gpu" = "$gpu_type" ] || continue
+                fi
+
+                odcr_id=$(echo "${ODCR_ID_ARRAY[$i]}" | tr -d ' ')
+                odcr_az=$(echo "${ODCR_AZ_ARRAY[$i]}" | tr -d ' ')
+                odcr_az_suffix="${odcr_az: -1}"
+                odcr_subnet="${SUBNET_MAP[$odcr_az_suffix]:-}"
+
+                # Create unique suffix: -1, -2, etc. (only if multiple ODCRs)
+                suffix=""
+                if [ $odcr_count -gt 1 ]; then
+                    suffix="-$((i+1))"
+                fi
+
+                echo ""
+                echo "Creating ODCR node group $((i+1))/${odcr_count} for ${gpu_type}..."
+                echo "  ODCR ID: ${odcr_id}"
+                echo "  AZ: ${odcr_az}"
+
+                if [ -n "${odcr_subnet}" ]; then
+                    odcr_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "odcr" "${suffix}" "$odcr_subnet")
+                    create_gpu_launch_template "$gpu_type" "odcr" "${odcr_id}" "${suffix}" "$odcr_pg_name"
+                    create_gpu_nodegroup "$gpu_type" "odcr" "$LT_ID" "$LT_VERSION" "${suffix}" "$odcr_subnet"
+                else
+                    echo "WARNING: No subnet found for ODCR AZ ${odcr_az}"
+                fi
+            done
         fi
     fi
 
@@ -1877,7 +1922,19 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
         if [ -n "${_odcr_ids_str}" ]; then
             IFS=',' read -ra ODCR_SUMMARY_IDS <<< "$_odcr_ids_str"
             IFS=',' read -ra ODCR_SUMMARY_AZS <<< "$_odcr_azs_str"
+            # Same paired-index rule as the create loop: when gpu_type list
+            # length matches ODCR list length and >1, each ODCR pairs with
+            # exactly one gpu_type by index. Otherwise all ODCRs apply to
+            # every gpu_type in the outer loop.
+            _multi_pair="false"
+            if [ ${#GPU_TYPE_ARRAY[@]} -gt 1 ] && [ ${#GPU_TYPE_ARRAY[@]} -eq ${#ODCR_SUMMARY_IDS[@]} ]; then
+                _multi_pair="true"
+            fi
             for ((j=0; j<${#ODCR_SUMMARY_IDS[@]}; j++)); do
+                if [ "$_multi_pair" = "true" ]; then
+                    _paired=$(echo "${GPU_TYPE_ARRAY[$j]}" | tr -d '[:space:]')
+                    [ "$_paired" = "$gpu_type" ] || continue
+                fi
                 _suffix_label=""
                 [ ${#ODCR_SUMMARY_IDS[@]} -gt 1 ] && _suffix_label="-$((j+1))"
                 echo "    - ODCR${_suffix_label} (${ODCR_SUMMARY_AZS[$j]})"
