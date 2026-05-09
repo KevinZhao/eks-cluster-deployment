@@ -9,7 +9,8 @@
 #   3. Replace ${AWS_REGION} with your region (e.g., us-east-2)
 #
 # Quick Test:
-#   # Set variables
+#   # Set variables (SYSTEM_NODE_LABEL_* come from .env; source 0_setup_env.sh first)
+#   source scripts/0_setup_env.sh
 #   export S3_BUCKET_NAME=your-standard-bucket
 #   export S3_EXPRESS_BUCKET_NAME=your-bucket--use2-az1--x-s3
 #   export AWS_REGION=us-east-2
@@ -70,7 +71,7 @@ metadata:
   name: s3-test
 spec:
   nodeSelector:
-    app: eks-utils
+    ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
   containers:
   - name: app
     image: public.ecr.aws/amazonlinux/amazonlinux:2023
@@ -161,7 +162,7 @@ metadata:
   name: s3-express-test
 spec:
   nodeSelector:
-    app: eks-utils
+    ${SYSTEM_NODE_LABEL_KEY}: ${SYSTEM_NODE_LABEL_VALUE}
   containers:
   - name: app
     image: public.ecr.aws/amazonlinux/amazonlinux:2023

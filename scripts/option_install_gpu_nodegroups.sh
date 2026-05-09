@@ -1851,34 +1851,49 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
             if [ ${#CB_ID_ARRAY[@]} -ne ${#CB_AZ_ARRAY[@]} ]; then
                 echo "ERROR: CAPACITY_BLOCK_IDS and CAPACITY_BLOCK_AZS must have the same number of entries"
                 exit 1
-            else
-                cb_count=${#CB_ID_ARRAY[@]}
-                for ((i=0; i<cb_count; i++)); do
-                    cb_id=$(echo "${CB_ID_ARRAY[$i]}" | tr -d ' ')
-                    cb_az=$(echo "${CB_AZ_ARRAY[$i]}" | tr -d ' ')
-                    cb_az_suffix="${cb_az: -1}"
-                    cb_subnet="${SUBNET_MAP[$cb_az_suffix]:-}"
-
-                    # Create unique suffix: -1, -2, etc. (only if multiple CBs)
-                    suffix=""
-                    if [ $cb_count -gt 1 ]; then
-                        suffix="-$((i+1))"
-                    fi
-
-                    echo ""
-                    echo "Creating Capacity Block node group $((i+1))/${cb_count} for ${gpu_type}..."
-                    echo "  CB ID: ${cb_id}"
-                    echo "  AZ: ${cb_az}"
-
-                    if [ -n "${cb_subnet}" ]; then
-                        cb_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "cb" "${suffix}" "$cb_subnet")
-                        create_gpu_launch_template "$gpu_type" "cb" "${cb_id}" "${suffix}" "$cb_pg_name"
-                        create_gpu_nodegroup "$gpu_type" "cb" "$LT_ID" "$LT_VERSION" "${suffix}" "$cb_subnet"
-                    else
-                        echo "WARNING: No subnet found for Capacity Block AZ ${cb_az}"
-                    fi
-                done
             fi
+            cb_count=${#CB_ID_ARRAY[@]}
+
+            # Pairing rule (same as ODCR): when GPU_TYPE_ARRAY has >1 entry
+            # AND its length matches cb_count, pair by index — CB[i] is
+            # attached to exactly one node group for GPU_TYPE_ARRAY[i].
+            # Otherwise (single gpu_type or legacy CAPACITY_BLOCK_ID/AZ),
+            # every CB produces a node group for the current outer gpu_type.
+            cb_multi_pair_mode="false"
+            if [ ${#GPU_TYPE_ARRAY[@]} -gt 1 ] && [ ${#GPU_TYPE_ARRAY[@]} -eq $cb_count ]; then
+                cb_multi_pair_mode="true"
+            fi
+
+            for ((i=0; i<cb_count; i++)); do
+                if [ "$cb_multi_pair_mode" = "true" ]; then
+                    paired_gpu=$(echo "${GPU_TYPE_ARRAY[$i]}" | tr -d '[:space:]')
+                    [ "$paired_gpu" = "$gpu_type" ] || continue
+                fi
+
+                cb_id=$(echo "${CB_ID_ARRAY[$i]}" | tr -d ' ')
+                cb_az=$(echo "${CB_AZ_ARRAY[$i]}" | tr -d ' ')
+                cb_az_suffix="${cb_az: -1}"
+                cb_subnet="${SUBNET_MAP[$cb_az_suffix]:-}"
+
+                # Create unique suffix: -1, -2, etc. (only if multiple CBs)
+                suffix=""
+                if [ $cb_count -gt 1 ]; then
+                    suffix="-$((i+1))"
+                fi
+
+                echo ""
+                echo "Creating Capacity Block node group $((i+1))/${cb_count} for ${gpu_type}..."
+                echo "  CB ID: ${cb_id}"
+                echo "  AZ: ${cb_az}"
+
+                if [ -n "${cb_subnet}" ]; then
+                    cb_pg_name=$(plan_pg_for_nodegroup "$gpu_type" "cb" "${suffix}" "$cb_subnet")
+                    create_gpu_launch_template "$gpu_type" "cb" "${cb_id}" "${suffix}" "$cb_pg_name"
+                    create_gpu_nodegroup "$gpu_type" "cb" "$LT_ID" "$LT_VERSION" "${suffix}" "$cb_subnet"
+                else
+                    echo "WARNING: No subnet found for Capacity Block AZ ${cb_az}"
+                fi
+            done
         fi
     fi
 done
@@ -1948,7 +1963,18 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
         if [ -n "${_cb_ids_str}" ]; then
             IFS=',' read -ra CB_SUMMARY_IDS <<< "$_cb_ids_str"
             IFS=',' read -ra CB_SUMMARY_AZS <<< "$_cb_azs_str"
+            # Same paired-index rule as the CB create loop: when gpu_type list
+            # length matches CB list length and >1, each CB pairs with
+            # exactly one gpu_type by index.
+            _cb_multi_pair="false"
+            if [ ${#GPU_TYPE_ARRAY[@]} -gt 1 ] && [ ${#GPU_TYPE_ARRAY[@]} -eq ${#CB_SUMMARY_IDS[@]} ]; then
+                _cb_multi_pair="true"
+            fi
             for ((j=0; j<${#CB_SUMMARY_IDS[@]}; j++)); do
+                if [ "$_cb_multi_pair" = "true" ]; then
+                    _cb_paired=$(echo "${GPU_TYPE_ARRAY[$j]}" | tr -d '[:space:]')
+                    [ "$_cb_paired" = "$gpu_type" ] || continue
+                fi
                 _suffix_label=""
                 [ ${#CB_SUMMARY_IDS[@]} -gt 1 ] && _suffix_label="-$((j+1))"
                 echo "    - CB${_suffix_label} (${CB_SUMMARY_AZS[$j]})"

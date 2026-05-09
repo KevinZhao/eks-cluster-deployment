@@ -738,7 +738,7 @@ managedNodeGroups:
     subnets:
 ${NG_SUBNETS_YAML}
     labels:
-      app: "eks-utils"
+      ${SYSTEM_NODE_LABEL_KEY}: "${SYSTEM_NODE_LABEL_VALUE}"
       arch: "${NODE_ARCH}"
       node-group-type: "system"
     tags:
