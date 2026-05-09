@@ -204,12 +204,15 @@ echo "✓ Cluster control plane is ready"
 if [ "${ENABLE_DELETION_PROTECTION:-true}" = "true" ]; then
     echo ""
     echo "Step 4: Enabling deletion protection..."
-    aws eks update-cluster-config \
-        --name "${CLUSTER_NAME}" \
-        --region "${AWS_REGION}" \
-        --deletion-protection-config enabled=true \
-        --output text --query 'update.id' >/dev/null 2>&1 || true
-    echo "✓ Deletion protection enabled"
+    if aws eks update-cluster-config \
+            --name "${CLUSTER_NAME}" \
+            --region "${AWS_REGION}" \
+            --deletion-protection \
+            --output text --query 'update.id' >/dev/null 2>&1; then
+        echo "✓ Deletion protection enabled"
+    else
+        echo "⚠️  Failed to enable deletion protection (continuing)"
+    fi
 fi
 
 # 5. Complete
