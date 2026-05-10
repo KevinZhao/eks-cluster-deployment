@@ -8,6 +8,9 @@
 *.swo
 *~
 
+# Local tool configs
+.naozhi/
+
 # Credentials and secrets
 *.pem
 *.key

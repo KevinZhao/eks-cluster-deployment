@@ -1,6 +1,6 @@
 # 企业级 EKS 集群生产环境配置最佳实践
 
-在帮助企业客户将工作负载迁移到 Amazon EKS 的过程中，AWS 解决方案架构师团队总结了一套经过验证的最佳实践。本文将分享如何在 **25-35 分钟内**部署一个满足企业级安全合规要求的生产就绪 EKS 集群，并提供完整的自动化部署脚本。
+在帮助企业客户将工作负载迁移到 Amazon EKS 的过程中，AWS 解决方案架构师团队总结了一套经过验证的最佳实践。本文将分享如何在 **约 30 分钟内**部署一个满足企业级安全合规要求的生产就绪 EKS 集群，并提供完整的自动化部署脚本。
 
 > **本文亮点**
 > - 使用 Pod Identity 替代 IRSA，简化 IAM 管理
@@ -24,7 +24,7 @@
 
 **弹性扩缩容方面**，GPU 实例的配置尤为复杂，涉及实例类型选择、EFA 网络配置、驱动安装等多个环节。同时，客户希望能灵活使用 Spot 实例、ODCR（On-Demand Capacity Reservations）等方式优化成本。
 
-**部署效率方面**，手动部署一个生产级集群往往需要数小时甚至数天，且容易出现配置不一致的问题，难以在多个环境间复现。
+**部署效率方面**，手动部署一个生产级集群往往需要数小时到数天，且容易出现配置漂移的问题，难以在多个环境间复现。
 
 本文将逐一介绍这些问题的解决方案，并最终将所有方案沉淀为标准化的自动化部署脚本。
 
@@ -71,15 +71,16 @@
 │  │  └──────────────────────────────────────────────────────────────────────────────┘   │  │
 │  │                                          │                                          │  │
 │  │  ┌───────────────────────────────────────┼───────────────────────────────────────┐  │  │
-│  │  │                            VPC Endpoints (13+)                                │  │  │
-│  │  │  ECR | S3 | SSM | STS | EC2 | EKS | EBS | EFS | FSx | CloudWatch | ...       │  │  │
+│  │  │                  VPC Endpoints (13 Interface + 1 S3 Gateway)                   │  │  │
+│  │  │  EKS | EKS-Auth | STS | ECR.api | ECR.dkr | EC2 | EFS | Logs |                │  │  │
+│  │  │  Autoscaling | ELB | SSM | SSMMessages | EC2Messages | S3 (Gateway)           │  │  │
 │  │  └───────────────────────────────────────────────────────────────────────────────┘  │  │
 │  │                                          │                                          │  │
 │  │  ┌───────────────────────────────────────┼───────────────────────────────────────┐  │  │
 │  │  │                              Storage Layer                                    │  │  │
 │  │  │  ┌─────────┐  ┌─────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │  │  │
 │  │  │  │ EBS CSI │  │ EFS CSI │  │ FSx Lustre  │  │ S3 CSI (Mountpoint)         │  │  │  │
-│  │  │  │ (RWO)   │  │ (RWX)   │  │ CSI (RWX)   │  │ (ROX) + Express One Zone    │  │  │  │
+│  │  │  │ (RWO)   │  │ (RWX)   │  │ CSI (RWX)   │  │ (RWX, 非POSIX) + Express 1Z │  │  │  │
 │  │  │  └─────────┘  └─────────┘  └─────────────┘  └─────────────────────────────┘  │  │  │
 │  │  └───────────────────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                                                     │  │
@@ -114,7 +115,7 @@ EKS 集群的 API Server 访问控制有两种主流方案：
 
 采用私有 API Endpoint 需要配合以下组件：
 
-**VPC Endpoints**：由于集群位于私有网络，节点和 Pod 无法通过 NAT Gateway 访问 AWS 服务。需要创建 13 个 VPC Endpoints，包括 ECR（容器镜像）、S3（存储）、SSM（管理）、STS（身份验证）、EC2、EKS、EBS、EFS、FSx、CloudWatch 等。这不仅解决了连通性问题，还能降低数据传输成本。
+**VPC Endpoints**：由于集群位于私有网络，节点和 Pod 无法通过 NAT Gateway 访问 AWS 服务。本方案共创建 **14 个 VPC Endpoints**：13 个 Interface Endpoint（EKS、EKS-Auth、STS、ECR.api、ECR.dkr、EC2、EFS、CloudWatch Logs、Autoscaling、ELB、SSM、SSMMessages、EC2Messages）+ 1 个 S3 Gateway Endpoint。其中 EBS CSI 复用 `ec2` endpoint，FSx 的连通性通过子网与安全组打通（无独立 PrivateLink Endpoint）。这不仅解决了连通性问题，还能降低数据传输成本。
 
 **堡垒机访问模式**：运维人员通过 AWS Systems Manager Session Manager 连接到堡垒机，再从堡垒机访问 EKS API。这种方式无需开放 SSH 端口，所有操作都有完整的审计日志。
 
@@ -135,24 +136,33 @@ EKS 集群的 API Server 访问控制有两种主流方案：
 
 ## VPC CNI 网络优化
 
-Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的真实 IP 地址，使 Pod 能够直接与 VPC 内的其他资源通信。本方案对 VPC CNI 进行了以下优化配置：
+Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的真实 IP 地址，使 Pod 能够直接与 VPC 内的其他资源通信。本方案对 VPC CNI 的默认配置进行了以下调优：
 
-**前缀委派（Prefix Delegation）**：默认情况下，每个 ENI 的辅助 IP 数量受实例类型限制。启用前缀委派后，每个 ENI 槽位可分配一个 /28 前缀（16 个 IP），显著提升单节点可运行的 Pod 数量。对于 m8g.xlarge 实例，Pod 容量可提升约 2-3 倍。
-
-**Pod 安全组**：通过启用 `ENABLE_POD_ENI`，可以为特定 Pod 分配独立的安全组，实现细粒度的网络访问控制。这对于需要直接访问 RDS、ElastiCache 等 VPC 资源的应用尤为重要。
+**IP 预热策略**：默认情况下 VPC CNI 会预热整个 ENI，对小型节点会浪费大量 IP。本方案关闭 `WARM_ENI_TARGET`、改用 `WARM_IP_TARGET` + `MINIMUM_IP_TARGET` 精细控制预热 IP 数量，既避免 ENI 资源浪费，又保留足够的 Pod 调度缓冲。
 
 **网络策略支持**：VPC CNI 原生支持 Kubernetes NetworkPolicy，无需额外安装 Calico 等第三方组件，简化了集群的网络策略管理。
 
 ```
-VPC CNI 配置
-├── ENABLE_PREFIX_DELEGATION=true     # 启用前缀委派
-├── ENABLE_POD_ENI=true               # 启用 Pod 安全组
-├── POD_SECURITY_GROUP_ENFORCING_MODE=standard
-├── WARM_PREFIX_TARGET=1              # 预热前缀数量
-└── MINIMUM_IP_TARGET=10              # 最小 IP 预留
+VPC CNI 默认配置（scripts/4_install_eks_cluster.sh）
+├── AWS_VPC_K8S_CNI_EXTERNALSNAT=false    # 由 NAT Gateway 做 SNAT
+├── WARM_ENI_TARGET=0                     # 不预热 ENI
+├── WARM_IP_TARGET=5                      # 预热 5 个 IP
+└── MINIMUM_IP_TARGET=3                   # 最少预留 3 个 IP
 ```
 
-这些优化使得 VPC CNI 能够更好地支持高密度部署场景，同时保持与 VPC 原生网络的完全兼容。
+如果工作负载需要更高的 Pod 密度或 Pod 级别安全组，可在 addon 的 `configurationValues` 中追加以下参数：
+
+```
+# 可选：前缀委派（每个 ENI 槽位分配 /28 = 16 个 IP，显著提升 Pod 密度）
+ENABLE_PREFIX_DELEGATION=true
+WARM_PREFIX_TARGET=1
+
+# 可选：Pod 安全组（为特定 Pod 分配独立的 SG，用于直连 RDS/ElastiCache 等）
+ENABLE_POD_ENI=true
+POD_SECURITY_GROUP_ENFORCING_MODE=standard
+```
+
+需要注意的是，前缀委派对支持的实例类型和子网可用 IP 数量有一定要求；Pod ENI 会消耗实例的 branch ENI 额度。建议根据实际工作负载评估后再开启。
 
 ---
 
@@ -210,7 +220,7 @@ create_pod_identity_association "my-namespace" "my-service-account" "$ROLE_ARN"
 
 实现这一架构的关键在于 **Launch Template** 和 **cloud-boothook** 的配合：
 
-Launch Template 定义了双 EBS 卷配置——50GB 的 gp3 根卷用于操作系统，100GB 的 gp3 数据卷（3000 IOPS、125 MB/s 吞吐）用于容器运行时。两个卷都启用了 KMS 加密。
+Launch Template 定义了双 EBS 卷配置——50GB 的 gp3 根卷用于操作系统，100GB 的 gp3 数据卷（3000 IOPS、125 MB/s 吞吐）用于容器运行时。两个卷均启用了 EBS 静态加密（默认使用 `alias/aws/ebs` 管理的 KMS 密钥，如需使用自带 CMK 可在 Launch Template 中追加 `KmsKeyId`）。
 
 cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：创建 LVM 物理卷和卷组、创建逻辑卷、格式化为 XFS 文件系统、挂载到 `/var/lib/containerd`、使用 rsync 迁移 AMI 预缓存的 pause 镜像、写入 fstab 确保重启后自动挂载。
 
@@ -228,7 +238,7 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 **Amazon FSx for Lustre CSI Driver** 提供高吞吐、低延迟的并行文件系统，是 GPU 训练工作负载的理想选择。FSx for Lustre 能够与 S3 无缝集成，支持从 S3 数据湖高效加载训练数据，单文件系统可提供数百 GB/s 的聚合吞吐量，满足大规模分布式训练对存储带宽的需求。
 
-**Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶，无需修改应用代码即可访问数据湖中的海量数据。特别是 **S3 Express One Zone** 提供个位数毫秒级延迟和高达数十 GB/s 的吞吐能力，为 GPU 推理场景下的模型加载和 checkpoint 读写提供了云原生的高性能存储选择。
+**Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶，无需修改应用代码即可访问数据湖中的海量数据。特别是 **S3 Express One Zone** 提供个位数毫秒级延迟与极高的请求吞吐（每桶可达数百万 TPS），单实例的聚合带宽受实例网络能力约束，为 GPU 推理场景下的模型加载和 checkpoint 读写提供了云原生的高性能存储选择。需要注意的是 Mountpoint for S3 并非通用 POSIX 文件系统，写入语义有限制（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
 
 FSx for Lustre 与 S3 Express One Zone 的组合，为 GPU 训练和推理工作负载提供了灵活多样的存储方案：训练阶段使用 FSx for Lustre 获得极致的并行 I/O 性能，推理阶段使用 S3 Express One Zone 实现模型的快速加载和弹性扩展。
 
@@ -237,34 +247,38 @@ FSx for Lustre 与 S3 Express One Zone 的组合，为 GPU 训练和推理工作
 | EBS CSI | 块存储 | RWO | 数据库、有状态应用 |
 | EFS CSI | 共享文件系统 | RWX | 多 Pod 共享数据 |
 | FSx Lustre CSI | 高性能并行文件系统 | RWX | GPU 训练、HPC |
-| S3 CSI (Mountpoint) | 对象存储 | ROX/RWX | GPU 推理、数据湖 |
+| S3 CSI (Mountpoint) | 对象存储 | RWX（非 POSIX） | GPU 推理、数据湖 |
 
 ---
 
 ## GPU 工作负载与 EFA 网络
 
-随着生成式 AI 的爆发，越来越多的客户需要在 EKS 上运行 GPU 工作负载。然而，GPU 节点的配置远比普通节点复杂：需要选择合适的实例类型（P5、P5en、P6），配置多达 32 个 EFA 网络接口，安装 NVIDIA 驱动、EFA 驱动和 NCCL 插件。
+随着生成式 AI 的爆发，越来越多的客户需要在 EKS 上运行 GPU 工作负载。然而，GPU 节点的配置远比普通节点复杂：需要选择合适的实例类型（P5、P5en、P6、G7e），配置多达 32 个 EFA 网络接口，安装 NVIDIA 驱动、EFA 驱动和 NCCL 插件。
 
 本方案使用 **Managed Node Groups** 管理 GPU 节点，通过 Launch Template 预配置所有 EFA 网络接口：
 
 ```
 GPU 实例网络配置
-├── ENI 0: 主 IP + EFA（用于管理流量）
-├── ENI 1-N: 仅 EFA（用于 NCCL 集合通信）
-│   ├── p5.48xlarge:      N=31 (共 32 ENI)
-│   ├── p5en.48xlarge:    N=15 (共 16 ENI)
-│   ├── p6-b200.48xlarge: N=7  (共 8 ENI)
-│   ├── p6-b300.48xlarge: N=16 (共 17 ENI)
-│   └── g7e.48xlarge:     N=3  (共 4 ENI)
+├── 大多数型号 (p5 / p5en / p6-b200 / g7e):
+│   ├── ENI 0:    主 IP + EFA（管理 + EFA 混合）
+│   └── ENI 1-N:  仅 EFA (efa-only)（用于 NCCL 集合通信）
+│       ├── p5.48xlarge:      N=31 (共 32 ENI)
+│       ├── p5en.48xlarge:    N=15 (共 16 ENI)
+│       ├── p6-b200.48xlarge: N=7  (共 8 ENI)
+│       └── g7e.48xlarge:     N=3  (共 4 ENI)
+├── 特例 p6-b300.48xlarge (共 17 ENI, MaxEFA=16):
+│   ├── ENI 0:     纯 ENA（NIC 0 不支持 EFA）
+│   └── ENI 1-16:  仅 EFA (efa-only)
 ├── NVIDIA 驱动: AMI 预装
 ├── EFA 驱动: AMI 预装
 └── NCCL 插件: 自动部署
 ```
 
-不同实例类型的 EFA 网卡数量有所不同：p5.48xlarge 支持 32 个 ENI，p5en.48xlarge 支持 16 个，p6-b200.48xlarge 支持 8 个，p6-b300.48xlarge 支持 17 个，g7e.48xlarge 支持 4 个。脚本会根据实例类型自动配置正确的网卡数量。
+不同实例类型的网卡拓扑差异较大：p5.48xlarge 共 32 个 ENI（全部可跑 EFA），p5en.48xlarge 共 16 个，p6-b200.48xlarge 共 8 个，g7e.48xlarge 共 4 个；p6-b300.48xlarge 较为特殊——共 17 个 ENI，但 NIC 0 仅支持 ENA，EFA 只能分配在 NIC 1-16（MaximumEfaInterfaces=16）。脚本会根据实例类型自动选择正确的 `InterfaceType` 与 `NetworkCardIndex` 配置。
 
-为满足不同的成本和可用性需求，本方案支持三种定价模式：
+为满足不同的成本和可用性需求，本方案支持四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关）：
 
+- **On-Demand**：标准按需实例，不占用预留容量，适合工作负载的弹性基线
 - **Spot 实例**：适合容错能力强的训练任务，可节省高达 90% 的成本
 - **ODCR（On-Demand Capacity Reservations）**：保障容量的按需实例
 - **Capacity Blocks**：按时间段预留的 GPU 容量，适合可预测的训练任务
@@ -289,39 +303,41 @@ GPU 实例网络配置
 
 ```
 scripts/
-├── 0_setup_env.sh                    # 环境变量加载
-├── 1_enable_vpc_dns.sh               # VPC DNS 配置
-├── 2_validate_network_environment.sh # 网络验证（可选）
-├── 3_create_vpc_endpoints.sh         # VPC Endpoints
-├── 4_install_eks_cluster.sh          # EKS 控制平面
-├── 5_check_environment.sh            # 本地环境检查（可选）
-├── 6_create_system_nodegroup.sh      # 系统节点组 (LVM)
-├── 7_install_eks_addon.sh            # 核心 Addons
-├── option_create_bastion.sh          # 堡垒机（可选）
-├── option_install_csi_drivers.sh     # CSI Drivers（可选）
-├── option_install_karpenter.sh       # Karpenter（可选）
-├── option_install_gpu_nodegroups.sh  # GPU 节点组（可选）
-└── pod_identity_helpers.sh           # Pod Identity 辅助函数
+├── 0_setup_env.sh                      # 环境变量加载（被其他脚本 source）
+├── 1_enable_vpc_dns.sh                 # VPC DNS 配置
+├── 2_validate_network_environment.sh   # 网络验证（可选）
+├── 3_create_vpc_endpoints.sh           # VPC Endpoints
+├── 4_install_eks_cluster.sh            # EKS 控制平面
+├── 5_check_environment.sh              # 本地环境检查（可选）
+├── 6_create_system_nodegroup.sh        # 系统节点组 (LVM)
+├── 7_install_eks_addon.sh              # 核心 Addons
+├── option_create_bastion.sh            # 堡垒机（可选）
+├── option_install_csi_drivers.sh       # CSI Drivers（可选）
+├── option_install_karpenter.sh         # Karpenter（可选）
+├── option_install_gpu_nodegroups.sh    # GPU 节点组（可选）
+├── option_configure_ssm_patch.sh       # SSM Patch Manager（可选）
+├── option_label_nodegroup_topology.sh  # 节点 EFA 拓扑标签（可选）
+└── *_lib.sh / pod_identity_helpers.sh  # 共享函数库（磁盘检测、架构识别、拓扑标签、Pod Identity）
 ```
 
 ### 部署流程
 
-整个部署过程分为四个阶段，总耗时约 25-35 分钟：
+整个部署过程分为四个阶段，总耗时约 26-35 分钟：
 
-**网络准备阶段**（约 5 分钟）：启用 VPC DNS 支持，创建 13 个 VPC Endpoints，为私有集群建立与 AWS 服务的连通性。
+**网络准备阶段**（约 5 分钟）：启用 VPC DNS 支持，创建 14 个 VPC Endpoints（13 个 Interface + 1 个 S3 Gateway），为私有集群建立与 AWS 服务的连通性。
 
 **控制平面阶段**（约 8-10 分钟）：创建 EKS 集群，配置私有 API Endpoint，这是整个部署中耗时最长的步骤，因为需要等待 AWS 完成控制平面的配置。
 
 **系统节点阶段**（约 8-12 分钟）：创建系统节点组，包含 3 个节点，每个节点都配置了 LVM 存储架构。系统节点用于运行集群基础设施组件。
 
-**核心组件阶段**（约 5-8 分钟）：部署 Cluster Autoscaler、AWS Load Balancer Controller、EBS CSI Driver、Metrics Server 等核心组件。
+**核心组件阶段**（约 5-8 分钟）：部署 CoreDNS、Metrics Server、Cluster Autoscaler、AWS Load Balancer Controller 等核心组件（EBS/EFS/FSx/S3 等 CSI Driver 通过独立的 `option_install_csi_drivers.sh` 按需安装）。
 
 ### 快速开始
 
 在堡垒机上执行以下命令即可完成部署：
 
 ```bash
-# 配置环境变量
+# 配置环境变量（0_setup_env.sh 由其他脚本 source，无需直接执行）
 cp .env.example .env && vim .env
 
 # 核心部署
@@ -332,9 +348,9 @@ cp .env.example .env && vim .env
 ./scripts/7_install_eks_addon.sh
 
 # 按需安装可选组件
-./scripts/option_install_csi_drivers.sh efs      # EFS 共享存储
-./scripts/option_install_karpenter.sh            # Karpenter 自动扩缩容
-./scripts/option_install_gpu_nodegroups.sh       # GPU 节点组
+INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh   # EFS 共享存储
+./scripts/option_install_karpenter.sh                          # Karpenter 自动扩缩容
+./scripts/option_install_gpu_nodegroups.sh                     # GPU 节点组
 ```
 
 对于 CI/CD 场景，可以通过环境变量实现完全非交互：
@@ -374,16 +390,16 @@ kubectl get storageclass
 
 在将集群用于生产环境之前，请确认以下安全配置：
 
-- 私有 API Endpoint（API Server 不暴露公网）
-- Pod Identity 替代 IRSA（简化 IAM 管理）
-- VPC Endpoints 完整配置（13 个核心服务）
-- EBS 卷加密（使用 KMS）
-- IMDSv2 强制使用（防止 SSRF 攻击）
-- 安全组最小权限原则
+- [ ] 私有 API Endpoint（API Server 不暴露公网）
+- [ ] Pod Identity 替代 IRSA（简化 IAM 管理）
+- [ ] VPC Endpoints 完整配置（13 个 Interface + 1 个 S3 Gateway）
+- [ ] EBS 卷加密（使用 KMS）
+- [ ] IMDSv2 强制使用（防止 SSRF 攻击）
+- [ ] 安全组最小权限原则
 
 ### 成本优化建议
 
-**使用 Graviton 实例**：Graviton 处理器提供比同等 x86 实例高 40% 的性价比，脚本原生支持 Graviton 节点组。
+**使用 Graviton 实例**：Graviton 处理器相较同等 x86 实例最高可提升 40% 性价比，脚本原生支持 Graviton 节点组（系统节点默认即为 `m8g.xlarge`）。
 
 **利用 VPC Endpoints**：VPC Endpoints 不仅提供安全性，还能避免数据通过 NAT Gateway 传输产生的费用。
 
@@ -397,9 +413,9 @@ kubectl get storageclass
 
 本文从企业客户在 EKS 生产环境中面临的实际挑战出发，介绍了一套经过验证的解决方案：
 
-针对**高安全要求**，本方案提供私有 API Endpoint 配合 13 个 VPC Endpoints，确保所有流量都在 VPC 内部传输，构建纵深防御的网络架构。
+针对**高安全要求**，本方案提供私有 API Endpoint 配合 14 个 VPC Endpoints（13 个 Interface + 1 个 S3 Gateway），确保所有流量都在 VPC 内部传输，构建纵深防御的网络架构。
 
-针对**网络性能优化**，通过 VPC CNI 前缀委派提升单节点 Pod 密度，支持 Pod 级别安全组实现细粒度访问控制。
+针对**网络性能优化**，对 VPC CNI 的 IP 预热策略进行了调优以避免 ENI 资源浪费，同时原生支持 NetworkPolicy；如需进一步提升 Pod 密度或启用 Pod 级别安全组，可按需开启前缀委派与 Pod ENI。
 
 针对**IAM 管理复杂度**，全面采用 Pod Identity 替代 IRSA，消除 OIDC Provider 的管理负担，简化跨账户访问配置。
 
@@ -407,9 +423,9 @@ kubectl get storageclass
 
 针对**多样化存储需求**，提供 EBS、EFS、FSx、S3 四种 CSI Driver 的一键部署，覆盖块存储、共享文件系统、高性能存储和对象存储挂载等全部场景。
 
-针对**GPU 工作负载**，通过 Managed Node Groups 预配置 EFA 网络接口，支持 P5、P5en、P6 等最新 GPU 实例，并提供 Spot、ODCR、Capacity Blocks 三种定价模式。
+针对**GPU 工作负载**，通过 Managed Node Groups 预配置 EFA 网络接口，支持 P5、P5en、P6、G7e 等最新 GPU 实例，并提供 On-Demand、Spot、ODCR、Capacity Blocks 四种定价模式。
 
-所有这些方案都已沉淀为标准化、自动化的部署脚本，实现 25-35 分钟完成生产级集群部署，幂等设计支持重复执行，非交互模式便于 CI/CD 集成。
+所有这些方案都已沉淀为标准化、自动化的部署脚本，实现约 30 分钟完成生产级集群部署，幂等设计支持重复执行，非交互模式便于 CI/CD 集成。
 
 希望这套方案能够帮助更多企业客户快速、安全地部署生产级 EKS 集群。完整的部署脚本和文档已在 GitHub 开源，欢迎试用和反馈。
 
@@ -423,7 +439,7 @@ kubectl get storageclass
 
 ## 参考链接
 
-- [Amazon EKS Blueprints](https://aws-quickstart.github.io/cdk-eks-blueprints/) - 基于 CDK 的 EKS 集群快速部署框架
+- [Amazon EKS Blueprints for CDK](https://aws-quickstart.github.io/cdk-eks-blueprints/) - 基于 CDK 的 EKS 集群快速部署框架（另有 [Terraform 版本](https://aws-ia.github.io/terraform-aws-eks-blueprints/)）
 - [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/) - EKS 最佳实践指南
 - [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) - Pod Identity 官方文档
 - [Amazon VPC CNI Plugin](https://github.com/aws/amazon-vpc-cni-k8s) - VPC CNI 插件及配置说明
@@ -435,4 +451,4 @@ kubectl get storageclass
 
 ---
 
-*本文发布于 2026 年 1 月*
+*本文发布于 2026 年 5 月*
