@@ -1,18 +1,18 @@
 # 企业级 EKS 集群生产环境配置最佳实践
 
-在帮助企业客户将工作负载迁移到 Amazon EKS 的过程中，AWS 解决方案架构师团队总结了一套经过验证的最佳实践。本文将分享如何在 **约 30 分钟内**部署一个满足企业级安全合规要求的生产就绪 EKS 集群，并提供完整的自动化部署脚本。
+在帮助企业客户将工作负载迁移到 Amazon EKS 的过程中，AWS 解决方案架构师团队总结了一套经过验证的最佳实践。本文将分享如何在 **约 30 分钟（26–35 分钟）内**部署一个满足企业级安全合规要求的生产就绪 EKS 集群，并提供完整的自动化部署脚本。
 
 > **本文亮点**
 > - 使用 Pod Identity 替代 IRSA，简化 IAM 管理
 > - 容器运行时存储与系统盘隔离，提升节点稳定性
 > - 支持 EBS、EFS、FSx、S3 四种存储场景
-> - 原生支持 GPU 实例（P5/P5en/P6/G7e）与 EFA 网络
+> - 可选模块化扩展：Karpenter、GPU 节点组（详见本系列第二篇）
 > - 私有 API Endpoint 满足高安全要求的企业级场景
 > - 全程脚本化部署，幂等且 CI/CD 友好
 
 ---
 
-## 企业客户面临的挑战
+## 企业客户面临的挑战：五类共性问题
 
 在与众多企业客户的合作中，生产环境 EKS 部署面临五类共性问题：
 
@@ -24,11 +24,11 @@
 
 **弹性扩缩容方面**，GPU 实例的配置尤为复杂，涉及实例类型选择、EFA 网络配置、驱动安装等多个环节。同时，客户希望能灵活使用 Spot 实例、ODCR（On-Demand Capacity Reservations）等方式优化成本。
 
-**部署效率方面**，手动部署一个生产级集群往往需要数小时到数天，且容易出现配置漂移的问题，难以在多个环境间复现。
+**部署效率方面**，手动部署一个生产级集群往往需要数小时甚至数天，且容易出现配置漂移的问题，难以在多个环境间复现。
 
 本文将逐一介绍这些问题的解决方案，并最终将所有方案沉淀为标准化的自动化部署脚本。
 
-## 整体架构概览
+## 整体架构概览：私有集群的全景视图
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
@@ -51,10 +51,10 @@
 │  │  │                       │  │  ┌───────────┐ ┌───────────┐ ┌───────────┐  │  │  │   │  │
 │  │  │                       │  │  │  Node 1   │ │  Node 2   │ │  Node 3   │  │  │  │   │  │
 │  │  │                       │  │  │ ┌───────┐ │ │ ┌───────┐ │ │ ┌───────┐ │  │  │  │   │  │
-│  │  │                       │  │  │ │Root 50G│ │ │ │Root 50G│ │ │ │Root 50G│ │  │  │  │   │  │
+│  │  │                       │  │  │ │Root50G│ │ │ │Root50G│ │ │ │Root50G│ │  │  │  │   │  │
 │  │  │                       │  │  │ ├───────┤ │ │ ├───────┤ │ │ ├───────┤ │  │  │  │   │  │
-│  │  │                       │  │  │ │LVM 100G│ │ │ │LVM 100G│ │ │ │LVM 100G│ │  │  │  │   │  │
-│  │  │                       │  │  │ │containerd│ │ │containerd│ │ │containerd│  │  │   │  │
+│  │  │                       │  │  │ │LVM 100│ │ │ │LVM 100│ │ │ │LVM 100│ │  │  │  │   │  │
+│  │  │                       │  │  │ │ctnr fs│ │ │ │ctnr fs│ │ │ │ctnr fs│ │  │  │  │   │  │
 │  │  │                       │  │  │ └───────┘ │ │ └───────┘ │ │ └───────┘ │  │  │  │   │  │
 │  │  │                       │  │  └───────────┘ └───────────┘ └───────────┘  │  │  │   │  │
 │  │  │                       │  │  Runs: CoreDNS, Autoscaler, LB Controller,  │  │  │   │  │
@@ -62,9 +62,9 @@
 │  │  │                       │  └─────────────────────────────────────────────┘  │  │   │  │
 │  │  │                       │                       │                           │  │   │  │
 │  │  │                       │  ┌─────────────────────────────────────────────┐  │  │   │  │
-│  │  │                       │  │    Worker Nodes (Karpenter Managed)         │  │  │   │  │
-│  │  │                       │  │    - On-Demand / Spot / ODCR                │  │  │   │  │
-│  │  │                       │  │    - GPU (P5/P5en/P6/G7e) + EFA             │  │  │   │  │
+│  │  │                       │  │    Application Node Groups                   │  │  │   │  │
+│  │  │                       │  │    - Managed NG (默认) / Karpenter (可选)    │  │  │   │  │
+│  │  │                       │  │    - GPU + EFA (可选，详见第二篇)            │  │  │   │  │
 │  │  │                       │  └─────────────────────────────────────────────┘  │  │   │  │
 │  │  │                       └──────────────────────────────────────────────────┘  │   │  │
 │  │  │                                                                              │   │  │
@@ -101,6 +101,8 @@
 
 下面将深入探讨每个问题的解决方案。
 
+> **节点管理策略说明**：本方案的**系统节点组**（3 个节点，运行 CoreDNS / CSI / LB Controller 等基础组件）始终使用 EKS Managed Node Groups 管理，以保证集群基础设施的稳定性；**应用工作负载节点**可选择 Managed Node Groups 或 Karpenter，Karpenter 适合弹性大、混合实例池、频繁扩缩容的场景；**GPU 节点组**由于需要在 Launch Template 中精确控制 EFA 多网卡配置与多种定价模式，始终使用 Managed Node Groups 管理（详见本系列第二篇）。
+
 ---
 
 ## 私有 API Endpoint：纵深防御的网络架构
@@ -134,13 +136,13 @@ EKS 集群的 API Server 访问控制有两种主流方案：
 
 ---
 
-## VPC CNI 网络优化
+## VPC CNI 网络优化：精细化 IP 预热
 
-Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的真实 IP 地址，使 Pod 能够直接与 VPC 内的其他资源通信。本方案对 VPC CNI 的默认配置进行了以下调优：
+Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的真实 IP 地址，使 Pod 能够直接与 VPC 内的其他资源通信。本方案对 VPC CNI 做了一项关键调优：
 
-**IP 预热策略**：默认情况下 VPC CNI 会预热整个 ENI，对小型节点会浪费大量 IP。本方案关闭 `WARM_ENI_TARGET`、改用 `WARM_IP_TARGET` + `MINIMUM_IP_TARGET` 精细控制预热 IP 数量，既避免 ENI 资源浪费，又保留足够的 Pod 调度缓冲。
+**IP 预热策略**：默认情况下 VPC CNI 会按整个 ENI 预热 IP，对小型节点会造成 IP 资源浪费。本方案关闭 `WARM_ENI_TARGET`、改用 `WARM_IP_TARGET` + `MINIMUM_IP_TARGET` 精细控制预热 IP 数量，既避免 ENI 资源浪费，又保留足够的 Pod 调度缓冲。
 
-**网络策略支持**：VPC CNI 原生支持 Kubernetes NetworkPolicy，无需额外安装 Calico 等第三方组件，简化了集群的网络策略管理。
+此外，VPC CNI 自身原生支持 Kubernetes NetworkPolicy，本方案直接沿用，无需额外安装 Calico 等第三方组件，简化了集群的网络策略管理。
 
 ```
 VPC CNI 默认配置（scripts/4_install_eks_cluster.sh）
@@ -170,7 +172,7 @@ POD_SECURITY_GROUP_ENFORCING_MODE=standard
 
 传统的 IRSA（IAM Roles for Service Accounts）方案虽然解决了 Pod 级别的 IAM 权限问题，但存在明显的管理负担：每个集群需要配置独立的 OIDC Provider，IAM 信任策略中包含集群特定的 OIDC URL，跨账户配置繁琐，且 OIDC Provider 可能成为单点故障。
 
-**EKS Pod Identity** 是 AWS 在 2023 年推出的新方案，它从根本上简化了这一流程：
+**EKS Pod Identity** 是 AWS 于 2023 年底推出并持续演进的方案，如今已成为 EKS 上推荐的 Pod 级 IAM 权限管理方式，它从根本上简化了这一流程：
 
 | 维度 | IRSA | Pod Identity |
 |------|------|--------------|
@@ -220,7 +222,7 @@ create_pod_identity_association "my-namespace" "my-service-account" "$ROLE_ARN"
 
 实现这一架构的关键在于 **Launch Template** 和 **cloud-boothook** 的配合：
 
-Launch Template 定义了双 EBS 卷配置——50GB 的 gp3 根卷用于操作系统，100GB 的 gp3 数据卷（3000 IOPS、125 MB/s 吞吐）用于容器运行时。两个卷均启用了 EBS 静态加密（默认使用 `alias/aws/ebs` 管理的 KMS 密钥，如需使用自带 CMK 可在 Launch Template 中追加 `KmsKeyId`）。
+Launch Template 定义了双 EBS 卷配置——50GB 的 gp3 根卷用于操作系统，100GB 的 gp3 数据卷（3000 IOPS、125 MB/s 吞吐）用于容器运行时。两个卷均启用了 EBS 静态加密（默认使用 `alias/aws/ebs` 管理的 KMS 密钥，如需使用自带 CMK 可在 Launch Template 中追加 `KmsKeyId`）。同时，Launch Template 的 `MetadataOptions` 设置了 `HttpTokens=required`，强制所有节点使用 IMDSv2，从根本上消除传统 IMDSv1 的 SSRF 攻击面。
 
 cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：创建 LVM 物理卷和卷组、创建逻辑卷、格式化为 XFS 文件系统、挂载到 `/var/lib/containerd`、使用 rsync 迁移 AMI 预缓存的 pause 镜像、写入 fstab 确保重启后自动挂载。
 
@@ -228,7 +230,7 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 ---
 
-## 全场景存储支持
+## 全场景存储支持：四种 CSI Driver
 
 现代云原生应用对存储有多样化的需求。本方案通过四种 CSI Driver 实现全场景覆盖：
 
@@ -236,56 +238,24 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 **Amazon EFS CSI Driver** 提供完全托管的弹性文件系统，支持 RWX（ReadWriteMany）访问模式，多个 Pod 可以同时读写同一个文件系统，非常适合需要共享数据的微服务架构。
 
-**Amazon FSx for Lustre CSI Driver** 提供高吞吐、低延迟的并行文件系统，是 GPU 训练工作负载的理想选择。FSx for Lustre 能够与 S3 无缝集成，支持从 S3 数据湖高效加载训练数据，单文件系统可提供数百 GB/s 的聚合吞吐量，满足大规模分布式训练对存储带宽的需求。
+**Amazon FSx for Lustre CSI Driver** 提供高吞吐、低延迟的并行文件系统，是 GPU 训练工作负载的理想选择，单文件系统可提供数百 GB/s 的聚合吞吐量，并能与 S3 深度集成实现 lazy-load 数据加载。
 
-**Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶，无需修改应用代码即可访问数据湖中的海量数据。特别是 **S3 Express One Zone** 提供个位数毫秒级延迟与极高的请求吞吐（每桶可达数百万 TPS），单实例的聚合带宽受实例网络能力约束，为 GPU 推理场景下的模型加载和 checkpoint 读写提供了云原生的高性能存储选择。需要注意的是 Mountpoint for S3 并非通用 POSIX 文件系统，写入语义有限制（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
+> **重要兼容性提示**：Amazon Linux 2023 节点 AMI 自带的 `lustre-client` 为 2.15.x，创建 FSx 时请使用 `DeploymentType=PERSISTENT_2`（Lustre 2.15）。若使用 `SCRATCH_2` 或 `PERSISTENT_1`（Lustre 2.10），挂载会因版本不兼容而失败。
 
-FSx for Lustre 与 S3 Express One Zone 的组合，为 GPU 训练和推理工作负载提供了灵活多样的存储方案：训练阶段使用 FSx for Lustre 获得极致的并行 I/O 性能，推理阶段使用 S3 Express One Zone 实现模型的快速加载和弹性扩展。
+**Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶；配合 **S3 Express One Zone** 可提供个位数毫秒级延迟与极高的请求吞吐，是 GPU 推理场景下模型加载的理想选择。需要注意的是 Mountpoint for S3 并非完整 POSIX 文件系统，写入语义有限（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
+
+FSx for Lustre 与 S3 Express One Zone 在 GPU 工作负载链路上的选型策略、性能优化与已知限制，将在**本系列第二篇**中展开。
 
 | CSI Driver | 存储类型 | 访问模式 | 典型场景 |
 |------------|----------|----------|----------|
 | EBS CSI | 块存储 | RWO | 数据库、有状态应用 |
 | EFS CSI | 共享文件系统 | RWX | 多 Pod 共享数据 |
-| FSx Lustre CSI | 高性能并行文件系统 | RWX | GPU 训练、HPC |
-| S3 CSI (Mountpoint) | 对象存储 | RWX（非 POSIX） | GPU 推理、数据湖 |
+| FSx Lustre CSI | 高性能并行文件系统 | RWX | HPC、机器学习训练 |
+| S3 CSI (Mountpoint) | 对象存储 | RWX（非 POSIX） | 数据湖、模型/大文件只读挂载 |
 
 ---
 
-## GPU 工作负载与 EFA 网络
-
-随着生成式 AI 的爆发，越来越多的客户需要在 EKS 上运行 GPU 工作负载。然而，GPU 节点的配置远比普通节点复杂：需要选择合适的实例类型（P5、P5en、P6、G7e），配置多达 32 个 EFA 网络接口，安装 NVIDIA 驱动、EFA 驱动和 NCCL 插件。
-
-本方案使用 **Managed Node Groups** 管理 GPU 节点，通过 Launch Template 预配置所有 EFA 网络接口：
-
-```
-GPU 实例网络配置
-├── 大多数型号 (p5 / p5en / p6-b200 / g7e):
-│   ├── ENI 0:    主 IP + EFA（管理 + EFA 混合）
-│   └── ENI 1-N:  仅 EFA (efa-only)（用于 NCCL 集合通信）
-│       ├── p5.48xlarge:      N=31 (共 32 ENI)
-│       ├── p5en.48xlarge:    N=15 (共 16 ENI)
-│       ├── p6-b200.48xlarge: N=7  (共 8 ENI)
-│       └── g7e.48xlarge:     N=3  (共 4 ENI)
-├── 特例 p6-b300.48xlarge (共 17 ENI, MaxEFA=16):
-│   ├── ENI 0:     纯 ENA（NIC 0 不支持 EFA）
-│   └── ENI 1-16:  仅 EFA (efa-only)
-├── NVIDIA 驱动: AMI 预装
-├── EFA 驱动: AMI 预装
-└── NCCL 插件: 自动部署
-```
-
-不同实例类型的网卡拓扑差异较大：p5.48xlarge 共 32 个 ENI（全部可跑 EFA），p5en.48xlarge 共 16 个，p6-b200.48xlarge 共 8 个，g7e.48xlarge 共 4 个；p6-b300.48xlarge 较为特殊——共 17 个 ENI，但 NIC 0 仅支持 ENA，EFA 只能分配在 NIC 1-16（MaximumEfaInterfaces=16）。脚本会根据实例类型自动选择正确的 `InterfaceType` 与 `NetworkCardIndex` 配置。
-
-为满足不同的成本和可用性需求，本方案支持四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关）：
-
-- **On-Demand**：标准按需实例，不占用预留容量，适合工作负载的弹性基线
-- **Spot 实例**：适合容错能力强的训练任务，可节省高达 90% 的成本
-- **ODCR（On-Demand Capacity Reservations）**：保障容量的按需实例
-- **Capacity Blocks**：按时间段预留的 GPU 容量，适合可预测的训练任务
-
----
-
-## 自动化部署脚本
+## 自动化部署脚本：幂等、非交互、CI/CD 友好
 
 将上述所有解决方案整合为一套**幂等、非交互、CI/CD 友好**的部署脚本。
 
@@ -334,38 +304,62 @@ scripts/
 
 ### 快速开始
 
-在堡垒机上执行以下命令即可完成部署：
+由于集群采用私有 API Endpoint，所有 `kubectl` 与脚本执行均需在 VPC 内部完成。典型流程如下：
 
 ```bash
-# 配置环境变量（0_setup_env.sh 由其他脚本 source，无需直接执行）
+# 0. 在本地（或跳板环境）准备环境变量与堡垒机
 cp .env.example .env && vim .env
+./scripts/option_create_bastion.sh
 
-# 核心部署
+# 1. 通过 AWS Systems Manager 登录堡垒机（无需 SSH/公网）
+aws ssm start-session --target <bastion-instance-id>
+
+# —— 以下步骤均在堡垒机上执行 ——
+
+# 2. 核心部署（脚本编号 1–7，按顺序）
 ./scripts/1_enable_vpc_dns.sh
 ./scripts/3_create_vpc_endpoints.sh
 ./scripts/4_install_eks_cluster.sh
 ./scripts/6_create_system_nodegroup.sh
 ./scripts/7_install_eks_addon.sh
 
-# 按需安装可选组件
+# 3. 按需安装可选组件
 INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh   # EFS 共享存储
 ./scripts/option_install_karpenter.sh                          # Karpenter 自动扩缩容
 ./scripts/option_install_gpu_nodegroups.sh                     # GPU 节点组
 ```
 
-对于 CI/CD 场景，可以通过环境变量实现完全非交互：
+对于 CI/CD 场景，可以通过环境变量一次性拉起完整集群，无需任何人工确认：
 
 ```bash
-# 安装 EFS CSI 驱动
-INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
+# 在堡垒机（或具备 VPC 访问权限的 CI runner）上运行
+export CLUSTER_NAME=prod-eks
+export INSTALL_DRIVERS=efs,s3
+export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
-# 安装 S3 CSI 驱动（指定 bucket）
-INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_install_csi_drivers.sh
+./scripts/1_enable_vpc_dns.sh
+./scripts/3_create_vpc_endpoints.sh
+./scripts/4_install_eks_cluster.sh
+./scripts/6_create_system_nodegroup.sh
+./scripts/7_install_eks_addon.sh
+./scripts/option_install_csi_drivers.sh
 ```
 
 ---
 
-## 运维与故障排查
+## 可选组件：GPU 节点组与 Karpenter
+
+本方案的核心脚本(1–7)完成后即得到一套通用的生产级 EKS 集群。在此之上，可按需叠加两类上层能力：
+
+**Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。通过 `./scripts/option_install_karpenter.sh` 一键部署。
+
+**GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（最多 32 张，以 p5.48xlarge 为例），并自动部署 NVIDIA Device Plugin 与 AWS EFA Kubernetes Device Plugin。
+
+> GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（L3 leaf 邻近性调度）**、**存储（FSx for Lustre 训练 + S3 Express One Zone 推理）** 三层架构，任何一层的配置不当都会显著影响训练/推理性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
+
+---
+
+## 运维与故障排查：部署后的快速验证
 
 部署完成后，可以使用以下命令验证集群状态：
 
@@ -376,40 +370,51 @@ kubectl get nodes -o wide
 # 检查所有 Pod
 kubectl get pods -A
 
-# 验证 LVM 配置
-kubectl debug node/<node-name> -it --image=amazonlinux -- \
+# 验证 LVM 配置（通过 chroot 使用节点自带的 lvm2 工具，不依赖调试镜像自带 LVM 包）
+kubectl debug node/<node-name> -it --image=public.ecr.aws/amazonlinux/amazonlinux:2023 -- \
   chroot /host bash -c "vgs && lvs && df -h /var/lib/containerd"
 
 # 验证存储类
 kubectl get storageclass
 ```
 
+> **说明**：`kubectl debug node/...` 在 kubectl v1.30+ 会提示 `--profile=legacy` 已弃用，可按需追加 `--profile=sysadmin` 消除告警；`vgs/lvs` 由节点 AMI 自带的 `lvm2` 提供，调试容器只是借 `chroot` 进入节点命名空间。
+
 ---
 
-## 最佳实践检查清单
+## 生产环境部署检查清单：上线前自检
 
-在将集群用于生产环境之前，请确认以下安全配置：
+**脚本默认已启用的安全基线**（无需手动操作，核对一下即可）：
 
-- [ ] 私有 API Endpoint（API Server 不暴露公网）
-- [ ] Pod Identity 替代 IRSA（简化 IAM 管理）
-- [ ] VPC Endpoints 完整配置（13 个 Interface + 1 个 S3 Gateway）
-- [ ] EBS 卷加密（使用 KMS）
-- [ ] IMDSv2 强制使用（防止 SSRF 攻击）
-- [ ] 安全组最小权限原则
+- [x] 私有 API Endpoint（API Server 不暴露公网）
+- [x] Pod Identity 替代 IRSA（简化 IAM 管理）
+- [x] VPC Endpoints 完整配置（13 个 Interface + 1 个 S3 Gateway）
+- [x] EBS 卷加密（使用 `alias/aws/ebs` 管理的 KMS 密钥）
+- [x] IMDSv2 强制使用（所有节点 Launch Template 设置 `HttpTokens=required`）
+- [x] 容器运行时存储已从系统根卷剥离（LVM `/var/lib/containerd`）
 
-### 成本优化建议
+**需要按业务自行确认的项**：
+
+- [ ] 安全组最小权限原则（默认允许同 VPC 访问，根据业务收敛至具体来源）
+- [ ] CSI Drivers 按需安装（EBS 默认安装；EFS / FSx / S3 按需启用）
+- [ ] 日志与审计（CloudWatch Logs、审计日志投递到合规存储）
+- [ ] Kubernetes RBAC 策略（按团队/namespace 划分权限）
+
+---
+
+## 成本优化建议：在安全与预算之间取得平衡
 
 **使用 Graviton 实例**：Graviton 处理器相较同等 x86 实例最高可提升 40% 性价比，脚本原生支持 Graviton 节点组（系统节点默认即为 `m8g.xlarge`）。
 
 **利用 VPC Endpoints**：VPC Endpoints 不仅提供安全性，还能避免数据通过 NAT Gateway 传输产生的费用。
 
-**合理使用 Spot 实例**：对于无状态或可容错的工作负载，Spot 实例可以节省高达 90% 的成本。Karpenter 可以自动处理 Spot 中断。
+**合理使用 Spot 实例**：对于无状态或可容错的工作负载，Spot 实例相较按需价格最高可节省 90%。Karpenter 可以自动处理 Spot 中断。
 
 **按需配置节点组大小**：根据实际工作负载配置合适的节点数量和实例类型，避免过度配置。
 
 ---
 
-## 总结
+## 总结：一套可复制的企业级 EKS 部署方案
 
 本文从企业客户在 EKS 生产环境中面临的实际挑战出发，介绍了一套经过验证的解决方案：
 
@@ -423,7 +428,7 @@ kubectl get storageclass
 
 针对**多样化存储需求**，提供 EBS、EFS、FSx、S3 四种 CSI Driver 的一键部署，覆盖块存储、共享文件系统、高性能存储和对象存储挂载等全部场景。
 
-针对**GPU 工作负载**，通过 Managed Node Groups 预配置 EFA 网络接口，支持 P5、P5en、P6、G7e 等最新 GPU 实例，并提供 On-Demand、Spot、ODCR、Capacity Blocks 四种定价模式。
+针对 **GPU 工作负载**，通过 Managed Node Groups 提供 P5、P5en、P6、G7e 等最新 GPU 实例的支持，并集成 EFA 多网卡网络与四种定价模式。更深入的 GPU 架构实践（多网卡拓扑、邻近性调度、训练/推理差异化存储）将在本系列第二篇中展开。
 
 所有这些方案都已沉淀为标准化、自动化的部署脚本，实现约 30 分钟完成生产级集群部署，幂等设计支持重复执行，非交互模式便于 CI/CD 集成。
 
@@ -431,13 +436,25 @@ kubectl get storageclass
 
 ---
 
-## 关于作者
+## 本系列后续：深入 GPU 工作负载
 
-本文由 AWS 解决方案架构师团队撰写，基于多个企业客户的实际部署经验总结。如有问题或建议，欢迎通过 GitHub Issues 反馈。
+本文聚焦通用生产级 EKS 集群的架构与部署。**本系列第二篇**将深入 GPU 工作负载的三层架构：
+
+- **计算层**：EFA 多网卡精确摆位（含 p6-b300 非对称拓扑）、EFA userspace 完整性
+- **网络层**：基于 `DescribeInstanceTopology` 的 L3 leaf 标签化调度
+- **存储层**：训练用 FSx for Lustre（含 PERSISTENT_2 兼容性要点）、推理用 S3 Express One Zone
+
+敬请关注。
 
 ---
 
-## 参考链接
+## 关于作者：本文背后的实践积累
+
+本文由 AWS 解决方案架构师 **Kevin Zhao** 基于多个企业客户的实际部署经验总结撰写。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源，如有问题或建议，欢迎通过 GitHub Issues 反馈。
+
+---
+
+## 参考链接：延伸阅读
 
 - [Amazon EKS Blueprints for CDK](https://aws-quickstart.github.io/cdk-eks-blueprints/) - 基于 CDK 的 EKS 集群快速部署框架（另有 [Terraform 版本](https://aws-ia.github.io/terraform-aws-eks-blueprints/)）
 - [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/) - EKS 最佳实践指南
