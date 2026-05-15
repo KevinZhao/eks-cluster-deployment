@@ -1,7 +1,15 @@
 #!/bin/bash
 #
-# Create VPC Endpoints for Private EKS Cluster
-# This script creates all necessary VPC endpoints using AWS CLI
+# Create VPC Endpoints for EKS Cluster
+# Supports two modes controlled by VPC_ENDPOINTS_MODE (set in .env):
+#
+#   full    - Create all 13 Interface Endpoints + 1 S3 Gateway (default for private clusters)
+#             ~$210/month (2 AZs); all AWS traffic stays inside VPC
+#
+#   minimal - Create only the 4 endpoints required for node registration + S3 Gateway
+#             (default for public clusters); ~$50/month (2 AZs)
+#             Skipped endpoints: ecr.api, ecr.dkr, logs, autoscaling,
+#             elasticloadbalancing, elasticfilesystem, ssm, ssmmessages, ec2messages
 #
 
 set -e
@@ -19,8 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Creating VPC Endpoints for Private EKS${NC}"
+echo -e "${GREEN}Creating VPC Endpoints for EKS Cluster${NC}"
 echo -e "${GREEN}========================================${NC}"
+echo ""
+echo "Cluster Mode:      ${CLUSTER_MODE}"
+echo "Endpoints Mode:    ${VPC_ENDPOINTS_MODE}"
 echo ""
 
 # Validate required variables (minimum 2 AZs)
@@ -96,15 +107,35 @@ if [ "${AZ_COUNT}" -ge 4 ] && [ -n "${PRIVATE_SUBNET_D}" ]; then
 fi
 echo "Using ${AZ_COUNT} AZs for VPC endpoints"
 
-# Define interface endpoints
-declare -a INTERFACE_ENDPOINTS=(
-    "eks:EKS API"
+# -----------------------------------------------------------------------
+# Define endpoint sets
+#
+# REQUIRED_ENDPOINTS: always created regardless of mode
+#   - eks:       Nodes register with API Server via private DNS
+#   - eks-auth:  Pod Identity token exchange (no public alternative)
+#   - sts:       Pod Identity credential vending (high call volume)
+#   - ec2:       EBS CSI Driver + nodeadm (K8s 1.34+), high call volume
+#
+# FULL_ONLY_ENDPOINTS: created only in 'full' mode
+#   - ecr.api / ecr.dkr:       image pull — can go via NAT in public mode
+#   - logs:                    CloudWatch Logs — has public endpoint
+#   - autoscaling:             Cluster Autoscaler — can go via NAT
+#   - elasticloadbalancing:    ALB Controller — can go via NAT
+#   - elasticfilesystem:       EFS CSI — can go via NAT (optional component)
+#   - ssm / ssmmessages / ec2messages: SSM — works via public endpoint
+# -----------------------------------------------------------------------
+
+declare -a REQUIRED_ENDPOINTS=(
+    "eks:EKS API (node registration)"
     "eks-auth:EKS Auth (Pod Identity)"
-    "sts:STS (Pod Identity)"
+    "sts:STS (Pod Identity credentials)"
+    "ec2:EC2 + EBS CSI Driver"
+)
+
+declare -a FULL_ONLY_ENDPOINTS=(
     "ecr.api:ECR API"
     "ecr.dkr:ECR Docker"
     "logs:CloudWatch Logs"
-    "ec2:EC2 + EBS CSI"
     "autoscaling:Cluster Autoscaler"
     "elasticloadbalancing:AWS LB Controller"
     "elasticfilesystem:EFS CSI Driver"
@@ -113,26 +144,32 @@ declare -a INTERFACE_ENDPOINTS=(
     "ec2messages:EC2 Messages for SSM"
 )
 
+# Build the final list to create
+declare -a INTERFACE_ENDPOINTS=("${REQUIRED_ENDPOINTS[@]}")
+if [ "${VPC_ENDPOINTS_MODE}" = "full" ]; then
+    INTERFACE_ENDPOINTS+=("${FULL_ONLY_ENDPOINTS[@]}")
+fi
+
+# -----------------------------------------------------------------------
 # Create interface endpoints
-echo -e "${YELLOW}Creating interface endpoints...${NC}"
+# -----------------------------------------------------------------------
+echo -e "${YELLOW}Creating interface endpoints (mode: ${VPC_ENDPOINTS_MODE})...${NC}"
 for endpoint_info in "${INTERFACE_ENDPOINTS[@]}"; do
     IFS=':' read -r service description <<< "${endpoint_info}"
     service_name="com.amazonaws.${AWS_REGION}.${service}"
 
-    echo -n "Creating ${description} endpoint (${service})... "
+    echo -n "  Creating ${description} (${service})... "
 
-    # Check if endpoint already exists
     EXISTING_ENDPOINT=$(aws ec2 describe-vpc-endpoints \
         --filters "Name=vpc-id,Values=${VPC_ID}" "Name=service-name,Values=${service_name}" \
-        --query 'VpcEndpoints[0].VpcEndpointId' \
+        --query 'VpcEndpoints[?State!=`deleted`].VpcEndpointId' \
         --output text 2>/dev/null)
 
-    if [ "${EXISTING_ENDPOINT}" != "None" ] && [ -n "${EXISTING_ENDPOINT}" ]; then
+    if [ -n "${EXISTING_ENDPOINT}" ] && [ "${EXISTING_ENDPOINT}" != "None" ]; then
         echo -e "${YELLOW}already exists (${EXISTING_ENDPOINT})${NC}"
         continue
     fi
 
-    # Create endpoint
     ENDPOINT_ID=$(aws ec2 create-vpc-endpoint \
         --vpc-id "${VPC_ID}" \
         --service-name "${service_name}" \
@@ -151,32 +188,41 @@ for endpoint_info in "${INTERFACE_ENDPOINTS[@]}"; do
     fi
 done
 
+# Print skipped endpoints in minimal mode
+if [ "${VPC_ENDPOINTS_MODE}" = "minimal" ]; then
+    echo ""
+    echo -e "${YELLOW}Skipped in minimal mode (traffic routes via NAT Gateway):${NC}"
+    for endpoint_info in "${FULL_ONLY_ENDPOINTS[@]}"; do
+        IFS=':' read -r service description <<< "${endpoint_info}"
+        echo "  - ${description} (${service})"
+    done
+    echo ""
+    echo "  To enable all endpoints, set VPC_ENDPOINTS_MODE=full in .env"
+fi
+
 echo ""
 
-# Get private route table IDs (using PRIVATE_SUBNETS from 0_setup_env.sh)
-echo -e "${YELLOW}Getting private route table IDs...${NC}"
-ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
-    --filters "Name=vpc-id,Values=${VPC_ID}" \
-              "Name=association.subnet-id,Values=${PRIVATE_SUBNETS}" \
-    --query 'RouteTables[*].RouteTableId' \
-    --output text)
-
-echo "Route Table IDs: ${ROUTE_TABLE_IDS}"
-echo ""
-
-# Create S3 gateway endpoint
-echo -n "Creating S3 Gateway Endpoint... "
+# -----------------------------------------------------------------------
+# Create S3 Gateway Endpoint (always — Gateway type is free)
+# -----------------------------------------------------------------------
+echo -n "Creating S3 Gateway Endpoint (free, always created)... "
 service_name="com.amazonaws.${AWS_REGION}.s3"
 
-# Check if S3 endpoint already exists
 EXISTING_S3_ENDPOINT=$(aws ec2 describe-vpc-endpoints \
     --filters "Name=vpc-id,Values=${VPC_ID}" "Name=service-name,Values=${service_name}" \
-    --query 'VpcEndpoints[0].VpcEndpointId' \
+    --query 'VpcEndpoints[?State!=`deleted`].VpcEndpointId' \
     --output text 2>/dev/null)
 
-if [ "${EXISTING_S3_ENDPOINT}" != "None" ] && [ -n "${EXISTING_S3_ENDPOINT}" ]; then
+if [ -n "${EXISTING_S3_ENDPOINT}" ] && [ "${EXISTING_S3_ENDPOINT}" != "None" ]; then
     echo -e "${YELLOW}already exists (${EXISTING_S3_ENDPOINT})${NC}"
 else
+    # Get private route table IDs (using PRIVATE_SUBNETS from 0_setup_env.sh)
+    ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
+        --filters "Name=vpc-id,Values=${VPC_ID}" \
+                  "Name=association.subnet-id,Values=${PRIVATE_SUBNETS}" \
+        --query 'RouteTables[*].RouteTableId' \
+        --output text)
+
     S3_ENDPOINT_ID=$(aws ec2 create-vpc-endpoint \
         --vpc-id "${VPC_ID}" \
         --service-name "${service_name}" \
@@ -199,8 +245,17 @@ echo -e "${GREEN}VPC Endpoints Creation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# List all endpoints
-echo "Created VPC Endpoints:"
+# Summary
+TOTAL_INTERFACE=${#INTERFACE_ENDPOINTS[@]}
+TOTAL_GATEWAY=1
+echo "Created: ${TOTAL_INTERFACE} interface endpoint(s) + ${TOTAL_GATEWAY} S3 gateway endpoint"
+if [ "${VPC_ENDPOINTS_MODE}" = "minimal" ]; then
+    echo "Skipped: ${#FULL_ONLY_ENDPOINTS[@]} interface endpoints (set VPC_ENDPOINTS_MODE=full to create all)"
+fi
+echo ""
+
+# List all endpoints for this cluster
+echo "VPC Endpoints for cluster '${CLUSTER_NAME}':"
 aws ec2 describe-vpc-endpoints \
     --filters "Name=vpc-id,Values=${VPC_ID}" "Name=tag:Cluster,Values=${CLUSTER_NAME}" \
     --query 'VpcEndpoints[*].[VpcEndpointType,ServiceName,State,VpcEndpointId]' \

@@ -129,7 +129,6 @@ EKS Cluster (Kubernetes 1.35)
 | `option_install_karpenter.sh` | 安装 Karpenter 自动扩缩容 | VPC 内 |
 | `option_install_gpu_nodegroups.sh` | 创建 GPU 托管节点组（EFA + 拓扑感知）| VPC 内 |
 | `option_label_nodegroup_topology.sh` | 为节点组打 EFA leaf / AZ 拓扑标签 | VPC 内 |
-| `option_configure_ssm_patch.sh` | 配置 SSM Patch Manager 自动补丁 | VPC 内 |
 | `examples/option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | VPC 内 |
 | `examples/option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | VPC 内 |
 
@@ -281,7 +280,6 @@ eks-cluster-deployment/
 │   ├── option_install_karpenter.sh         # 安装 Karpenter（可选）
 │   ├── option_install_gpu_nodegroups.sh    # 创建 GPU 节点组 + EFA（可选）
 │   ├── option_label_nodegroup_topology.sh  # EFA 拓扑标签（可选）
-│   ├── option_configure_ssm_patch.sh       # SSM Patch Manager（可选）
 │   ├── instance_arch_lib.sh                # 共享库：实例架构检测
 │   ├── disk_detection_lib.sh               # 共享库：NVMe 数据盘识别
 │   ├── pod_identity_helpers.sh             # 共享库：Pod Identity

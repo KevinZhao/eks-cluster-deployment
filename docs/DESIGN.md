@@ -162,8 +162,6 @@ EKS 节点需要定期打安全补丁，但需要平衡以下因素：
 
 #### 方案 A: SSM Patch Manager (In-place Patch)
 
-**实现**: `scripts/option_configure_ssm_patch.sh`
-
 ```
 优点:
 - 节点原地更新，无需替换
@@ -207,11 +205,7 @@ EKS 节点需要定期打安全补丁，但需要平衡以下因素：
 - [ ] GPU 节点特殊处理？(训练任务 checkpoint)
 - [ ] Patch 失败时的告警和回滚机制？
 
-### 8.5 相关脚本
-
-- `scripts/option_configure_ssm_patch.sh` - SSM Patch Manager 配置
-
-### 8.6 参考资料
+### 8.5 参考资料
 
 - [AWS SSM Patch Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-patch.html)
 - [EKS AMI Release Notes](https://github.com/awslabs/amazon-eks-ami/releases)

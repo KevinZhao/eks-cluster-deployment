@@ -200,7 +200,35 @@ if [ "$IO2_IOPS" -lt 100 ] || [ "$IO2_IOPS" -gt 64000 ]; then
     export IO2_IOPS=10000
 fi
 
-# 10. 构建子网列表变量（供其他脚本使用，支持2-4个AZ）
+# 10. 集群访问模式配置
+# CLUSTER_MODE: private（默认）或 public
+CLUSTER_MODE="${CLUSTER_MODE:-private}"
+CLUSTER_MODE="${CLUSTER_MODE,,}"  # 转小写
+
+if [ "${CLUSTER_MODE}" != "private" ] && [ "${CLUSTER_MODE}" != "public" ]; then
+    error "Invalid CLUSTER_MODE '${CLUSTER_MODE}'. Must be 'private' or 'public'."
+fi
+export CLUSTER_MODE
+
+# VPC_ENDPOINTS_MODE: full（默认 private 模式）或 minimal（默认 public 模式）
+if [ -z "${VPC_ENDPOINTS_MODE:-}" ]; then
+    if [ "${CLUSTER_MODE}" = "public" ]; then
+        VPC_ENDPOINTS_MODE="minimal"
+    else
+        VPC_ENDPOINTS_MODE="full"
+    fi
+fi
+VPC_ENDPOINTS_MODE="${VPC_ENDPOINTS_MODE,,}"  # 转小写
+
+if [ "${VPC_ENDPOINTS_MODE}" != "full" ] && [ "${VPC_ENDPOINTS_MODE}" != "minimal" ]; then
+    error "Invalid VPC_ENDPOINTS_MODE '${VPC_ENDPOINTS_MODE}'. Must be 'full' or 'minimal'."
+fi
+export VPC_ENDPOINTS_MODE
+
+# Public 访问 CIDR（仅 public 模式有效）
+export PUBLIC_ACCESS_CIDRS="${PUBLIC_ACCESS_CIDRS:-0.0.0.0/0}"
+
+# 11. 构建子网列表变量（供其他脚本使用，支持2-4个AZ）
 case "$AZ_COUNT" in
     4)
         export PRIVATE_SUBNETS="${PRIVATE_SUBNET_A},${PRIVATE_SUBNET_B},${PRIVATE_SUBNET_C},${PRIVATE_SUBNET_D}"
@@ -216,7 +244,7 @@ case "$AZ_COUNT" in
         ;;
 esac
 
-# 11. 显示配置摘要
+# 12. 显示配置摘要
 log "=== Configuration Summary ==="
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 echo "AWS_REGION: $AWS_REGION"
@@ -244,6 +272,17 @@ esac
 echo "SYSTEM_NODE_INSTANCE_TYPE: $SYSTEM_NODE_INSTANCE_TYPE"
 echo "SYSTEM_NODE_DATA_VOLUME_SIZE: ${SYSTEM_NODE_DATA_VOLUME_SIZE}GB"
 echo "SYSTEM_NODE_LABEL: ${SYSTEM_NODE_LABEL_KEY}=${SYSTEM_NODE_LABEL_VALUE}"
+echo ""
+if [ "${CLUSTER_MODE}" = "public" ]; then
+    echo "Cluster Access Mode: PUBLIC (API Server 公网+VPC 双通道)"
+    echo "  Public Access CIDRs: ${PUBLIC_ACCESS_CIDRS}"
+    if [ "${PUBLIC_ACCESS_CIDRS}" = "0.0.0.0/0" ]; then
+        warn "PUBLIC_ACCESS_CIDRS is 0.0.0.0/0 — consider restricting to known IP ranges for security"
+    fi
+else
+    echo "Cluster Access Mode: PRIVATE (API Server 仅 VPC 内可访问)"
+fi
+echo "VPC Endpoints Mode: ${VPC_ENDPOINTS_MODE}"
 echo ""
 echo "Optional Components:"
 echo "  - Karpenter: $INSTALL_KARPENTER $([ "$INSTALL_KARPENTER" = "true" ] && echo "(v${KARPENTER_VERSION})" || echo "")"

@@ -96,6 +96,8 @@ _topo_wait_aws_topology_labels() {
         echo "  waiting for AWS topology labels: ${labeled}/${total} nodes have topology.k8s.aws/network-node-layer-1" >&2
         sleep 10
     done
+    echo "  HINT: topology labels are written by cloud-controller-manager." \
+         "Check 'kubectl get pods -n kube-system -l app=cloud-controller-manager' if labels never appear." >&2
     return 1
 }
 

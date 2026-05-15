@@ -161,17 +161,71 @@ SSH_PUBLIC_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB... user@host"
 
 > **说明**：如不配置上述选项，所有节点默认通过 SSM Session Manager 访问。
 
-### 第二阶段：配置 VPC 网络
+### 第二阶段：选择集群访问模式（重要）
 
-**执行位置**：堡垒机
+在部署前，根据使用场景在 `.env` 中设置访问模式：
+
+#### Private 模式（默认，生产推荐）
+
+API Server 仅 VPC 内可访问，所有节点流量不出 VPC。
+
+```bash
+# .env 中无需额外配置，CLUSTER_MODE 默认为 private
+# 自动创建全部 14 个 VPC Endpoints（13 Interface + 1 S3 Gateway）
+# 估算成本：~$210/月（2AZ），~$315/月（3AZ）
+```
+
+执行环境要求：**所有 kubectl 命令必须在 VPC 内（堡垒机）执行**。
+
+适用场景：生产环境、需满足 PCI-DSS/金融等合规要求。
+
+#### Public 模式（开发 / 测试可选）
+
+API Server 同时开放公网 + VPC 私有访问，可从任意网络执行 kubectl。
+
+```bash
+# .env 追加：
+CLUSTER_MODE=public
+
+# 强烈建议限制允许访问 API 的 IP 范围（逗号分隔）
+PUBLIC_ACCESS_CIDRS=203.0.113.0/24,198.51.100.0/24
+
+# 自动创建最小化 VPC Endpoints（仅 4 Interface + 1 S3 Gateway）
+# 估算成本：~$50/月（2AZ），节省约 $160/月
+# 其余流量经 NAT Gateway 走公网
+```
+
+**两种模式的 VPC Endpoint 对比**：
+
+| Endpoint | Private 模式 | Public 模式 | 说明 |
+|----------|:---:|:---:|------|
+| `eks` | ✅ | ✅ | 节点注册 API Server，必须 |
+| `eks-auth` | ✅ | ✅ | Pod Identity，无公网替代 |
+| `sts` | ✅ | ✅ | Pod Identity 凭证，调用量大 |
+| `ec2` | ✅ | ✅ | EBS CSI + nodeadm，调用量大 |
+| `s3`（Gateway，免费）| ✅ | ✅ | 镜像拉取，降低 NAT 成本 |
+| `ecr.api` / `ecr.dkr` | ✅ | ❌ 省略 | 可走 NAT Gateway |
+| `logs` | ✅ | ❌ 省略 | CloudWatch 有公网端点 |
+| `autoscaling` | ✅ | ❌ 省略 | 可走 NAT Gateway |
+| `elasticloadbalancing` | ✅ | ❌ 省略 | 可走 NAT Gateway |
+| `elasticfilesystem` | ✅ | ❌ 省略 | 可走 NAT Gateway |
+| `ssm` / `ssmmessages` / `ec2messages` | ✅ | ❌ 省略 | 公网 SSM 仍可用 |
+
+> **注意**：Public 模式中，`privateAccess` 始终为 `true`，不支持纯公网（`privateAccess: false`）模式，节点注册必须通过私有通道。
+
+### 第三阶段：配置 VPC 网络
+
+**执行位置**：堡垒机（private 模式）或任意网络（public 模式）
 
 ```bash
 ./scripts/1_enable_vpc_dns.sh        # 启用 DNS（10秒）
 ./scripts/2_validate_network_environment.sh  # 可选：验证网络
-./scripts/3_create_vpc_endpoints.sh  # 创建 13 个 Endpoints（2-3分钟）
+./scripts/3_create_vpc_endpoints.sh  # 创建 VPC Endpoints（2-3分钟）
+                                     # private 模式：创建 13+1 个
+                                     # public 模式：创建 4+1 个
 ```
 
-### 第三阶段：创建 EKS 集群
+### 第四阶段：创建 EKS 集群
 
 ```bash
 ./scripts/4_install_eks_cluster.sh   # 创建控制平面（8-10分钟）
@@ -183,9 +237,9 @@ aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query '
 # 应返回: "ACTIVE"
 ```
 
-### 第四阶段：创建系统节点组
+### 第五阶段：创建系统节点组
 
-> **注意**: 脚本会先通过 `curl /healthz` 检测集群 API 可达性。私有集群必须从 VPC 内部（堡垒机）执行。
+> **注意**: 脚本会先通过 `curl /healthz` 检测集群 API 可达性。Private 模式集群必须从 VPC 内部（堡垒机）执行。
 
 ```bash
 AUTO_DELETE_NODEGROUP=yes ./scripts/6_create_system_nodegroup.sh  # 8-12分钟
@@ -196,7 +250,7 @@ AUTO_DELETE_NODEGROUP=yes ./scripts/6_create_system_nodegroup.sh  # 8-12分钟
 kubectl get nodes -o wide  # 应显示 3 个 Ready 节点
 ```
 
-### 第五阶段：安装集群组件
+### 第六阶段：安装集群组件
 
 ```bash
 ./scripts/7_install_eks_addon.sh     # 5-8分钟

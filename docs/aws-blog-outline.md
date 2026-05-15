@@ -285,7 +285,6 @@ scripts/
 ├── option_install_csi_drivers.sh       # CSI Drivers（可选）
 ├── option_install_karpenter.sh         # Karpenter（可选）
 ├── option_install_gpu_nodegroups.sh    # GPU 节点组（可选）
-├── option_configure_ssm_patch.sh       # SSM Patch Manager（可选）
 ├── option_label_nodegroup_topology.sh  # 节点 EFA 拓扑标签（可选）
 └── *_lib.sh / pod_identity_helpers.sh  # 共享函数库（磁盘检测、架构识别、拓扑标签、Pod Identity）
 ```

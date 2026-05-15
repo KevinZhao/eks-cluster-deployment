@@ -63,6 +63,28 @@ if aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_REGION}" &>
 else
     echo "Creating new cluster..."
 
+    # Determine cluster endpoint access mode
+    if [ "${CLUSTER_MODE:-private}" = "public" ]; then
+        CLUSTER_PUBLIC_ACCESS="true"
+        echo "⚠️  CLUSTER_MODE=public: API Server will be accessible from the internet"
+        echo "   Public Access CIDRs: ${PUBLIC_ACCESS_CIDRS:-0.0.0.0/0}"
+        if [ "${PUBLIC_ACCESS_CIDRS:-0.0.0.0/0}" = "0.0.0.0/0" ]; then
+            echo "   ⚠️  WARNING: PUBLIC_ACCESS_CIDRS is 0.0.0.0/0 — consider restricting to known IPs"
+        fi
+        # Build publicAccessCIDRs YAML block
+        PUBLIC_ACCESS_CIDRS_YAML="  publicAccessCIDRs:"
+        IFS=',' read -ra CIDR_LIST <<< "${PUBLIC_ACCESS_CIDRS:-0.0.0.0/0}"
+        for cidr in "${CIDR_LIST[@]}"; do
+            cidr=$(echo "${cidr}" | xargs)
+            PUBLIC_ACCESS_CIDRS_YAML="${PUBLIC_ACCESS_CIDRS_YAML}
+    - \"${cidr}\""
+        done
+    else
+        CLUSTER_PUBLIC_ACCESS="false"
+        PUBLIC_ACCESS_CIDRS_YAML=""
+        echo "✓ CLUSTER_MODE=private: API Server accessible from VPC only"
+    fi
+
     # Prepare secretsEncryption configuration if KMS_KEY_ARN is set
     if [ -n "${KMS_KEY_ARN:-}" ]; then
         echo "✓ KMS encryption enabled: ${KMS_KEY_ARN}"
@@ -129,7 +151,8 @@ ${PRIVATE_SUBNETS_YAML}
 ${PUBLIC_SUBNETS_YAML}
   clusterEndpoints:
     privateAccess: true
-    publicAccess: false
+    publicAccess: ${CLUSTER_PUBLIC_ACCESS}
+${PUBLIC_ACCESS_CIDRS_YAML}
 
 accessConfig:
   authenticationMode: API_AND_CONFIG_MAP
@@ -235,6 +258,12 @@ if [ "${ENABLE_DELETION_PROTECTION:-true}" = "true" ]; then
     echo "  Deletion Protection: ✓ Enabled"
 else
     echo "  Deletion Protection: ✗ Disabled"
+fi
+if [ "${CLUSTER_MODE:-private}" = "public" ]; then
+    echo "  API Endpoint Access: PUBLIC (privateAccess=true, publicAccess=true)"
+    echo "  Public Access CIDRs: ${PUBLIC_ACCESS_CIDRS:-0.0.0.0/0}"
+else
+    echo "  API Endpoint Access: PRIVATE (privateAccess=true, publicAccess=false)"
 fi
 echo ""
 echo "⚠️  IMPORTANT: System nodegroup NOT created yet"
