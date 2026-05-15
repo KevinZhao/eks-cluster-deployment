@@ -387,12 +387,31 @@ plan_pg_for_nodegroup() {
 # ===================================================================
 # Verify all instances in a nodegroup share the same network-topology
 # ancestor at the requested level. Uses ec2:DescribeInstanceTopology
-# which returns up to 3 NetworkNodes per instance: [spine, aggregator, leaf].
+# which returns NetworkNodes[] in spine → leaf order.
+#
+# Network depth varies by fabric: 3 levels for p5 (Euclid),
+# 4 levels for p5en/p6 (10p10u). To stay correct on both, level names
+# refer to *distance from instance* (leaf is closest):
+#
+#   level value | what it means                | NetworkNodes index
+#   ------------|------------------------------|--------------------
+#   L1          | spine (top of fabric)        | [0]      (legacy alias kept)
+#   L2          | one above leaf               | [-2]
+#   L3          | leaf (closest to instance)   | [-1]     (legacy alias kept)
+#   LEAF        | leaf                         | [-1]
+#   LEVEL_1     | leaf                         | [-1]
+#   LEVEL_2     | one above leaf               | [-2]
+#   LEVEL_3     | two above leaf               | [-3]
+#   LEVEL_4     | three above leaf             | [-4]
+#
+# Old GPU_TOPOLOGY_GATE_LEVEL=L3 calls keep working — they now correctly
+# resolve to the true leaf on 4-layer fabrics (was wrong before, was
+# pinning aggregator instead of leaf on p6).
 #
 # Args:
 #   $1 ng_name   EKS nodegroup name
 #   $2 gate      strict | warn | off
-#   $3 level     L1 | L2 | L3
+#   $3 level     L1 | L2 | L3 | LEAF | LEVEL_1..LEVEL_8
 verify_topology() {
     local ng_name=$1
     local gate=${2:-strict}
@@ -402,17 +421,29 @@ verify_topology() {
         return 0
     fi
 
-    # Map L1/L2/L3 to array index in NetworkNodes[].
-    # describe-instance-topology returns NetworkNodes[] in spine → leaf order.
-    local level_idx
+    # Map level alias → jq path expression. Using -2/-1 negative indices
+    # makes the path stable across 3-layer (p5) and 4-layer (p5en/p6)
+    # fabrics. ".NetworkNodes[0]" is still spine on both.
+    local level_jq
     case "${level}" in
-        L1) level_idx=0 ;;
-        L2) level_idx=1 ;;
-        L3) level_idx=2 ;;
-        *)  echo "ERROR: invalid GPU_TOPOLOGY_GATE_LEVEL='${level}' (expected L1|L2|L3)"; return 1 ;;
+        L1)                level_jq=".NetworkNodes[0]"  ;;   # spine (top)
+        L2)                level_jq=".NetworkNodes[-2]" ;;   # one above leaf
+        L3|LEAF|LEVEL_1)   level_jq=".NetworkNodes[-1]" ;;   # leaf
+        LEVEL_2)           level_jq=".NetworkNodes[-2]" ;;
+        LEVEL_3)           level_jq=".NetworkNodes[-3]" ;;
+        LEVEL_4)           level_jq=".NetworkNodes[-4]" ;;
+        LEVEL_5)           level_jq=".NetworkNodes[-5]" ;;
+        LEVEL_6)           level_jq=".NetworkNodes[-6]" ;;
+        LEVEL_7)           level_jq=".NetworkNodes[-7]" ;;
+        LEVEL_8)           level_jq=".NetworkNodes[-8]" ;;
+        *)
+            echo "ERROR: invalid GPU_TOPOLOGY_GATE_LEVEL='${level}'"
+            echo "       Expected: L1 | L2 | L3 | LEAF | LEVEL_1..LEVEL_8"
+            return 1
+            ;;
     esac
 
-    echo "Topology gate: verifying NG=${ng_name} at level=${level} (gate=${gate})"
+    echo "Topology gate: verifying NG=${ng_name} at level=${level} (jq=${level_jq}, gate=${gate})"
 
     # Get ASG name → instance IDs
     local asg_name
@@ -463,7 +494,7 @@ verify_topology() {
     # Count unique nodes at requested level
     local unique_nodes
     unique_nodes=$(echo "${topology_json}" \
-        | jq -r ".Instances[].NetworkNodes[${level_idx}] // \"__missing__\"" \
+        | jq -r ".Instances[] | (${level_jq} // \"__missing__\")" \
         | sort -u)
     # grep -c . counts non-empty lines (wc -l would count 1 for empty input)
     local unique_count
@@ -474,10 +505,15 @@ verify_topology() {
         return 0
     fi
 
-    # Print the full topology map for operator visibility
-    echo "  Topology map (level=${level}):"
+    # Print the full topology map for operator visibility.
+    # Lay out from leaf (closest) to spine (farthest) so the line is
+    # readable regardless of fabric depth (3 or 4 levels).
+    echo "  Topology map (depth-aware, leaf→spine):"
     echo "${topology_json}" \
-        | jq -r ".Instances[] | \"    \(.InstanceId)  AZ=\(.AvailabilityZone)  L1=\(.NetworkNodes[0])  L2=\(.NetworkNodes[1])  L3=\(.NetworkNodes[2])\""
+        | jq -r '.Instances[]
+                 | "    \(.InstanceId)  AZ=\(.AvailabilityZone)  depth=\(.NetworkNodes | length)  "
+                   + (.NetworkNodes | reverse | to_entries
+                      | map("level-\(.key + 1)=\(.value)") | join("  "))'
 
     if [ "${unique_count}" -gt 1 ]; then
         echo ""

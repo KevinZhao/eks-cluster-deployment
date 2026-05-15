@@ -82,7 +82,24 @@ _topo_wait_k8s_join() {
 # ===================================================================
 # Internal: query DescribeInstanceTopology for a set of instances
 # ===================================================================
-# Echoes a JSON array: [{id, leaf, aggregator, spine, az}, ...]
+# Echoes a JSON array, one entry per instance:
+#   [{
+#     id:      "i-xxx",
+#     az:      "us-west-2c",
+#     zone_id: "usw2-az1",
+#     depth:   3 | 4 | 5,                       # length of NetworkNodes[]
+#     levels:  ["nn-leaf","nn-l2","nn-l3", ...] # reversed: levels[0]=leaf
+#     leaf:    "nn-leaf"                        # convenience alias = levels[0]
+#   }, ...]
+#
+# Reversing NetworkNodes[] is the key trick: it makes "level N" mean
+# "N levels up from the instance" regardless of fabric depth.
+#   p5  (3-layer):   NetworkNodes=[spine, aggregator, leaf]
+#                    levels=[leaf, aggregator, spine]
+#   p6/p5en (4-layer): NetworkNodes=[spine, BG, aggregator, leaf]
+#                    levels=[leaf, aggregator, BG, spine]
+# Workloads target levels[0] for tightest affinity (same leaf), levels[1]
+# for next-best, etc. — same YAML works on both fabrics.
 _topo_query() {
     local instance_ids="$*"
     [ -z "${instance_ids}" ] && return 0
@@ -96,12 +113,12 @@ _topo_query() {
     [ -z "${raw}" ] && return 0
 
     echo "${raw}" | jq '[.Instances[] | {
-        id:         .InstanceId,
-        spine:      .NetworkNodes[0],
-        aggregator: .NetworkNodes[1],
-        leaf:       .NetworkNodes[2],
-        az:         .AvailabilityZone,
-        zone_id:    .ZoneId
+        id:      .InstanceId,
+        az:      .AvailabilityZone,
+        zone_id: .ZoneId,
+        depth:   (.NetworkNodes | length),
+        levels:  (.NetworkNodes | reverse),
+        leaf:    (.NetworkNodes | last)
     }]'
 }
 
@@ -121,8 +138,25 @@ _topo_k8s_node_for_instance() {
 # ===================================================================
 # Given an EKS nodegroup name, queries DescribeInstanceTopology for its
 # InService instances and stamps each corresponding K8s node with:
-#   efa-leaf-id=<nn-xxx>        (true L3 network-topology node ID)
-#   efa-az=<us-west-2c>         (AZ for workload hard-rule enforcement)
+#
+#   network-topology/depth=<3|4|5>
+#   network-topology/level-1=<id>      ← leaf, distance-1 from instance (always)
+#   network-topology/level-2=<id>      ← distance-2 (aggregator on 3+ depth)
+#   network-topology/level-3=<id>      ← distance-3 (BG on 4-depth, spine on 3-depth)
+#   network-topology/level-4=<id>      ← distance-4 (spine on 4-depth)
+#   network-topology/level-N=<id>      ← distance-N, only emitted if depth>=N
+#
+# Plus convenience aliases (back-compat with existing manifests/tooling):
+#   efa-leaf-id=<level-1>
+#   efa-az=<az>
+#
+# Distance-from-instance numbering (level-1 = closest = leaf) keeps the
+# same workload YAML working on:
+#   - p5  (3-layer fabric: NetworkNodes=[spine, aggregator, leaf])
+#   - p6/p5en (4-layer fabric: NetworkNodes=[spine, BG, aggregator, leaf])
+#   - any future N-layer fabric
+# Without this, hardcoding NetworkNodes[2] as leaf produces wrong labels
+# on 4-layer fabrics (yields aggregator instead of leaf).
 #
 # Args:
 #   $1 ng_name
@@ -164,15 +198,16 @@ label_nodegroup_by_leaf() {
         return 1
     fi
 
-    # Label nodes
+    # Iterate per instance. Each line emitted by jq is:
+    #   <inst_id> <az> <depth> <level1> <level2> ... <levelN>
+    # — depth dictates how many level-* labels to stamp.
     local labeled_count=0
     local missing_count=0
-    while read -r inst_id leaf_id az; do
+    while IFS=$'\t' read -r inst_id az depth levels_csv; do
         [ -z "${inst_id}" ] && continue
 
-        # Guard against instances with no topology data returned
-        if [ "${leaf_id}" = "null" ] || [ -z "${leaf_id}" ]; then
-            echo "  WARN: ${inst_id} has no L3 topology node in API response" >&2
+        if [ -z "${depth}" ] || [ "${depth}" = "0" ] || [ "${depth}" = "null" ]; then
+            echo "  WARN: ${inst_id} has no NetworkNodes in API response" >&2
             continue
         fi
 
@@ -184,18 +219,39 @@ label_nodegroup_by_leaf() {
             continue
         fi
 
+        # Build the label arg list. Levels are CSV-encoded so we can keep
+        # the read loop on a single line per instance.
+        local label_args=(
+            "network-topology/depth=${depth}"
+            "efa-az=${az}"
+        )
+        local i=1
+        local IFS_save="$IFS"
+        IFS=','
+        # shellcheck disable=SC2206
+        local lvl_arr=(${levels_csv})
+        IFS="${IFS_save}"
+        local leaf_id=""
+        for lvl in "${lvl_arr[@]}"; do
+            [ -z "${lvl}" ] && { i=$((i + 1)); continue; }
+            label_args+=("network-topology/level-${i}=${lvl}")
+            [ "${i}" = "1" ] && leaf_id="${lvl}"
+            i=$((i + 1))
+        done
+        # leaf-id alias (= level-1) for back-compat
+        if [ -n "${leaf_id}" ]; then
+            label_args+=("efa-leaf-id=${leaf_id}")
+        fi
+
         if [ "${mode}" = "report-only" ]; then
-            echo "  [report] ${k8s_node}  efa-leaf-id=${leaf_id}  efa-az=${az}"
+            echo "  [report] ${k8s_node}  depth=${depth}  leaf=${leaf_id}  az=${az}  levels=[${levels_csv}]"
         else
-            kubectl label node "${k8s_node}" \
-                "efa-leaf-id=${leaf_id}" \
-                "efa-az=${az}" \
-                --overwrite >/dev/null
-            echo "  labeled ${k8s_node}  efa-leaf-id=${leaf_id}  efa-az=${az}"
+            kubectl label node "${k8s_node}" "${label_args[@]}" --overwrite >/dev/null
+            echo "  labeled ${k8s_node}  depth=${depth}  leaf=${leaf_id}  az=${az}"
             labeled_count=$((labeled_count + 1))
         fi
     done < <(echo "${topo_json}" \
-        | jq -r '.[] | "\(.id) \(.leaf) \(.az)"')
+        | jq -r '.[] | [.id, .az, .depth, (.levels | join(","))] | @tsv')
 
     if [ "${mode}" = "label" ]; then
         echo "  labeled ${labeled_count} node(s) ; ${missing_count} instance(s) had no K8s node"
@@ -207,34 +263,47 @@ label_nodegroup_by_leaf() {
 # ===================================================================
 # Public: print_leaf_inventory
 # ===================================================================
-# Prints a cluster-wide inventory of labeled nodes, grouped by leaf.
-# Highlights leaves with >=2 nodes (eligible for multi-node workloads).
+# Prints a cluster-wide inventory of labeled nodes, grouped by the
+# requested topology level. Default groups by level-1 (leaf), which is
+# the tightest affinity unit and the right answer for NCCL all-reduce
+# / PD-disagg on both 3-layer (p5) and 4-layer (p5en/p6) fabrics.
 #
 # Args:
 #   $1 (optional) min_size — threshold for "multi-node eligible" (default 2)
+#   $2 (optional) level    — 1..N, the network-topology/level-N label
+#                             to group by (default 1 = leaf)
 #
 # Writes:
 #   - human-readable inventory to stdout
-#   - machine-readable JSON to TOPO_INVENTORY_OUT (default stderr-less path)
+#   - machine-readable JSON to TOPO_INVENTORY_OUT (optional)
 print_leaf_inventory() {
     local min_size=${1:-2}
+    local group_level=${2:-1}
+    local group_label="network-topology/level-${group_level}"
 
+    # Pull the label key into jq via --arg; jq can't index labels by a
+    # computed string otherwise.
     local inv
-    inv=$(kubectl get nodes -o json 2>/dev/null | jq -r '
+    inv=$(kubectl get nodes -o json 2>/dev/null | jq -r --arg key "${group_label}" '
         [.items[]
-         | select(.metadata.labels["efa-leaf-id"])
+         | select(.metadata.labels[$key])
          | {
-             node: .metadata.name,
-             leaf: .metadata.labels["efa-leaf-id"],
-             az:   (.metadata.labels["efa-az"] // "unknown"),
-             inst: (.spec.providerID | split("/") | .[-1])
+             node:  .metadata.name,
+             group: .metadata.labels[$key],
+             az:    (.metadata.labels["efa-az"] // "unknown"),
+             leaf:  (.metadata.labels["network-topology/level-1"]
+                     // .metadata.labels["efa-leaf-id"]
+                     // "unknown"),
+             depth: (.metadata.labels["network-topology/depth"] // "?"),
+             inst:  (.spec.providerID | split("/") | .[-1])
            }]
-        | group_by(.leaf)
+        | group_by(.group)
         | map({
-            leaf: .[0].leaf,
-            az:   .[0].az,
+            group: .[0].group,
+            az:    .[0].az,
+            depth: .[0].depth,
             count: length,
-            nodes: [.[] | {name: .node, inst: .inst}]
+            nodes: [.[] | {name: .node, inst: .inst, leaf: .leaf}]
           })
         | sort_by(-.count)')
 
@@ -243,22 +312,22 @@ print_leaf_inventory() {
 
     if [ "${inv_count}" -eq 0 ]; then
         echo ""
-        echo "=== Leaf inventory: no labeled nodes found ==="
-        echo "(Did label_nodegroup_by_leaf run successfully?)"
+        echo "=== Topology inventory (level-${group_level}): no labeled nodes found ==="
+        echo "(Did label_nodegroup_by_leaf run successfully? Check that nodes have the '${group_label}' label.)"
         return 0
     fi
 
     echo ""
-    echo "=== Leaf inventory (cluster-wide) ==="
-    printf "%-40s  %-12s  %-6s  %s\n" "LEAF" "AZ" "COUNT" "NODES"
+    echo "=== Topology inventory (cluster-wide, grouped by ${group_label}) ==="
+    printf "%-40s  %-12s  %-6s  %-6s  %s\n" "GROUP-ID" "AZ" "DEPTH" "COUNT" "NODES"
     echo "${inv}" | jq -r '.[] |
-        "\(.leaf)\t\(.az)\t\(.count)\t\(.nodes | map(.name) | join(","))"' \
-        | while IFS=$'\t' read -r leaf az count nodes; do
-            printf "%-40s  %-12s  %-6s  %s\n" "${leaf}" "${az}" "${count}" "${nodes}"
+        "\(.group)\t\(.az)\t\(.depth)\t\(.count)\t\(.nodes | map(.name) | join(","))"' \
+        | while IFS=$'\t' read -r grp az depth count nodes; do
+            printf "%-40s  %-12s  %-6s  %-6s  %s\n" "${grp}" "${az}" "${depth}" "${count}" "${nodes}"
         done
 
     echo ""
-    echo "=== Multi-node-eligible leaves (>= ${min_size} nodes same leaf) ==="
+    echo "=== Multi-node-eligible groups at level-${group_level} (>= ${min_size} nodes) ==="
     local eligible
     eligible=$(echo "${inv}" | jq --arg min "${min_size}" \
         '[.[] | select(.count >= ($min|tonumber))]')
@@ -266,23 +335,25 @@ print_leaf_inventory() {
     eligible_count=$(echo "${eligible}" | jq 'length')
 
     if [ "${eligible_count}" -eq 0 ]; then
-        echo "  (none — all leaves have fewer than ${min_size} nodes)"
+        echo "  (none — all groups have fewer than ${min_size} nodes)"
     else
-        echo "${eligible}" | jq -r '.[] |
-            "  ✅ efa-leaf-id=\(.leaf)  AZ=\(.az)  \(.count) nodes"'
+        echo "${eligible}" | jq -r --arg key "${group_label}" '.[] |
+            "  ✅ \($key)=\(.group)  AZ=\(.az)  \(.count) nodes"'
         echo ""
         echo "Workload nodeAffinity snippet (copy-paste):"
-        local first_leaf first_az
-        first_leaf=$(echo "${eligible}" | jq -r '.[0].leaf')
+        local first_group first_az
+        first_group=$(echo "${eligible}" | jq -r '.[0].group')
         first_az=$(echo "${eligible}" | jq -r '.[0].az')
         cat <<YAML
+  # Tightest affinity (level-${group_level}). For graceful fallback,
+  # add additional nodeSelectorTerms with level-2, level-3 etc.
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
         - matchExpressions:
-          - { key: efa-leaf-id, operator: In, values: [${first_leaf}] }
-          - { key: efa-az,      operator: In, values: [${first_az}] }
+          - { key: ${group_label}, operator: In, values: [${first_group}] }
+          - { key: efa-az,         operator: In, values: [${first_az}] }
 YAML
     fi
 
@@ -297,9 +368,15 @@ YAML
 # ===================================================================
 # Public: clear_leaf_labels
 # ===================================================================
-# Removes efa-leaf-id and efa-az labels from all nodes in a nodegroup,
-# or cluster-wide if no ng_name is given. Useful before re-labeling
-# when instances have been replaced (Spot reclaim, NG reconfig).
+# Removes all topology labels (network-topology/level-N for N=1..8,
+# network-topology/depth, efa-leaf-id, efa-az) from nodes in the
+# given nodegroup, or cluster-wide if no ng_name is given. Useful
+# before re-labeling when instances have been replaced (Spot reclaim,
+# NG reconfig).
+#
+# We strip levels 1..8 unconditionally; AWS fabrics in production are
+# 3 or 4 levels today, 8 is a comfortable upper bound for future depth
+# growth without needing to first inspect each node's depth.
 clear_leaf_labels() {
     local ng_name=${1:-}
 
@@ -313,17 +390,35 @@ clear_leaf_labels() {
             [ -n "${k8s_node}" ] && nodes+=" ${k8s_node}"
         done
     else
-        nodes=$(kubectl get nodes -l efa-leaf-id \
+        # Match either modern (network-topology/level-1) or legacy
+        # (efa-leaf-id) labeled nodes.
+        nodes=$(kubectl get nodes -l 'network-topology/level-1' \
             -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null)
+        local legacy_nodes
+        legacy_nodes=$(kubectl get nodes -l efa-leaf-id \
+            -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null)
+        # Concatenate + dedupe
+        nodes=$(printf '%s\n%s\n' "${nodes}" "${legacy_nodes}" | awk 'NF && !seen[$0]++')
     fi
 
     if [ -z "${nodes}" ]; then
-        echo "No nodes with efa-leaf-id label; nothing to clear"
+        echo "No nodes with topology labels; nothing to clear"
         return 0
     fi
 
+    # Build the label-removal arg list once.
+    local strip_args=(
+        "network-topology/depth-"
+        "efa-leaf-id-"
+        "efa-az-"
+    )
+    local i
+    for i in 1 2 3 4 5 6 7 8; do
+        strip_args+=("network-topology/level-${i}-")
+    done
+
     for n in ${nodes}; do
-        kubectl label node "${n}" efa-leaf-id- efa-az- --overwrite >/dev/null 2>&1 || true
+        kubectl label node "${n}" "${strip_args[@]}" --overwrite >/dev/null 2>&1 || true
         echo "  cleared labels on ${n}"
     done
 }
