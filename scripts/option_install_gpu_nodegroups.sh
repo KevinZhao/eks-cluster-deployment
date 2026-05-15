@@ -385,28 +385,27 @@ plan_pg_for_nodegroup() {
 # ===================================================================
 # Topology gate
 # ===================================================================
-# Verify all instances in a nodegroup share the same network-topology
-# ancestor at the requested level. Uses ec2:DescribeInstanceTopology
-# which returns NetworkNodes[] in spine → leaf order.
+# Verify all nodes in an EKS nodegroup share the same network-topology
+# ancestor at the requested level. Reads AWS-native labels stamped by
+# cloud-controller-manager:
+#   topology.k8s.aws/network-node-layer-1 = top of fabric (spine)
+#   topology.k8s.aws/network-node-layer-N = leaf for an N-deep fabric
 #
-# Network depth varies by fabric: 3 levels for p5 (Euclid),
-# 4 levels for p5en/p6 (10p10u). To stay correct on both, level names
-# refer to *distance from instance* (leaf is closest):
+# Level argument uses *distance from instance* semantics so the same
+# value works on 3-layer (p5/Euclid) and 4-layer (p5en/p6/10p10u) fabrics:
 #
-#   level value | what it means                | NetworkNodes index
-#   ------------|------------------------------|--------------------
-#   L1          | spine (top of fabric)        | [0]      (legacy alias kept)
-#   L2          | one above leaf               | [-2]
-#   L3          | leaf (closest to instance)   | [-1]     (legacy alias kept)
-#   LEAF        | leaf                         | [-1]
-#   LEVEL_1     | leaf                         | [-1]
-#   LEVEL_2     | one above leaf               | [-2]
-#   LEVEL_3     | two above leaf               | [-3]
-#   LEVEL_4     | three above leaf             | [-4]
+#   level value         | meaning                       | maps to AWS-native
+#   --------------------|-------------------------------|--------------------
+#   L1                  | spine (top, legacy alias)     | layer-1
+#   L2                  | one above leaf                | layer-(depth-1)
+#   L3 / LEAF / LEVEL_1 | leaf (closest to instance)    | layer-depth
+#   LEVEL_2             | one above leaf                | layer-(depth-1)
+#   LEVEL_N             | (N-1) above leaf              | layer-(depth-N+1)
 #
-# Old GPU_TOPOLOGY_GATE_LEVEL=L3 calls keep working — they now correctly
-# resolve to the true leaf on 4-layer fabrics (was wrong before, was
-# pinning aggregator instead of leaf on p6).
+# Old callers using GPU_TOPOLOGY_GATE_LEVEL=L3 keep working — on 3-layer
+# fabrics it pinned the leaf, and now on 4-layer fabrics it correctly
+# pins the leaf too (was wrongly pinning aggregator on p6 in the EC2-API
+# implementation that hardcoded NetworkNodes[2]).
 #
 # Args:
 #   $1 ng_name   EKS nodegroup name
@@ -421,21 +420,86 @@ verify_topology() {
         return 0
     fi
 
-    # Map level alias → jq path expression. Using -2/-1 negative indices
-    # makes the path stable across 3-layer (p5) and 4-layer (p5en/p6)
-    # fabrics. ".NetworkNodes[0]" is still spine on both.
-    local level_jq
+    echo "Topology gate: verifying NG=${ng_name} at level=${level} (gate=${gate})"
+
+    # Pull every node in the NG that already has AWS topology labels.
+    # We need the same depth across all nodes; the gate is meaningful
+    # only when every node reports the same fabric depth (mixing 3- and
+    # 4-layer rows is not expected in a single homogeneous NG).
+    local nodes_json
+    nodes_json=$(kubectl get nodes \
+        -l "eks.amazonaws.com/nodegroup=${ng_name},topology.k8s.aws/network-node-layer-1" \
+        -o json 2>/dev/null)
+
+    if [ -z "${nodes_json}" ]; then
+        echo "  WARN: kubectl get nodes failed; skipping gate"
+        return 0
+    fi
+
+    local num_nodes
+    num_nodes=$(echo "${nodes_json}" | jq '.items | length')
+
+    if [ "${num_nodes}" -eq 0 ]; then
+        echo "  WARN: no nodes in NG ${ng_name} have AWS topology labels yet; skipping gate"
+        return 0
+    fi
+
+    if [ "${num_nodes}" -lt 2 ]; then
+        echo "  only ${num_nodes} node(s); topology gate trivially passes"
+        return 0
+    fi
+
+    # Build a uniform per-node topology view: forward layers[] (AWS native)
+    # and reverse-numbered levels[] (our schema). All in one jq pipeline.
+    local topo_json
+    topo_json=$(echo "${nodes_json}" | jq '
+      [.items[]
+       | . as $node
+       | ($node.metadata.labels
+          | to_entries
+          | map(select(.key | test("^topology\\.k8s\\.aws/network-node-layer-[0-9]+$")))
+          | map({
+              n: (.key | capture("network-node-layer-(?<n>[0-9]+)$") | .n | tonumber),
+              v: .value
+            })
+          | sort_by(.n)
+          | map(.v)) as $layers
+       | {
+           node:    $node.metadata.name,
+           az:      ($node.metadata.labels["topology.kubernetes.io/zone"] // "unknown"),
+           depth:   ($layers | length),
+           layers:  $layers,
+           levels:  ($layers | reverse)
+         }
+       | select(.depth > 0)]')
+
+    # All nodes should share a single depth — bail with WARN otherwise.
+    local depths
+    depths=$(echo "${topo_json}" | jq -r '[.[].depth] | unique | join(",")')
+    local depth_count
+    depth_count=$(echo "${depths}" | tr ',' '\n' | wc -l)
+    if [ "${depth_count}" -ne 1 ]; then
+        echo "  WARN: nodes report mixed fabric depths (${depths}); skipping gate"
+        return 0
+    fi
+
+    local depth
+    depth=$(echo "${topo_json}" | jq -r '.[0].depth')
+
+    # Resolve level alias → forward AWS layer index (1-based).
+    # forward index = depth - distance_from_leaf + 1
+    local layer_idx
     case "${level}" in
-        L1)                level_jq=".NetworkNodes[0]"  ;;   # spine (top)
-        L2)                level_jq=".NetworkNodes[-2]" ;;   # one above leaf
-        L3|LEAF|LEVEL_1)   level_jq=".NetworkNodes[-1]" ;;   # leaf
-        LEVEL_2)           level_jq=".NetworkNodes[-2]" ;;
-        LEVEL_3)           level_jq=".NetworkNodes[-3]" ;;
-        LEVEL_4)           level_jq=".NetworkNodes[-4]" ;;
-        LEVEL_5)           level_jq=".NetworkNodes[-5]" ;;
-        LEVEL_6)           level_jq=".NetworkNodes[-6]" ;;
-        LEVEL_7)           level_jq=".NetworkNodes[-7]" ;;
-        LEVEL_8)           level_jq=".NetworkNodes[-8]" ;;
+        L1)              layer_idx=1 ;;                          # spine (top)
+        L2)              layer_idx=$((depth - 1)) ;;             # one above leaf
+        L3|LEAF|LEVEL_1) layer_idx=${depth} ;;                   # leaf
+        LEVEL_2)         layer_idx=$((depth - 1)) ;;
+        LEVEL_3)         layer_idx=$((depth - 2)) ;;
+        LEVEL_4)         layer_idx=$((depth - 3)) ;;
+        LEVEL_5)         layer_idx=$((depth - 4)) ;;
+        LEVEL_6)         layer_idx=$((depth - 5)) ;;
+        LEVEL_7)         layer_idx=$((depth - 6)) ;;
+        LEVEL_8)         layer_idx=$((depth - 7)) ;;
         *)
             echo "ERROR: invalid GPU_TOPOLOGY_GATE_LEVEL='${level}'"
             echo "       Expected: L1 | L2 | L3 | LEAF | LEVEL_1..LEVEL_8"
@@ -443,82 +507,37 @@ verify_topology() {
             ;;
     esac
 
-    echo "Topology gate: verifying NG=${ng_name} at level=${level} (jq=${level_jq}, gate=${gate})"
-
-    # Get ASG name → instance IDs
-    local asg_name
-    asg_name=$(aws eks describe-nodegroup \
-        --cluster-name "${CLUSTER_NAME}" \
-        --nodegroup-name "${ng_name}" \
-        --region "${AWS_REGION}" \
-        --query 'nodegroup.resources.autoScalingGroups[0].name' \
-        --output text 2>/dev/null)
-
-    if [ -z "${asg_name}" ] || [ "${asg_name}" = "None" ]; then
-        echo "  WARN: could not resolve ASG for NG ${ng_name}; skipping gate"
+    if [ "${layer_idx}" -lt 1 ] || [ "${layer_idx}" -gt "${depth}" ]; then
+        echo "  WARN: level=${level} resolves to layer-${layer_idx} but fabric depth is ${depth}; out of range, skipping gate"
         return 0
     fi
 
-    local instance_ids
-    instance_ids=$(aws autoscaling describe-auto-scaling-groups \
-        --auto-scaling-group-names "${asg_name}" \
-        --region "${AWS_REGION}" \
-        --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
-        --output text)
-
-    if [ -z "${instance_ids}" ]; then
-        echo "  WARN: no InService instances in ASG ${asg_name}; skipping gate"
-        return 0
-    fi
-
-    local num_instances
-    num_instances=$(echo "${instance_ids}" | wc -w)
-
-    if [ "${num_instances}" -lt 2 ]; then
-        echo "  only ${num_instances} instance(s); topology gate trivially passes"
-        return 0
-    fi
-
-    # Query topology
-    local topology_json
-    topology_json=$(aws ec2 describe-instance-topology \
-        --region "${AWS_REGION}" \
-        --instance-ids ${instance_ids} \
-        --output json 2>/dev/null)
-
-    if [ -z "${topology_json}" ]; then
-        echo "  WARN: describe-instance-topology returned empty; skipping gate"
-        return 0
-    fi
-
-    # Count unique nodes at requested level
+    # Count unique values at the resolved layer index across all nodes.
+    # layers[] is 0-indexed in jq; AWS layer-1 = layers[0].
     local unique_nodes
-    unique_nodes=$(echo "${topology_json}" \
-        | jq -r ".Instances[] | (${level_jq} // \"__missing__\")" \
+    unique_nodes=$(echo "${topo_json}" \
+        | jq -r --argjson idx "$((layer_idx - 1))" \
+            '.[] | (.layers[$idx] // "__missing__")' \
         | sort -u)
-    # grep -c . counts non-empty lines (wc -l would count 1 for empty input)
     local unique_count
     unique_count=$(printf '%s\n' "${unique_nodes}" | grep -c . || true)
 
     if [ "${unique_count}" -eq 0 ]; then
-        echo "  WARN: topology API returned 0 network nodes at level ${level}; skipping gate"
+        echo "  WARN: no topology layer-${layer_idx} values found across nodes; skipping gate"
         return 0
     fi
 
-    # Print the full topology map for operator visibility.
-    # Lay out from leaf (closest) to spine (farthest) so the line is
-    # readable regardless of fabric depth (3 or 4 levels).
-    echo "  Topology map (depth-aware, leaf→spine):"
-    echo "${topology_json}" \
-        | jq -r '.Instances[]
-                 | "    \(.InstanceId)  AZ=\(.AvailabilityZone)  depth=\(.NetworkNodes | length)  "
-                   + (.NetworkNodes | reverse | to_entries
-                      | map("level-\(.key + 1)=\(.value)") | join("  "))'
+    # Operator-friendly map: leaf-first level-N layout regardless of depth.
+    echo "  Topology map (depth=${depth}, leaf→spine):"
+    echo "${topo_json}" \
+        | jq -r '.[]
+                 | "    \(.node)  AZ=\(.az)  depth=\(.depth)  "
+                   + (.levels | to_entries | map("level-\(.key + 1)=\(.value)") | join("  "))'
 
     if [ "${unique_count}" -gt 1 ]; then
         echo ""
-        echo "  ❌ Topology gate FAILED: ${num_instances} instances spread across ${unique_count} ${level} nodes"
-        echo "     Unique ${level} nodes:"
+        echo "  ❌ Topology gate FAILED: ${num_nodes} nodes spread across ${unique_count} ${level} (layer-${layer_idx}) values"
+        echo "     Unique values:"
         echo "${unique_nodes}" | sed 's/^/       /'
         echo ""
 
@@ -527,7 +546,6 @@ verify_topology() {
                 # Scale desired to 0 to release the misplaced capacity.
                 # EKS update-nodegroup-config rejects maxSize=0 (min valid is 1),
                 # so we keep maxSize=1 and only zero minSize+desiredSize.
-                # Operator decides whether to delete-nodegroup or retry.
                 echo "  strict mode → scaling NG ${ng_name} desired=0 to release bad placement"
                 aws eks update-nodegroup-config \
                     --cluster-name "${CLUSTER_NAME}" \
@@ -545,7 +563,7 @@ verify_topology() {
         esac
     fi
 
-    echo "  ✅ Topology gate PASSED: all ${num_instances} instance(s) share the same ${level} node"
+    echo "  ✅ Topology gate PASSED: all ${num_nodes} node(s) share the same ${level} (layer-${layer_idx})"
     return 0
 }
 

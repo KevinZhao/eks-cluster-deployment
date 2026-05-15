@@ -1,130 +1,178 @@
 #!/bin/bash
 # topology_labeling_lib.sh — EFA network-topology labeling library
 #
-# Label K8s nodes with their AWS L3 (leaf) network-topology node ID
-# so that multi-node workloads (PD-disagg, NCCL all-reduce, UCCL-EP,
-# DeepEP alltoall) can pin themselves to a single leaf via nodeAffinity.
+# Label K8s nodes with depth-aware network-topology IDs so multi-node
+# workloads (NCCL all-reduce, PD-disagg, UCCL-EP, DeepEP alltoall) can
+# pin themselves to a single leaf via nodeAffinity.
 #
-# Real-world: cluster placement groups on p5en/p6-class instances
-# pack only to L2 (aggregator), not L3 (leaf). This lib fills the gap
-# by reading DescribeInstanceTopology post-placement and stamping the
-# true leaf ID onto each K8s node.
+# Source of truth (since EKS 1.31+): the cloud-controller-manager
+# automatically writes these labels on every joined node:
+#   topology.k8s.aws/network-node-layer-1 = <spine,        AWS index 0>
+#   topology.k8s.aws/network-node-layer-2 = <aggregator>
+#   topology.k8s.aws/network-node-layer-3 = <leaf on 3-layer / agg on 4-layer>
+#   topology.k8s.aws/network-node-layer-4 = <leaf on 4-layer fabric only>
+#   topology.k8s.aws/zone-id              = <usw2-az1, etc.>
 #
-# This lib is intentionally transport-agnostic: sourced by the ASG
-# bootstrap script (option_install_gpu_nodegroups.sh), by the standalone
-# re-labeling tool (option_label_nodegroup_topology.sh), and in the
-# future by a K8s DaemonSet / node-init container when a Karpenter-like
-# pod-driven provisioner enters the picture.
+# AWS uses "layer-1 = top of fabric" (forward index). Workloads that want
+# distance-from-instance semantics (level-1 = closest = leaf) need a
+# reverse-numbered overlay so the same nodeAffinity YAML works on both
+# 3-layer (p5/Euclid) and 4-layer (p5en/p6 on 10p10u) fabrics.
 #
-# Required env: CLUSTER_NAME, AWS_REGION, KUBECONFIG
-# Required tools: aws, jq, kubectl
+# Labels written by this lib (overlay on top of AWS-native):
+#   network-topology/depth=<3|4|5>             length of layer-N chain
+#   network-topology/level-1=<leaf-id>         distance-1, always present
+#   network-topology/level-2=<id>              distance-2, etc.
+#   network-topology/level-N=<id>              distance-N, only if depth>=N
+#   efa-leaf-id=<level-1>                      back-compat alias
+#   efa-az=<us-west-2c>                        back-compat alias
+#
+# Mapping: our level-N == AWS layer-(depth - N + 1)
+#   depth=3 (p5):    level-1 ← layer-3, level-2 ← layer-2, level-3 ← layer-1
+#   depth=4 (p6):    level-1 ← layer-4, level-2 ← layer-3, level-3 ← layer-2, level-4 ← layer-1
+#
+# Why this is better than calling DescribeInstanceTopology ourselves:
+#   - kubectl-only: no eks:DescribeNodegroup, ec2:DescribeInstanceTopology,
+#     autoscaling:DescribeAutoScalingGroups required (some SCP-locked
+#     environments forbid these)
+#   - one round-trip: pull all node labels in one `kubectl get nodes` call
+#   - already populated when node Ready: cloud-controller-manager writes
+#     these on Initialize, so they're up well before our labeling runs
+#   - tracks future fabric depth growth automatically (layer-5+ supported)
+#
+# Sourced by: option_install_gpu_nodegroups.sh, option_label_nodegroup_topology.sh
+#
+# Required env:   CLUSTER_NAME, AWS_REGION, KUBECONFIG
+# Required tools: kubectl, jq  (aws CLI used only by verify_topology fallback)
 
 set -e
 set -o pipefail
 
+# Maximum depth this library supports for label expansion / clearing. AWS
+# fabrics are 3 or 4 today; 8 is a comfortable upper bound that survives a
+# fabric-replacement event without code changes.
+TOPO_MAX_DEPTH="${TOPO_MAX_DEPTH:-8}"
+
 # ===================================================================
-# Internal: resolve ASG → InService instance IDs
+# Internal: list K8s nodes belonging to an EKS nodegroup
 # ===================================================================
-_topo_get_ng_instance_ids() {
+# Echoes node names, one per line. Uses the EKS-managed label
+# `eks.amazonaws.com/nodegroup`, which managed node groups stamp on every
+# joined node. Returns empty if no nodes match.
+_topo_get_ng_node_names() {
     local ng_name=$1
-
-    local asg_name
-    asg_name=$(aws eks describe-nodegroup \
-        --cluster-name "${CLUSTER_NAME}" \
-        --nodegroup-name "${ng_name}" \
-        --region "${AWS_REGION}" \
-        --query 'nodegroup.resources.autoScalingGroups[0].name' \
-        --output text 2>/dev/null)
-
-    if [ -z "${asg_name}" ] || [ "${asg_name}" = "None" ]; then
-        return 1
-    fi
-
-    aws autoscaling describe-auto-scaling-groups \
-        --auto-scaling-group-names "${asg_name}" \
-        --region "${AWS_REGION}" \
-        --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
-        --output text
+    kubectl get nodes \
+        -l "eks.amazonaws.com/nodegroup=${ng_name}" \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
 }
 
 # ===================================================================
-# Internal: wait for N instances to appear as K8s nodes (joined)
+# Internal: wait until N nodes in an NG have AWS topology labels
 # ===================================================================
-# Returns 0 if all instances resolve to K8s nodes within timeout, 1 otherwise.
-_topo_wait_k8s_join() {
-    local expected_count=$1
-    shift
-    local instance_ids=("$@")
+# AWS cloud-controller-manager writes topology.k8s.aws/network-node-layer-1
+# on every node when it Initializes. We wait for that label, not just for
+# the node to exist — labeling without it would yield a no-op.
+#
+# Returns 0 once at least one node in the NG carries layer-1, 1 on timeout.
+_topo_wait_aws_topology_labels() {
+    local ng_name=$1
     local timeout=${TOPO_K8S_JOIN_TIMEOUT_SEC:-300}
 
     local deadline=$(( $(date +%s) + timeout ))
     while [ $(date +%s) -lt ${deadline} ]; do
-        local joined=0
-        for inst_id in "${instance_ids[@]}"; do
-            if kubectl get nodes -o json 2>/dev/null \
-                | jq -e --arg id "${inst_id}" \
-                    '.items[] | select(.spec.providerID | endswith($id))' \
-                    >/dev/null 2>&1; then
-                joined=$((joined + 1))
-            fi
-        done
-
-        if [ "${joined}" -ge "${expected_count}" ]; then
+        # Count nodes in this NG that already have AWS-native layer-1 label
+        local labeled
+        labeled=$(kubectl get nodes \
+            -l "eks.amazonaws.com/nodegroup=${ng_name},topology.k8s.aws/network-node-layer-1" \
+            -o name 2>/dev/null | wc -l)
+        if [ "${labeled}" -gt 0 ]; then
             return 0
         fi
 
-        echo "  waiting for K8s node join: ${joined}/${expected_count}" >&2
+        # Also tolerate nodes still joining: just count any nodes in NG
+        local total
+        total=$(kubectl get nodes \
+            -l "eks.amazonaws.com/nodegroup=${ng_name}" \
+            -o name 2>/dev/null | wc -l)
+        echo "  waiting for AWS topology labels: ${labeled}/${total} nodes have topology.k8s.aws/network-node-layer-1" >&2
         sleep 10
     done
     return 1
 }
 
 # ===================================================================
-# Internal: query DescribeInstanceTopology for a set of instances
+# Internal: read AWS-native topology labels from a node, emit our schema
 # ===================================================================
-# Echoes a JSON array, one entry per instance:
+# Echoes a JSON array, one entry per node, with both the AWS-native
+# layers[] (forward: layers[0]=spine) and the reverse-numbered levels[]
+# (levels[0]=leaf, our schema). Includes depth and az for convenience.
+#
+# Args:
+#   $1 ng_name (used as kubectl label selector)
+#
+# Output:
 #   [{
-#     id:      "i-xxx",
-#     az:      "us-west-2c",
-#     zone_id: "usw2-az1",
-#     depth:   3 | 4 | 5,                       # length of NetworkNodes[]
-#     levels:  ["nn-leaf","nn-l2","nn-l3", ...] # reversed: levels[0]=leaf
-#     leaf:    "nn-leaf"                        # convenience alias = levels[0]
+#     node:    "ip-10-0-12-145.us-west-2.compute.internal",
+#     az:      "us-west-2b",
+#     zone_id: "usw2-az2",
+#     depth:   4,
+#     layers:  ["nn-spine", "nn-bg", "nn-agg", "nn-leaf"],   # AWS forward
+#     levels:  ["nn-leaf", "nn-agg", "nn-bg", "nn-spine"],   # ours (reverse)
+#     leaf:    "nn-leaf"
 #   }, ...]
 #
-# Reversing NetworkNodes[] is the key trick: it makes "level N" mean
-# "N levels up from the instance" regardless of fabric depth.
-#   p5  (3-layer):   NetworkNodes=[spine, aggregator, leaf]
-#                    levels=[leaf, aggregator, spine]
-#   p6/p5en (4-layer): NetworkNodes=[spine, BG, aggregator, leaf]
-#                    levels=[leaf, aggregator, BG, spine]
-# Workloads target levels[0] for tightest affinity (same leaf), levels[1]
-# for next-best, etc. — same YAML works on both fabrics.
-_topo_query() {
-    local instance_ids="$*"
-    [ -z "${instance_ids}" ] && return 0
+# The jq pipeline:
+#   1. select nodes that have at least topology.k8s.aws/network-node-layer-1
+#   2. for each such node, collect labels matching ^topology.k8s.aws/network-node-layer-([0-9]+)$
+#      into a sparse array indexed by N (1-based)
+#   3. compact + sort by N → forward layers[]
+#   4. reverse → levels[]
+_topo_query_from_k8s_labels() {
+    local ng_name=$1
 
-    local raw
-    raw=$(aws ec2 describe-instance-topology \
-        --region "${AWS_REGION}" \
-        --instance-ids ${instance_ids} \
-        --output json 2>/dev/null)
-
-    [ -z "${raw}" ] && return 0
-
-    echo "${raw}" | jq '[.Instances[] | {
-        id:      .InstanceId,
-        az:      .AvailabilityZone,
-        zone_id: .ZoneId,
-        depth:   (.NetworkNodes | length),
-        levels:  (.NetworkNodes | reverse),
-        leaf:    (.NetworkNodes | last)
-    }]'
+    kubectl get nodes \
+        -l "eks.amazonaws.com/nodegroup=${ng_name},topology.k8s.aws/network-node-layer-1" \
+        -o json 2>/dev/null \
+        | jq '
+          [.items[]
+           | . as $node
+           | ($node.metadata.labels
+              | to_entries
+              | map(select(.key | test("^topology\\.k8s\\.aws/network-node-layer-[0-9]+$")))
+              | map({
+                  n: (.key | capture("network-node-layer-(?<n>[0-9]+)$") | .n | tonumber),
+                  v: .value
+                })
+              | sort_by(.n)
+              | map(.v)) as $layers
+           | {
+               node:    $node.metadata.name,
+               az:      ($node.metadata.labels["topology.kubernetes.io/zone"]
+                         // $node.metadata.labels["failure-domain.beta.kubernetes.io/zone"]
+                         // "unknown"),
+               zone_id: ($node.metadata.labels["topology.k8s.aws/zone-id"] // "unknown"),
+               depth:   ($layers | length),
+               layers:  $layers,
+               levels:  ($layers | reverse),
+               leaf:    ($layers | last)
+             }
+           | select(.depth > 0)]'
 }
 
 # ===================================================================
-# Internal: resolve instance_id → K8s node name
+# Internal: backwards-compatible alias used by clear_leaf_labels
 # ===================================================================
+# Old code path used to resolve ASG → instance IDs → K8s node name.
+# clear_leaf_labels now scopes via NG label directly, so this helper
+# is unused by the modern code. Kept as a thin wrapper for any out-of-
+# tree callers that were sourcing this lib.
+_topo_get_ng_instance_ids() {
+    local ng_name=$1
+    kubectl get nodes \
+        -l "eks.amazonaws.com/nodegroup=${ng_name}" \
+        -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' 2>/dev/null \
+        | awk -F/ 'NF{print $NF}'
+}
+
 _topo_k8s_node_for_instance() {
     local inst_id=$1
     kubectl get nodes -o json 2>/dev/null \
@@ -169,58 +217,41 @@ label_nodegroup_by_leaf() {
 
     echo "Topology labeling: NG=${ng_name} mode=${mode}"
 
-    local instance_ids
-    instance_ids=$(_topo_get_ng_instance_ids "${ng_name}") || {
-        echo "  WARN: could not resolve ASG for NG ${ng_name}; skipping"
-        return 0
-    }
-
-    if [ -z "${instance_ids}" ]; then
-        echo "  no InService instances in NG ${ng_name}; skipping"
-        return 0
+    # Wait for AWS-native topology labels (cloud-controller-manager writes
+    # them on node Initialize). Without these, we have nothing to overlay.
+    if ! _topo_wait_aws_topology_labels "${ng_name}"; then
+        echo "  WARN: timed out waiting for AWS topology labels on NG ${ng_name}; labeling what's available" >&2
     fi
 
-    # shellcheck disable=SC2206
-    local inst_arr=(${instance_ids})
-    local inst_count=${#inst_arr[@]}
-    echo "  found ${inst_count} InService instance(s): ${instance_ids}"
-
-    # Ensure K8s nodes have joined (labeling needs node objects to exist)
-    if ! _topo_wait_k8s_join "${inst_count}" "${inst_arr[@]}"; then
-        echo "  WARN: not all instances joined K8s within timeout; labeling what's available" >&2
-    fi
-
-    # Query topology
+    # Query node topology directly from K8s labels
     local topo_json
-    topo_json=$(_topo_query ${instance_ids})
+    topo_json=$(_topo_query_from_k8s_labels "${ng_name}")
     if [ -z "${topo_json}" ] || [ "${topo_json}" = "null" ]; then
-        echo "  ERROR: DescribeInstanceTopology returned empty; cannot label"
+        echo "  ERROR: no nodes in NG ${ng_name} have AWS topology labels; cannot label"
         return 1
     fi
 
-    # Iterate per instance. Each line emitted by jq is:
-    #   <inst_id> <az> <depth> <level1> <level2> ... <levelN>
-    # — depth dictates how many level-* labels to stamp.
+    local node_count
+    node_count=$(echo "${topo_json}" | jq 'length')
+    if [ "${node_count}" -eq 0 ]; then
+        echo "  no nodes with topology labels in NG ${ng_name}; skipping"
+        return 0
+    fi
+    echo "  found ${node_count} node(s) with AWS topology labels"
+
+    # Iterate per node. Each line emitted by jq is:
+    #   <node> <az> <depth> <level1>,<level2>,...,<levelN>
     local labeled_count=0
-    local missing_count=0
-    while IFS=$'\t' read -r inst_id az depth levels_csv; do
-        [ -z "${inst_id}" ] && continue
+    while IFS=$'\t' read -r k8s_node az depth levels_csv; do
+        [ -z "${k8s_node}" ] && continue
 
         if [ -z "${depth}" ] || [ "${depth}" = "0" ] || [ "${depth}" = "null" ]; then
-            echo "  WARN: ${inst_id} has no NetworkNodes in API response" >&2
+            echo "  WARN: ${k8s_node} has no AWS topology layers (skipping)" >&2
             continue
         fi
 
-        local k8s_node
-        k8s_node=$(_topo_k8s_node_for_instance "${inst_id}")
-        if [ -z "${k8s_node}" ]; then
-            echo "  WARN: K8s node for ${inst_id} not found (not yet joined?)" >&2
-            missing_count=$((missing_count + 1))
-            continue
-        fi
-
-        # Build the label arg list. Levels are CSV-encoded so we can keep
-        # the read loop on a single line per instance.
+        # Build the label arg list. levels_csv is reverse-numbered already
+        # (levels[0] = leaf), so emit level-(i+1) for each item.
         local label_args=(
             "network-topology/depth=${depth}"
             "efa-az=${az}"
@@ -238,7 +269,6 @@ label_nodegroup_by_leaf() {
             [ "${i}" = "1" ] && leaf_id="${lvl}"
             i=$((i + 1))
         done
-        # leaf-id alias (= level-1) for back-compat
         if [ -n "${leaf_id}" ]; then
             label_args+=("efa-leaf-id=${leaf_id}")
         fi
@@ -251,10 +281,10 @@ label_nodegroup_by_leaf() {
             labeled_count=$((labeled_count + 1))
         fi
     done < <(echo "${topo_json}" \
-        | jq -r '.[] | [.id, .az, .depth, (.levels | join(","))] | @tsv')
+        | jq -r '.[] | [.node, .az, .depth, (.levels | join(","))] | @tsv')
 
     if [ "${mode}" = "label" ]; then
-        echo "  labeled ${labeled_count} node(s) ; ${missing_count} instance(s) had no K8s node"
+        echo "  labeled ${labeled_count} node(s)"
     fi
 
     return 0
