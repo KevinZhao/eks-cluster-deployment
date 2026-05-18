@@ -29,7 +29,12 @@
 # Shell snippet that defines detect_ebs_data_disk() on the node.
 # Selects the first EBS-model NVMe device with no partitions.
 # The root disk is always partitioned (nvmeNn1p1), so it's excluded.
-EBS_DATA_DISK_DETECT_SNIPPET=$(cat <<'EBS_DETECT_SNIPPET'
+# bash 3.2 (macOS) has a parser bug: it incorrectly parses `;;` inside a
+# heredoc that is itself inside a command substitution $(...). Use a temp
+# file to build the snippet so the heredoc is at the top level of the file,
+# which all bash versions handle correctly.
+_snippet_file=$(mktemp /tmp/ebs_detect_snippet.XXXXXX)
+cat > "$_snippet_file" <<'EBS_DETECT_SNIPPET'
 # detect_ebs_data_disk <timeout_seconds>
 # Prints the detected EBS data disk device path (e.g. /dev/nvme1n1) to stdout.
 # Returns non-zero if no EBS data disk is found within the timeout.
@@ -67,5 +72,7 @@ detect_ebs_data_disk() {
   return 1
 }
 EBS_DETECT_SNIPPET
-)
+EBS_DATA_DISK_DETECT_SNIPPET=$(cat "$_snippet_file")
+rm -f "$_snippet_file"
+unset _snippet_file
 export EBS_DATA_DISK_DETECT_SNIPPET

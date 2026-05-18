@@ -176,7 +176,8 @@ fi
 
 # 9. 可选组件配置（默认值）
 normalize_bool() {
-    local val="${1,,}"  # 转换为小写
+    local val
+    val=$(echo "$1" | tr '[:upper:]' '[:lower:]')
     case "$val" in
         true|1|yes|y) echo "true" ;;
         *) echo "false" ;;
@@ -203,7 +204,7 @@ fi
 # 10. 集群访问模式配置
 # CLUSTER_MODE: private（默认）或 public
 CLUSTER_MODE="${CLUSTER_MODE:-private}"
-CLUSTER_MODE="${CLUSTER_MODE,,}"  # 转小写
+CLUSTER_MODE=$(echo "$CLUSTER_MODE" | tr '[:upper:]' '[:lower:]')
 
 if [ "${CLUSTER_MODE}" != "private" ] && [ "${CLUSTER_MODE}" != "public" ]; then
     error "Invalid CLUSTER_MODE '${CLUSTER_MODE}'. Must be 'private' or 'public'."
@@ -218,7 +219,7 @@ if [ -z "${VPC_ENDPOINTS_MODE:-}" ]; then
         VPC_ENDPOINTS_MODE="full"
     fi
 fi
-VPC_ENDPOINTS_MODE="${VPC_ENDPOINTS_MODE,,}"  # 转小写
+VPC_ENDPOINTS_MODE=$(echo "$VPC_ENDPOINTS_MODE" | tr '[:upper:]' '[:lower:]')
 
 if [ "${VPC_ENDPOINTS_MODE}" != "full" ] && [ "${VPC_ENDPOINTS_MODE}" != "minimal" ]; then
     error "Invalid VPC_ENDPOINTS_MODE '${VPC_ENDPOINTS_MODE}'. Must be 'full' or 'minimal'."

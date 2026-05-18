@@ -670,6 +670,28 @@ delete_existing_nodegroup() {
     done
 
     echo "✓ All existing nodegroups deleted"
+
+    # 清理可能残留的 ROLLBACK_COMPLETE / CREATE_FAILED CloudFormation stacks。
+    # eksctl create nodegroup 会扫描 CFN stacks，发现同名 stack（即使已 rollback）
+    # 就把该 nodegroup 列为"existing"并跳过创建，导致节点永远无法建出来。
+    for NG_NAME in eks-utils eks-utils-arm64 eks-utils-x86; do
+        CFN_STACK="eksctl-${CLUSTER_NAME}-nodegroup-${NG_NAME}"
+        CFN_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${CFN_STACK}" --region "${AWS_REGION}" \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "")
+        case "${CFN_STATUS}" in
+            ROLLBACK_COMPLETE|CREATE_FAILED|DELETE_FAILED)
+                echo "Cleaning up leftover CloudFormation stack ${CFN_STACK} (${CFN_STATUS})..."
+                aws cloudformation delete-stack \
+                    --stack-name "${CFN_STACK}" --region "${AWS_REGION}"
+                aws cloudformation wait stack-delete-complete \
+                    --stack-name "${CFN_STACK}" --region "${AWS_REGION}" 2>/dev/null || true
+                echo "✓ Stack ${CFN_STACK} deleted"
+                ;;
+            "") ;;  # stack 不存在，正常
+            *) ;;   # ACTIVE 状态的 stack 不删
+        esac
+    done
 }
 
 # 创建节点组（引用Launch Template）
@@ -847,6 +869,53 @@ create_eks_node_iam_role
 # Validate IAM role and instance profile were created successfully
 validate_iam_role_exists "${NODE_ROLE_NAME}"
 validate_instance_profile_exists "${INSTANCE_PROFILE_NAME}"
+
+# 步骤2.5：确保 aws-auth configmap 包含节点 IAM role 映射
+# 集群使用 API_AND_CONFIG_MAP 认证模式，节点 bootstrap（nodeadm）走 CONFIG_MAP
+# 路径。eksctl 在 instanceRoleARN 模式下不会自动写入 aws-auth，必须手动确保。
+echo ""
+echo "Step 2.5: Ensuring aws-auth configmap has node IAM role mapping..."
+NODE_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${NODE_ROLE_NAME}"
+
+# 读取当前 mapRoles
+CURRENT_MAP=$(kubectl get configmap aws-auth -n kube-system \
+    -o jsonpath='{.data.mapRoles}' 2>/dev/null || echo "")
+
+if echo "${CURRENT_MAP}" | grep -q "${NODE_ROLE_ARN}"; then
+    echo "✓ Node IAM role already present in aws-auth"
+else
+    echo "  Adding ${NODE_ROLE_ARN} to aws-auth..."
+
+    # 构建新增条目
+    NEW_ENTRY="- rolearn: ${NODE_ROLE_ARN}
+  username: system:node:{{EC2PrivateDNSName}}
+  groups:
+    - system:bootstrappers
+    - system:nodes"
+
+    # 拼接（空或空数组时直接用新条目，否则追加）
+    case "${CURRENT_MAP}" in
+        ""|"[]"|"[ ]") NEW_MAP="${NEW_ENTRY}" ;;
+        *)              NEW_MAP="${CURRENT_MAP}
+${NEW_ENTRY}" ;;
+    esac
+
+    # 写入临时文件用 kubectl apply（避免多行字符串的 shell 转义问题）
+    _AUTH_PATCH=$(mktemp /tmp/aws-auth-patch.XXXXXX.yaml)
+    cat > "${_AUTH_PATCH}" <<AUTHEOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+$(echo "${NEW_MAP}" | sed 's/^/    /')
+AUTHEOF
+    kubectl apply -f "${_AUTH_PATCH}" 2>&1
+    rm -f "${_AUTH_PATCH}"
+    echo "✓ Node IAM role added to aws-auth"
+fi
 
 # 步骤3：获取最新的EKS optimized AMI
 echo ""
