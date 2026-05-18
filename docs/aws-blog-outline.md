@@ -1,18 +1,26 @@
 # 企业级 EKS 集群生产环境配置最佳实践
 
-在帮助企业客户将工作负载迁移到 Amazon EKS 的过程中，AWS 解决方案架构师团队总结了一套经过验证的最佳实践。本文将分享如何在 **约 30 分钟（26–35 分钟）内**部署一个满足企业级安全合规要求的生产就绪 EKS 集群，并提供完整的自动化部署脚本。
+**摘要：** 本文分享 AWS 解决方案架构师团队在帮助企业客户将工作负载迁移到 Amazon EKS 过程中总结的一套生产环境部署最佳实践。文章从企业客户面临的五类共性挑战出发，介绍如何在约 30 分钟内部署一个满足企业级安全合规要求的生产就绪 EKS 集群，覆盖私有 API Endpoint、VPC Endpoints 全连通、Pod Identity 简化 IAM、容器运行时存储隔离、四类 CSI Driver 全场景存储等关键设计决策，并提供完整的幂等、非交互、CI/CD 友好的自动化部署脚本。
 
-> **本文亮点**
-> - 使用 Pod Identity 替代 IRSA，简化 IAM 管理
-> - 容器运行时存储与系统盘隔离，提升节点稳定性
-> - 支持 EBS、EFS、FSx、S3 四种存储场景
-> - 可选模块化扩展：Karpenter、GPU 节点组（详见本系列第二篇）
-> - 私有 API Endpoint 满足高安全要求的企业级场景
-> - 全程脚本化部署，幂等且 CI/CD 友好
+**目录**
+
+01 [一、企业客户面临的挑战：五类共性问题](#section1)
+02 [二、整体架构概览：私有集群的全景视图](#section2)
+03 [三、私有 API Endpoint：纵深防御的网络架构](#section3)
+04 [四、VPC CNI 网络优化：精细化 IP 预热](#section4)
+05 [五、Pod Identity：简化 IAM 权限管理](#section5)
+06 [六、容器运行时存储隔离：提升节点稳定性](#section6)
+07 [七、全场景存储支持：四种 CSI Driver](#section7)
+08 [八、自动化部署脚本：幂等、非交互、CI/CD 友好](#section8)
+09 [九、可选组件：GPU 节点组与 Karpenter](#section9)
+10 [十、运维与故障排查：部署后的快速验证](#section10)
+11 [十一、生产环境部署检查清单：上线前自检](#section11)
+12 [十二、成本优化建议：在安全与预算之间取得平衡](#section12)
+13 [十三、总结：一套可复制的企业级 EKS 部署方案](#section13)
 
 ---
 
-## 企业客户面临的挑战：五类共性问题
+## 一、企业客户面临的挑战：五类共性问题
 
 在与众多企业客户的合作中，生产环境 EKS 部署面临五类共性问题：
 
@@ -28,7 +36,7 @@
 
 本文将逐一介绍这些问题的解决方案，并最终将所有方案沉淀为标准化的自动化部署脚本。
 
-## 整体架构概览：私有集群的全景视图
+## 二、整体架构概览：私有集群的全景视图
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
@@ -105,7 +113,7 @@
 
 ---
 
-## 私有 API Endpoint：纵深防御的网络架构
+## 三、私有 API Endpoint：纵深防御的网络架构
 
 EKS 集群的 API Server 访问控制有两种主流方案：
 
@@ -136,7 +144,7 @@ EKS 集群的 API Server 访问控制有两种主流方案：
 
 ---
 
-## VPC CNI 网络优化：精细化 IP 预热
+## 四、VPC CNI 网络优化：精细化 IP 预热
 
 Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的真实 IP 地址，使 Pod 能够直接与 VPC 内的其他资源通信。本方案对 VPC CNI 做了一项关键调优：
 
@@ -168,11 +176,11 @@ POD_SECURITY_GROUP_ENFORCING_MODE=standard
 
 ---
 
-## Pod Identity：简化 IAM 权限管理
+## 五、Pod Identity：简化 IAM 权限管理
 
 传统的 IRSA（IAM Roles for Service Accounts）方案虽然解决了 Pod 级别的 IAM 权限问题，但存在明显的管理负担：每个集群需要配置独立的 OIDC Provider，IAM 信任策略中包含集群特定的 OIDC URL，跨账户配置繁琐，且 OIDC Provider 可能成为单点故障。
 
-**EKS Pod Identity** 是 AWS 于 2023 年底推出并持续演进的方案，如今已成为 EKS 上推荐的 Pod 级 IAM 权限管理方式，它从根本上简化了这一流程：
+**EKS Pod Identity** 是 EKS 当前推荐的 Pod 级 IAM 权限管理方式，它从根本上简化了这一流程：
 
 | 维度 | IRSA | Pod Identity |
 |------|------|--------------|
@@ -198,7 +206,7 @@ create_pod_identity_association "my-namespace" "my-service-account" "$ROLE_ARN"
 
 ---
 
-## 容器运行时存储隔离：提升节点稳定性
+## 六、容器运行时存储隔离：提升节点稳定性
 
 这是一个经常被忽视但影响巨大的问题。在默认配置下，containerd 将所有容器镜像和运行时数据存储在系统根卷的 `/var/lib/containerd` 目录。当应用频繁拉取大型镜像或产生大量容器日志时，会与操作系统的 I/O 竞争，严重时会导致根卷空间耗尽，节点进入 `DiskPressure` 甚至 `NotReady` 状态。
 
@@ -230,7 +238,7 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 ---
 
-## 全场景存储支持：四种 CSI Driver
+## 七、全场景存储支持：四种 CSI Driver
 
 现代云原生应用对存储有多样化的需求。本方案通过四种 CSI Driver 实现全场景覆盖：
 
@@ -255,7 +263,7 @@ FSx for Lustre 与 S3 Express One Zone 在 GPU 工作负载链路上的选型策
 
 ---
 
-## 自动化部署脚本：幂等、非交互、CI/CD 友好
+## 八、自动化部署脚本：幂等、非交互、CI/CD 友好
 
 将上述所有解决方案整合为一套**幂等、非交互、CI/CD 友好**的部署脚本。
 
@@ -346,7 +354,7 @@ export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
 ---
 
-## 可选组件：GPU 节点组与 Karpenter
+## 九、可选组件：GPU 节点组与 Karpenter
 
 本方案的核心脚本(1–7)完成后即得到一套通用的生产级 EKS 集群。在此之上，可按需叠加两类上层能力：
 
@@ -358,7 +366,7 @@ export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
 ---
 
-## 运维与故障排查：部署后的快速验证
+## 十、运维与故障排查：部署后的快速验证
 
 部署完成后，可以使用以下命令验证集群状态：
 
@@ -381,27 +389,27 @@ kubectl get storageclass
 
 ---
 
-## 生产环境部署检查清单：上线前自检
+## 十一、生产环境部署检查清单：上线前自检
 
 **脚本默认已启用的安全基线**（无需手动操作，核对一下即可）：
 
-- [x] 私有 API Endpoint（API Server 不暴露公网）
-- [x] Pod Identity 替代 IRSA（简化 IAM 管理）
-- [x] VPC Endpoints 完整配置（13 个 Interface + 1 个 S3 Gateway）
-- [x] EBS 卷加密（使用 `alias/aws/ebs` 管理的 KMS 密钥）
-- [x] IMDSv2 强制使用（所有节点 Launch Template 设置 `HttpTokens=required`）
-- [x] 容器运行时存储已从系统根卷剥离（LVM `/var/lib/containerd`）
+* 私有 API Endpoint（API Server 不暴露公网）
+* Pod Identity 替代 IRSA（简化 IAM 管理）
+* VPC Endpoints 完整配置（13 个 Interface + 1 个 S3 Gateway）
+* EBS 卷加密（使用 `alias/aws/ebs` 管理的 KMS 密钥）
+* IMDSv2 强制使用（所有节点 Launch Template 设置 `HttpTokens=required`）
+* 容器运行时存储已从系统根卷剥离（LVM `/var/lib/containerd`）
 
 **需要按业务自行确认的项**：
 
-- [ ] 安全组最小权限原则（默认允许同 VPC 访问，根据业务收敛至具体来源）
-- [ ] CSI Drivers 按需安装（EBS 默认安装；EFS / FSx / S3 按需启用）
-- [ ] 日志与审计（CloudWatch Logs、审计日志投递到合规存储）
-- [ ] Kubernetes RBAC 策略（按团队/namespace 划分权限）
+* 安全组最小权限原则（默认允许同 VPC 访问，根据业务收敛至具体来源）
+* CSI Drivers 按需安装（EBS 默认安装；EFS / FSx / S3 按需启用）
+* 日志与审计（CloudWatch Logs、审计日志投递到合规存储）
+* Kubernetes RBAC 策略（按团队/namespace 划分权限）
 
 ---
 
-## 成本优化建议：在安全与预算之间取得平衡
+## 十二、成本优化建议：在安全与预算之间取得平衡
 
 **使用 Graviton 实例**：Graviton 处理器相较同等 x86 实例最高可提升 40% 性价比，脚本原生支持 Graviton 节点组（系统节点默认即为 `m8g.xlarge`）。
 
@@ -413,7 +421,7 @@ kubectl get storageclass
 
 ---
 
-## 总结：一套可复制的企业级 EKS 部署方案
+## 十三、总结：一套可复制的企业级 EKS 部署方案
 
 本文从企业客户在 EKS 生产环境中面临的实际挑战出发，介绍了一套经过验证的解决方案：
 
@@ -435,36 +443,31 @@ kubectl get storageclass
 
 ---
 
-## 本系列后续：深入 GPU 工作负载
+**下一步行动：**
 
-本文聚焦通用生产级 EKS 集群的架构与部署。**本系列第二篇**将深入 GPU 工作负载的三层架构：
+* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，按照 README 配置 `.env`。
+* 在 VPC 内的堡垒机上依次执行编号脚本 1 → 3 → 4 → 6 → 7，约 30 分钟即可获得一套生产级 EKS 集群。
+* 按需叠加 `option_install_csi_drivers.sh`、`option_install_karpenter.sh`、`option_install_gpu_nodegroups.sh` 等可选模块。
+* 关注本系列第二篇《EKS 上的 GPU 工作负载：节点、网络与高性能存储的架构实践》，深入计算 / 网络 / 存储三层架构。
 
-- **计算层**：EFA 多网卡精确摆位（含 p6-b300 非对称拓扑）、EFA userspace 完整性
-- **网络层**：基于 `DescribeInstanceTopology` 的 L3 leaf 标签化调度
-- **存储层**：训练用 FSx for Lustre（含 PERSISTENT_2 兼容性要点）、推理用 S3 Express One Zone
+**相关产品：**
 
-敬请关注。
+* [Amazon EKS](https://aws.amazon.com/cn/eks/)
+* [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
+* [Amazon EBS](https://aws.amazon.com/cn/ebs/)
+* [Amazon EFS](https://aws.amazon.com/cn/efs/)
+* [Amazon FSx for Lustre](https://aws.amazon.com/cn/fsx/lustre/)
+* [Mountpoint for Amazon S3](https://aws.amazon.com/cn/s3/features/mountpoint/)
+* [Karpenter](https://karpenter.sh/)
+* [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
 
----
+**相关文章：**
 
-## 关于作者：本文背后的实践积累
+* [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/)
+* [Amazon EKS Blueprints for CDK](https://aws-quickstart.github.io/cdk-eks-blueprints/)（另有 [Terraform 版本](https://aws-ia.github.io/terraform-aws-eks-blueprints/)）
+* [EKS Workshop](https://www.eksworkshop.com/)
 
-本文由 AWS 解决方案架构师 **Kevin Zhao** 基于多个企业客户的实际部署经验总结撰写。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源，如有问题或建议，欢迎通过 GitHub Issues 反馈。
+**本篇作者**
 
----
-
-## 参考链接：延伸阅读
-
-- [Amazon EKS Blueprints for CDK](https://aws-quickstart.github.io/cdk-eks-blueprints/) - 基于 CDK 的 EKS 集群快速部署框架（另有 [Terraform 版本](https://aws-ia.github.io/terraform-aws-eks-blueprints/)）
-- [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/) - EKS 最佳实践指南
-- [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) - Pod Identity 官方文档
-- [Amazon VPC CNI Plugin](https://github.com/aws/amazon-vpc-cni-k8s) - VPC CNI 插件及配置说明
-- [Karpenter](https://karpenter.sh/) - Kubernetes 节点自动扩缩容
-- [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/) - ALB/NLB Ingress 控制器
-- [Mountpoint for Amazon S3](https://github.com/awslabs/mountpoint-s3) - S3 文件系统挂载
-- [Amazon FSx for Lustre](https://docs.aws.amazon.com/fsx/latest/LustreGuide/what-is.html) - 高性能并行文件系统
-- [EKS Workshop](https://www.eksworkshop.com/) - EKS 实战教程
-
----
-
-*本文发布于 2026 年 5 月*
+**Kevin Zhao**
+AWS 解决方案架构师，基于多个企业客户的实际部署经验，专注于 Amazon EKS 与容器化工作负载的生产级落地实践。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
