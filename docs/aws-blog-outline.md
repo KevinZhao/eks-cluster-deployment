@@ -125,7 +125,7 @@ EKS 集群的 API Server 访问控制有两种主流方案：
 
 采用私有 API Endpoint 需要配合以下组件：
 
-**VPC Endpoints**：由于集群位于私有网络，节点和 Pod 无法通过 NAT Gateway 访问 AWS 服务。本方案共创建 **14 个 VPC Endpoints**：13 个 Interface Endpoint（EKS、EKS-Auth、STS、ECR.api、ECR.dkr、EC2、EFS、CloudWatch Logs、Autoscaling、ELB、SSM、SSMMessages、EC2Messages）+ 1 个 S3 Gateway Endpoint。其中 EBS CSI 复用 `ec2` endpoint，FSx 的连通性通过子网与安全组打通（无独立 PrivateLink Endpoint）。这不仅解决了连通性问题，还能降低数据传输成本。
+**VPC Endpoints**：由于集群位于私有网络，节点和 Pod 无法通过 NAT Gateway 访问 AWS 服务。本方案在 `VPC_ENDPOINTS_MODE=full`（私有集群默认）下共创建 **14 个 VPC Endpoints**：13 个 Interface Endpoint（EKS、EKS-Auth、STS、ECR.api、ECR.dkr、EC2、EFS、CloudWatch Logs、Autoscaling、ELB、SSM、SSMMessages、EC2Messages）+ 1 个 S3 Gateway Endpoint。其中 EBS CSI 复用 `ec2` endpoint，FSx 的连通性通过子网与安全组打通（无独立 PrivateLink Endpoint）。公有集群可切换为 `minimal` 模式，仅创建 4 个必需 Interface Endpoint（EKS、EKS-Auth、STS、EC2）+ S3 Gateway，其他流量走 NAT Gateway。这不仅解决了连通性问题，还能降低数据传输成本。
 
 **堡垒机访问模式**：运维人员通过 AWS Systems Manager Session Manager 连接到堡垒机，再从堡垒机访问 EKS API。这种方式无需开放 SSH 端口，所有操作都有完整的审计日志。
 
@@ -199,7 +199,8 @@ create_pod_identity_role "MyServiceRole"
 attach_managed_policy "MyServiceRole" "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
 
 # 将角色关联到 Kubernetes ServiceAccount
-create_pod_identity_association "my-namespace" "my-service-account" "$ROLE_ARN"
+# 第三个参数是 IAM Role 名称，函数内部会自动拼接为完整 ARN
+create_pod_identity_association "my-namespace" "my-service-account" "MyServiceRole"
 ```
 
 本方案的部署脚本为所有组件（Cluster Autoscaler、AWS Load Balancer Controller、CSI Drivers 等）都采用了 Pod Identity，彻底告别 OIDC Provider 的管理负担。
@@ -248,7 +249,7 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 **Amazon FSx for Lustre CSI Driver** 提供高吞吐、低延迟的并行文件系统，是 GPU 训练工作负载的理想选择，单文件系统可提供数百 GB/s 的聚合吞吐量，并能与 S3 深度集成实现 lazy-load 数据加载。
 
-> **重要兼容性提示**：Amazon Linux 2023 节点 AMI 自带的 `lustre-client` 为 2.15.x，创建 FSx 时请使用 `DeploymentType=PERSISTENT_2`（Lustre 2.15）。若使用 `SCRATCH_2` 或 `PERSISTENT_1`（Lustre 2.10），挂载会因版本不兼容而失败。
+> **重要兼容性提示**：本方案系统节点在 user-data 中通过 `dnf install lustre-client` 安装客户端，AL2023 仓库提供的版本为 2.15.x。创建 FSx 时请使用 `DeploymentType=PERSISTENT_2`（Lustre 2.15）。若使用 `SCRATCH_2` 或 `PERSISTENT_1`（Lustre 2.10），挂载会因版本不兼容而失败。
 
 **Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶；配合 **S3 Express One Zone** 可提供个位数毫秒级延迟与极高的请求吞吐，是 GPU 推理场景下模型加载的理想选择。需要注意的是 Mountpoint for S3 并非完整 POSIX 文件系统，写入语义有限（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
 
@@ -273,7 +274,7 @@ FSx for Lustre 与 S3 Express One Zone 在 GPU 工作负载链路上的选型策
 
 **非交互**：通过环境变量控制所有配置，无需人工确认。这使得脚本可以直接集成到 CI/CD 流水线中。
 
-**模块化**：核心脚本（编号 0-7）必须按顺序执行，可选脚本（`option_*` 前缀）可以根据需求独立运行。
+**模块化**：核心脚本按顺序执行 1 → 3 → 4 → 6 → 7（其中 `2_validate_network_environment.sh` 和 `5_check_environment.sh` 为可选验证步骤）；可选脚本（`option_*` 前缀）可以根据需求独立运行。
 
 **可追溯**：详细的日志输出，便于故障排查和合规审计。
 
@@ -299,7 +300,7 @@ scripts/
 
 ### 部署流程
 
-整个部署过程分为四个阶段，总耗时约 26-35 分钟：
+整个部署过程分为四个阶段，总耗时约 25-35 分钟：
 
 **网络准备阶段**（约 5 分钟）：启用 VPC DNS 支持，创建 14 个 VPC Endpoints（13 个 Interface + 1 个 S3 Gateway），为私有集群建立与 AWS 服务的连通性。
 
