@@ -131,15 +131,18 @@ EKS GPU AMI 默认仅包含 kernel-side EFA 模块(驱动和 ibverbs 支持),不
 
 脚本在启动时校验互斥性(只允许一个开关启用),避免定价模式冲突。
 
-### 3.2 LT 中的核心差异
-| 模式 | `InstanceMarketOptions.MarketType` | `CapacityReservationSpecification` |
-|---|---|---|
-| On-Demand | 不设置 | 不设置 |
-| Spot | `spot` | 不设置 |
-| ODCR | 不设置 | 指向目标 CapacityReservationId |
-| Capacity Block | `capacity-block` | 指向目标 CapacityReservationId |
+### 3.2 LT 与 EKS 节点组层的协同
 
-**关键点**:Capacity Block 的 MarketType 是独立的第三种值(既不是 `spot` 也不是 `capacity-reservation`),这是与 ODCR 在 LT 层面的主要差异。
+定价模式在两个层面共同表达：Launch Template 设置实例市场属性，EKS Managed Node Group 通过 `--capacity-type` 参数选择对应的容量类型。
+
+| 模式 | LT `InstanceMarketOptions` | LT `CapacityReservationSpecification` | EKS NG `--capacity-type` |
+|---|---|---|---|
+| On-Demand | 不设置 | 不设置 | `ON_DEMAND` |
+| Spot | 不设置 | 不设置 | `SPOT` |
+| ODCR | 不设置 | 指向目标 `CapacityReservationId` | `ON_DEMAND` |
+| Capacity Block | `MarketType=capacity-block` | 指向目标 `CapacityReservationId` | `CAPACITY_BLOCK` |
+
+**关键点**：Spot 模式下 LT 不写入 `InstanceMarketOptions`，由 EKS 托管层的 `capacity-type=SPOT` 控制；Capacity Block 必须在 LT 中显式设置 `MarketType=capacity-block` 并嵌入 `InstanceType`，与 ODCR 的 LT 配置不同。
 
 ### 3.3 多 NG 共存
 生产中常常需要同一账户、同一集群内并存多个 GPU 节点组(例如不同 ODCR、不同 AZ、不同型号)。脚本提供两个机制:
@@ -178,31 +181,40 @@ AWS 提供 `cluster` 策略的 Placement Group,目标是把实例放到"低延�
 
 基于此,脚本默认采用**标签化调度(Topology Labeling)**方案:
 1. 不使用 Placement Group(`GPU_PG_STRATEGY=none` 为默认)
-2. 节点创建后,调用 `ec2:DescribeInstanceTopology` 获取每个实例的网络节点路径
+2. 节点 Ready 后，从 AWS cloud-controller-manager 注入的 `topology.k8s.aws/network-node-layer-N` 标签读取拓扑
 3. 将 L3 leaf 的节点标识作为 label 贴到对应的 Kubernetes Node 上
 4. 由工作负载通过 `nodeAffinity` 选择同 leaf 的节点子集
 
-### 4.3 DescribeInstanceTopology 的返回结构
-```json
-{
-  "Instances": [
-    {
-      "InstanceId": "i-xxxxx",
-      "AvailabilityZone": "us-east-1a",
-      "NetworkNodes": [
-        "nn-aaaa (L1 spine)",
-        "nn-bbbb (L2 aggregator)",
-        "nn-cccc (L3 leaf)"
-      ]
-    }
-  ]
-}
+### 4.3 拓扑数据来源：K8s 节点标签
+
+AWS cloud-controller-manager 在节点 `Initialize` 阶段就把每个 GPU 实例的网络层级路径写入节点标签，脚本只需 `kubectl get nodes` 一次即可拿到全部数据，无需调用 `ec2:DescribeInstanceTopology`，也不依赖 `eks:DescribeNodegroup` / `autoscaling:DescribeAutoScalingGroups` 等额外 IAM 权限（在 SCP 受限环境中尤其重要）。
+
+每个 GPU 节点上由 cloud-controller-manager 写入的标签示意：
+
 ```
-脚本提取最后一个元素作为 L3 leaf ID。
+topology.k8s.aws/network-node-layer-1 = nn-aaaa   # AWS index 0，最远（spine）
+topology.k8s.aws/network-node-layer-2 = nn-bbbb   # 中间层（aggregator 或 BG）
+topology.k8s.aws/network-node-layer-3 = nn-cccc   # 3 层架构上是 leaf，4 层架构上是 aggregator
+topology.k8s.aws/network-node-layer-4 = nn-dddd   # 仅 4 层架构存在
+topology.k8s.aws/zone-id              = usw2-az1
+```
+
+脚本根据存在的最高 `layer-N` 编号推算 fabric `depth`，再以 distance-from-instance 反向编号生成自己的 `network-topology/level-N`：`level-1` 始终是离实例最近的 leaf（即原始 `layer-depth`），便于工作负载 YAML 在 3 层与 4 层架构之间无差别复用。
 
 ### 4.4 节点标签
-- `topology.eks.io/efa-leaf-id=nn-cccc`
-- `topology.eks.io/efa-az=us-east-1a`
+脚本写入两类标签：以 distance-from-instance 为编号的 `network-topology/level-N`（与 fabric depth 解耦，自动适配 3/4/5 层架构），加上两个无前缀的便捷别名 `efa-leaf-id` 与 `efa-az`，方便工作负载使用。
+
+```
+network-topology/depth=<3|4|5>
+network-topology/level-1=<leaf-id>      # distance-1，始终是 leaf
+network-topology/level-2=<id>           # distance-2，aggregator
+network-topology/level-3=<id>           # distance-3，3-layer 上是 spine，4-layer 上是 BG
+network-topology/level-4=<id>           # distance-4，4-layer 上是 spine（depth>=4 时存在）
+efa-leaf-id=<level-1 同值>              # 便捷别名
+efa-az=us-east-1a                       # 便捷别名
+```
+
+> 上游 `topology.k8s.aws/network-node-layer-N` 标签由 cloud-controller-manager 注入，是脚本的输入；本文使用的 `network-topology/level-N` 是脚本叠加的、按 distance-from-instance 编号的视图标签。
 
 ### 4.5 工作负载端的使用
 ```yaml
@@ -211,14 +223,16 @@ affinity:
     requiredDuringSchedulingIgnoredDuringExecution:
       nodeSelectorTerms:
         - matchExpressions:
-            - key: topology.eks.io/efa-leaf-id
+            - key: efa-leaf-id
               operator: In
               values: ["nn-cccc"]
 ```
 脚本还提供 `print_leaf_inventory` 辅助命令,列出每个 leaf 下的节点数量,便于调度决策。
 
 ### 4.6 Gate 模式(可选)
-对于要求严格同 leaf 的严苛场景,脚本提供 `GPU_TOPOLOGY_MODE=gate` + `GPU_TOPOLOGY_GATE=strict`,节点创建后校验拓扑,不满足则把 NG 缩容(EKS 节点组 minSize 约束为 1,缩到 1 作为"软暂停"状态)。默认仍为 `label` 模式。
+脚本通过 `GPU_TOPOLOGY_MODE` 控制 4 种行为：`label`（仅打标签，默认）、`gate`（校验拓扑后再决定）、`both`（校验 + 打标签）、`off`（跳过）。
+
+对于要求严格同 leaf 的严苛场景,设置 `GPU_TOPOLOGY_MODE=gate` + `GPU_TOPOLOGY_GATE=strict`：节点创建后校验拓扑，不满足则将 NG 缩到 `minSize=0,maxSize=1,desiredSize=0`（EKS API 不接受 `maxSize=0`，因此保留 1 作为容量上限），实际节点数缩为 0，作为"软暂停"状态。
 
 ---
 
@@ -235,8 +249,8 @@ affinity:
 - **不同 GPU 实例系列的配置差异较大**:p5 / p5en / p5e 全系标配多块 NVMe SSD;g6 系列通过 `d` 后缀变体(如 `g6d.48xlarge`)提供 Instance Store;部分 GPU 型号(如 g7e 某些规格)则不带 Instance Store。脚本通过 `disk_detection_lib.sh` 动态检测磁盘 model 字段,而非依赖实例名约定。
 
 ### 5.3 脚本实现
-- `GPU_LOCAL_LVM=true` 时,在 userdata 中扫描所有 Instance Store NVMe
-- 通过 LVM 把多块盘 stripe 成 `vg_local/lv_local`,挂载到 `/data`
+- `GPU_ENABLE_LOCAL_LVM=true` 时（默认开启），在 userdata 中扫描所有 Instance Store NVMe
+- 通过 LVM 把多块盘 stripe 成 `vg_local/lv_scratch`,挂载到 `/data`(挂载点、卷组名、逻辑卷名均可通过 `GPU_LOCAL_LVM_VG_NAME` / `GPU_LOCAL_LVM_LV_NAME` / `GPU_LOCAL_LVM_MOUNT` 覆盖)
 - 使用 **systemd oneshot** 单元而非 `/etc/fstab`:每次启动都重新扫描、初始化、挂载,避免磁盘 UUID 变化导致 fstab 失效
 
 ### 5.4 与容器运行时 LVM 的严格隔离
@@ -270,7 +284,7 @@ FSx for Lustre 提供多个 DeploymentType,截至 2026 年 5 月的对照如下(
 | PERSISTENT_1 | 2.10 | 长期持久化(已被 PERSISTENT_2 取代) |
 | **PERSISTENT_2** | **2.15** | **长期持久化,推荐** |
 
-**重要兼容性要求**:Amazon Linux 2023 节点 AMI 自带的 `lustre-client` 为 2.15.x,与 Lustre 2.10 服务端不兼容。若 FSx 使用 SCRATCH_2 或 PERSISTENT_1 创建,挂载会失败并报告:
+**重要兼容性要求**:本方案在节点 user-data 中通过 `dnf install lustre-client` 安装客户端，AL2023 仓库提供的版本为 2.15.x，与 Lustre 2.10 服务端不兼容。若 FSx 使用 SCRATCH_2 或 PERSISTENT_1 创建,挂载会失败并报告:
 ```
 mount.lustre: mount ... failed: Invalid argument
 LustreError: Server MGS version (2.10.5.0) refused connection
@@ -399,7 +413,7 @@ fi_pingpong -p efa      # 端到端 EFA 通信测试
 
 ### 8.4 拓扑标签验证
 ```bash
-kubectl get nodes -L topology.eks.io/efa-leaf-id,topology.eks.io/efa-az
+kubectl get nodes -L efa-leaf-id,efa-az,network-topology/level-1,network-topology/depth
 ```
 
 ### 8.5 FSx / S3 挂载验证
