@@ -75,6 +75,16 @@ SG_ID=$(aws ec2 create-security-group \
         --query 'SecurityGroups[0].GroupId' \
         --output text)
 
+# Guard against describe-security-groups returning the literal string "None"
+# when no SG matches (--output text serialization). Without this guard the
+# script would happily attach all subsequent endpoints to SG=None and exit 0,
+# leaving an empty/broken VPC endpoint set.
+if [ -z "${SG_ID}" ] || [ "${SG_ID}" = "None" ]; then
+    echo -e "${RED}Error: failed to get or create security group '${CLUSTER_NAME}-vpc-endpoints-sg'${NC}" >&2
+    echo -e "${RED}Check IAM permissions (ec2:CreateSecurityGroup) and VPC SG quota${NC}" >&2
+    exit 1
+fi
+
 echo "Security Group ID: ${SG_ID}"
 
 # Add ingress rule for HTTPS from VPC
@@ -150,6 +160,17 @@ if [ "${VPC_ENDPOINTS_MODE}" = "full" ]; then
     INTERFACE_ENDPOINTS+=("${FULL_ONLY_ENDPOINTS[@]}")
 fi
 
+# Build a space-padded lookup of required services so we can abort on hard
+# failures. Soft failures on FULL_ONLY endpoints are tolerated (they have
+# public fallbacks via NAT), but a missing eks/eks-auth/sts/ec2 endpoint
+# silently breaks node registration and is worth aborting on.
+# Use a string instead of bash 4+ associative arrays for portability.
+REQUIRED_SERVICES_LOOKUP=" "
+for endpoint_info in "${REQUIRED_ENDPOINTS[@]}"; do
+    IFS=':' read -r service _description <<< "${endpoint_info}"
+    REQUIRED_SERVICES_LOOKUP="${REQUIRED_SERVICES_LOOKUP}${service} "
+done
+
 # -----------------------------------------------------------------------
 # Create interface endpoints
 # -----------------------------------------------------------------------
@@ -170,7 +191,12 @@ for endpoint_info in "${INTERFACE_ENDPOINTS[@]}"; do
         continue
     fi
 
-    ENDPOINT_ID=$(aws ec2 create-vpc-endpoint \
+    # Capture stderr so we can surface the failure reason. Failures on
+    # FULL_ONLY endpoints are tolerated (NAT fallback), but failures on a
+    # REQUIRED endpoint are fatal — silently continuing leaves the cluster
+    # unable to register nodes and the failure point becomes invisible
+    # downstream in 4_install_eks_cluster.sh.
+    ENDPOINT_OUTPUT=$(aws ec2 create-vpc-endpoint \
         --vpc-id "${VPC_ID}" \
         --service-name "${service_name}" \
         --vpc-endpoint-type Interface \
@@ -179,12 +205,20 @@ for endpoint_info in "${INTERFACE_ENDPOINTS[@]}"; do
         --private-dns-enabled \
         --tag-specifications "ResourceType=vpc-endpoint,Tags=[{Key=Name,Value=${CLUSTER_NAME}-${service}-endpoint},{Key=Cluster,Value=${CLUSTER_NAME}}]" \
         --query 'VpcEndpoint.VpcEndpointId' \
-        --output text 2>/dev/null)
+        --output text 2>&1) && ENDPOINT_RC=0 || ENDPOINT_RC=$?
 
-    if [ -n "${ENDPOINT_ID}" ]; then
-        echo -e "${GREEN}✓ created (${ENDPOINT_ID})${NC}"
+    if [ "${ENDPOINT_RC}" -eq 0 ] && [ -n "${ENDPOINT_OUTPUT}" ]; then
+        echo -e "${GREEN}✓ created (${ENDPOINT_OUTPUT})${NC}"
     else
         echo -e "${RED}✗ failed${NC}"
+        # Required endpoints have no public fallback; aborting here surfaces
+        # the failure now instead of letting node registration time out later.
+        if [[ "${REQUIRED_SERVICES_LOOKUP}" == *" ${service} "* ]]; then
+            echo -e "${RED}REQUIRED endpoint '${service}' could not be created. Aborting.${NC}" >&2
+            echo -e "${RED}AWS error: ${ENDPOINT_OUTPUT}${NC}" >&2
+            exit 1
+        fi
+        echo -e "${YELLOW}  (skipping; not required — traffic will route via NAT)${NC}"
     fi
 done
 
