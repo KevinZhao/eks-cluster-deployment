@@ -401,22 +401,43 @@ POLICYEOF
         --policy-arn ${POLICY_ARN} \
         --no-cli-pager
 
-    # Create instance profile
-    echo "Creating instance profile..."
-    aws iam create-instance-profile \
-        --instance-profile-name EKS-Deploy-Profile \
-        --no-cli-pager
-
-    aws iam add-role-to-instance-profile \
-        --instance-profile-name EKS-Deploy-Profile \
-        --role-name EKS-Deploy-Role \
-        --no-cli-pager
-
     echo "Waiting for IAM role to propagate (60 seconds for AWS global consistency)..."
     sleep 60
 
     echo -e "${GREEN}✓ IAM role created${NC}"
 fi
+
+# Ensure instance profile exists and is bound to the role. We check this
+# independently of role existence so that a partial first run (role created,
+# instance profile not) can be recovered cleanly by re-running the script.
+echo -e "${YELLOW}Checking instance profile...${NC}"
+if aws iam get-instance-profile --instance-profile-name EKS-Deploy-Profile >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Instance profile exists${NC}"
+else
+    echo "Creating instance profile..."
+    aws iam create-instance-profile \
+        --instance-profile-name EKS-Deploy-Profile \
+        --no-cli-pager
+    echo -e "${GREEN}✓ Instance profile created${NC}"
+fi
+
+# Ensure the role is bound to the profile. add-role-to-instance-profile fails
+# with LimitExceeded if a role is already attached, so check first.
+PROFILE_ROLES=$(aws iam get-instance-profile \
+    --instance-profile-name EKS-Deploy-Profile \
+    --query 'InstanceProfile.Roles[].RoleName' \
+    --output text 2>/dev/null || echo "")
+if [[ " ${PROFILE_ROLES} " == *" EKS-Deploy-Role "* ]]; then
+    echo -e "${GREEN}✓ EKS-Deploy-Role already bound to instance profile${NC}"
+else
+    echo "Binding EKS-Deploy-Role to instance profile..."
+    aws iam add-role-to-instance-profile \
+        --instance-profile-name EKS-Deploy-Profile \
+        --role-name EKS-Deploy-Role \
+        --no-cli-pager
+    echo -e "${GREEN}✓ Role bound to instance profile${NC}"
+fi
+
 echo ""
 
 # Check if instance already exists
