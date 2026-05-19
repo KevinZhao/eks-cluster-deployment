@@ -2,23 +2,42 @@
 
 > **⚠️ LARGELY SUPERSEDED (2026-05-03)**
 >
-> This plan was written under the assumption that same-leaf placement
-> could be reliably obtained by retrying PG-gated NG creation a few times.
-> Subsequent runs (3 independent, across 3 AZs, p5 + p5en) showed that
-> cluster PG itself does NOT guarantee same-leaf on p5-class instances —
-> retrying does not converge on same-leaf any faster than not retrying.
+> This plan was written under the assumption that co-locating instances
+> on the same bottom-layer network node could be reliably obtained by
+> retrying PG-gated NG creation a few times. Subsequent runs (3
+> independent, across 3 AZs, p5 + p5en) showed that cluster PG itself
+> does NOT guarantee that all instances share the bottom-layer network
+> node on p5-class instances — retrying does not converge any faster
+> than not retrying.
 >
 > The final design in commit `f3a9270` **abandons PG** as the primary
-> mechanism and switches to label-based same-leaf discovery after NG
-> creation (`GPU_TOPOLOGY_MODE=label`, default). Workloads pick a leaf
-> via `efa-leaf-id` nodeAffinity from the inventory.
+> mechanism. The current implementation reads AWS-native
+> `topology.k8s.aws/network-node-layer-N` labels (written by
+> cloud-controller-manager) and prints a per-NG inventory grouped by the
+> bottom-layer network node (`GPU_TOPOLOGY_MODE=inventory`, default).
+> Workloads pin themselves directly to those AWS-native labels via
+> nodeAffinity.
+>
+> **2026-05-19 update:** the older `efa-leaf-id` / `efa-az` overlay
+> labels and the reverse-numbered `network-topology/level-N` scheme have
+> been removed; only AWS-native labels are used. Terminology like
+> "leaf" / "spine" / "aggregator" / "depth" has been retired in favor
+> of AWS's own wording (`network nodes`, `top layer`, `bottom layer`,
+> `3 / 4 network nodes`).
 >
 > This doc is retained as a historical record of the reasoning. A
-> future P2b could re-explore retry loops in the context of the label
-> pipeline (e.g. "retry until inventory shows a leaf with ≥N nodes")
-> but that is fundamentally a different scope.
+> future P2b could re-explore retry loops in the context of the
+> inventory pipeline (e.g. "retry until inventory shows a bottom-layer
+> network node with ≥N nodes") but that is fundamentally a different
+> scope.
 
 ## Background
+
+> *Historical note (2026-05-19): the prose below uses the original
+> "L3 leaf / L2 aggregator / L1 spine" wording from when this plan was
+> drafted. The current implementation uses AWS's own terminology
+> (`top layer` / `bottom layer`, `network-node-layer-1..N`); see the
+> deprecation header above and `topology_inventory_lib.sh`.*
 
 P1 (merged as branch `feat/placement-group-and-topology-gate`) added:
 - Auto-creating cluster placement groups per (AZ, purchase_option)

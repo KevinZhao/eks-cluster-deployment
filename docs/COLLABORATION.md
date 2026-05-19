@@ -247,7 +247,7 @@ eks-cluster-deployment/
 │   ├── instance_arch_lib.sh             # 共享库：架构检测
 │   ├── disk_detection_lib.sh            # 共享库：数据盘识别
 │   ├── pod_identity_helpers.sh          # 共享库：Pod Identity
-│   └── topology_labeling_lib.sh         # 共享库：GPU 拓扑标签
+│   └── topology_inventory_lib.sh        # 共享库：读 AWS 原生拓扑标签
 ├── manifests/
 │   ├── addons/                          # Cluster Autoscaler 等
 │   ├── iam/                             # IAM 策略 JSON

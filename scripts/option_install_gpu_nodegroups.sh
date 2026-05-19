@@ -26,23 +26,26 @@ echo "  • Spot:           Cost-effective for fault-tolerant workloads (DEPLOY_
 echo "  • ODCR:           Guaranteed capacity, on-demand pricing (DEPLOY_GPU_ODCR=true)"
 echo "  • Capacity Block: Time-limited reserved capacity (DEPLOY_GPU_CB=true)"
 echo ""
-echo "EFA-topology awareness (default: label mode):"
-echo "  After NG is ACTIVE, DescribeInstanceTopology is queried and each"
-echo "  K8s node is stamped with efa-leaf-id + efa-az labels. Multi-node"
-echo "  GPU workloads select same-leaf subsets via nodeAffinity on"
-echo "  efa-leaf-id. No placement group is created by default — 2026-05-03"
-echo "  empirical data (p5/p5en, 3 independent runs, 3 AZs) showed cluster"
-echo "  PG does NOT guarantee same-leaf on p5-class instances."
-echo "  Override: GPU_PG_STRATEGY={cluster|none}, GPU_TOPOLOGY_MODE={label|gate|both|off}"
+echo "EC2 topology awareness (default: inventory mode):"
+echo "  After NG is ACTIVE, the topology.k8s.aws/network-node-layer-N labels"
+echo "  written by cloud-controller-manager are read and a per-NG inventory"
+echo "  is printed, grouped by the bottom-layer network node (the network"
+echo "  node connected to each instance, per AWS docs). Multi-node GPU"
+echo "  workloads select same-bottom-layer subsets via nodeAffinity on the"
+echo "  AWS-native labels. No placement group is created by default —"
+echo "  2026-05-03 empirical data (p5/p5en, 3 independent runs, 3 AZs)"
+echo "  showed cluster PG does NOT guarantee that all instances share the"
+echo "  bottom-layer network node."
+echo "  Override: GPU_PG_STRATEGY={cluster|none}, GPU_TOPOLOGY_MODE={inventory|gate|both|off}"
 echo ""
 
 # 1. Load environment
 source "${SCRIPT_DIR}/0_setup_env.sh"
 
-# Load topology labeling library (source so label_nodegroup_by_leaf +
-# print_leaf_inventory are available after NG creation)
-# shellcheck source=topology_labeling_lib.sh
-source "${SCRIPT_DIR}/topology_labeling_lib.sh"
+# Load topology inventory library (source so print_topology_inventory is
+# available after NG creation).
+# shellcheck source=topology_inventory_lib.sh
+source "${SCRIPT_DIR}/topology_inventory_lib.sh"
 
 # Load instance architecture detection helpers. Used to pick the correct
 # GPU AMI variant (x86_64 vs arm64) instead of hard-coding x86_64.
@@ -143,14 +146,16 @@ GPU_TARGET_AZ="${GPU_TARGET_AZ:-}"
 # ------------------------------------------------------------
 # Empirical finding (2026-05-03, 3 independent runs on p5/p5en in 3
 # different AZs): cluster-strategy placement groups do NOT guarantee
-# same-leaf (L3) on p5-class instances. All 3 runs placed 2 instances
-# in the same PG but landed on different L3 leaves. PG only enforces
-# same-aggregator (L2) in practice — which doesn't give the perf
-# benefit that would justify its constraints (tighter capacity,
-# possible InsufficientInstanceCapacity even when SPS=9).
+# that all instances share the bottom-layer network node. All 3 runs
+# placed 2 instances in the same PG but they landed on different
+# bottom-layer network nodes. PG only co-locates instances at one layer
+# above the bottom in practice — which doesn't give the perf benefit
+# that would justify its constraints (tighter capacity, possible
+# InsufficientInstanceCapacity even when SPS=9).
 #
-# We therefore default to NO PG and rely on the topology labeling
-# mode (see GPU_TOPOLOGY_MODE) to let workloads pick same-leaf subsets.
+# We therefore default to NO PG and rely on the topology inventory
+# mode (see GPU_TOPOLOGY_MODE) to let workloads pick subsets that share
+# the same bottom-layer network node.
 #
 # GPU_PG_STRATEGY:
 #   none      (default) do not create or attach a placement group
@@ -163,24 +168,39 @@ GPU_PG_NAME_PREFIX="${GPU_PG_NAME_PREFIX:-${CLUSTER_NAME}}"
 # Topology mode — what to do after NG is ACTIVE
 # ------------------------------------------------------------
 # GPU_TOPOLOGY_MODE:
-#   label   (default) stamp efa-leaf-id / efa-az labels on K8s nodes
-#           via DescribeInstanceTopology; workloads pick same-leaf
-#           subsets via nodeAffinity on efa-leaf-id. Never fails.
-#   gate    verify all nodes share the same topology node at
-#           GPU_TOPOLOGY_GATE_LEVEL and honor GPU_TOPOLOGY_GATE; fail
-#           strictly if mismatch (useful only with GPU_PG_STRATEGY=cluster)
-#   both    run gate (in warn mode regardless of GPU_TOPOLOGY_GATE) AND
-#           label — diagnostic use
-#   off     skip topology checks entirely
+#   inventory  (default) read AWS-native topology.k8s.aws/network-node-layer-N
+#              labels and print a per-NG inventory grouped by bottom-layer
+#              network node. Workloads pin themselves directly to those
+#              labels via nodeAffinity. No fail.
+#   gate       verify all nodes in the NG share the same network node at
+#              the requested layer and honor GPU_TOPOLOGY_GATE; fail
+#              strictly if mismatch (useful only with GPU_PG_STRATEGY=cluster).
+#   both       run gate (in warn mode regardless of GPU_TOPOLOGY_GATE) AND
+#              print inventory — diagnostic use.
+#   off        skip topology checks entirely.
 #
 # GPU_TOPOLOGY_GATE:
 #   strict  fail and scale NG to 0 on mismatch (only in gate/both modes)
 #   warn    log a warning but continue
 #
-# GPU_TOPOLOGY_GATE_LEVEL: L1 (spine) | L2 (aggregator) | L3 (leaf / ToR)
-GPU_TOPOLOGY_MODE="${GPU_TOPOLOGY_MODE:-label}"
+# GPU_TOPOLOGY_GATE_LAYER:
+#   auto    (default) verify the bottom layer of each instance — i.e. the
+#           AWS-native layer N where N == NetworkNodes length for the
+#           instance type (3 for p5/p5en/g7e/etc., 4 for p6-b200/p6-b300).
+#   <N>     verify the AWS-native layer N (1-based, top-down). Use this to
+#           gate at a higher layer when the bottom layer is too tight.
+GPU_TOPOLOGY_MODE="${GPU_TOPOLOGY_MODE:-inventory}"
 GPU_TOPOLOGY_GATE="${GPU_TOPOLOGY_GATE:-strict}"
-GPU_TOPOLOGY_GATE_LEVEL="${GPU_TOPOLOGY_GATE_LEVEL:-L3}"
+GPU_TOPOLOGY_GATE_LAYER="${GPU_TOPOLOGY_GATE_LAYER:-auto}"
+
+# Reject deprecated GPU_TOPOLOGY_GATE_LEVEL early so old runs surface a
+# clear error instead of silently using the wrong gate target.
+if [ -n "${GPU_TOPOLOGY_GATE_LEVEL:-}" ]; then
+    echo "ERROR: GPU_TOPOLOGY_GATE_LEVEL is deprecated; use GPU_TOPOLOGY_GATE_LAYER instead" >&2
+    echo "       (set GPU_TOPOLOGY_GATE_LAYER=auto for the bottom layer of each instance," >&2
+    echo "        or GPU_TOPOLOGY_GATE_LAYER=<N> for the top-down AWS-native layer N)" >&2
+    exit 1
+fi
 
 # NVIDIA Kubernetes device plugin. Override NVIDIA_DEVICE_PLUGIN_IMAGE when
 # deploying to regions where nvcr.io is unreachable (e.g. cn-*) and mirror
@@ -385,47 +405,37 @@ plan_pg_for_nodegroup() {
 # ===================================================================
 # Topology gate
 # ===================================================================
-# Verify all nodes in an EKS nodegroup share the same network-topology
-# ancestor at the requested level. Reads AWS-native labels stamped by
-# cloud-controller-manager:
-#   topology.k8s.aws/network-node-layer-1 = top of fabric (spine)
-#   topology.k8s.aws/network-node-layer-N = leaf for an N-deep fabric
-#
-# Level argument uses *distance from instance* semantics so the same
-# value works on 3-layer (p5/Euclid) and 4-layer (p5en/p6/10p10u) fabrics:
-#
-#   level value         | meaning                       | maps to AWS-native
-#   --------------------|-------------------------------|--------------------
-#   L1                  | spine (top, legacy alias)     | layer-1
-#   L2                  | one above leaf                | layer-(depth-1)
-#   L3 / LEAF / LEVEL_1 | leaf (closest to instance)    | layer-depth
-#   LEVEL_2             | one above leaf                | layer-(depth-1)
-#   LEVEL_N             | (N-1) above leaf              | layer-(depth-N+1)
-#
-# Old callers using GPU_TOPOLOGY_GATE_LEVEL=L3 keep working — on 3-layer
-# fabrics it pinned the leaf, and now on 4-layer fabrics it correctly
-# pins the leaf too (was wrongly pinning aggregator on p6 in the EC2-API
-# implementation that hardcoded NetworkNodes[2]).
+# Verify all nodes in an EKS nodegroup share the same AWS-native network
+# node at the requested layer. Reads topology.k8s.aws/network-node-layer-N
+# labels written by cloud-controller-manager. AWS uses top-down ordering:
+# layer-1 is the top, layer-N (N == NetworkNodes length) is the bottom
+# layer connected to the instance.
 #
 # Args:
 #   $1 ng_name   EKS nodegroup name
 #   $2 gate      strict | warn | off
-#   $3 level     L1 | L2 | L3 | LEAF | LEVEL_1..LEVEL_8
+#   $3 layer     auto (= bottom layer of each instance) | <N> (1-based AWS layer)
 verify_topology() {
     local ng_name=$1
     local gate=${2:-strict}
-    local level=${3:-L3}
+    local layer=${3:-auto}
 
     if [ "${gate}" = "off" ]; then
         return 0
     fi
 
-    echo "Topology gate: verifying NG=${ng_name} at level=${level} (gate=${gate})"
+    echo "Topology gate: verifying NG=${ng_name} at layer=${layer} (gate=${gate})"
 
-    # Pull every node in the NG that already has AWS topology labels.
-    # We need the same depth across all nodes; the gate is meaningful
-    # only when every node reports the same fabric depth (mixing 3- and
-    # 4-layer rows is not expected in a single homogeneous NG).
+    # cloud-controller-manager writes the topology labels asynchronously
+    # after a node becomes Ready. When called right after NG goes ACTIVE
+    # the labels may still be missing — wait briefly so the gate has
+    # something to verify against.
+    if ! _topo_wait_aws_topology_labels "${ng_name}"; then
+        echo "  WARN: timed out waiting for AWS topology labels on NG ${ng_name}; skipping gate" >&2
+        return 0
+    fi
+
+    # Pull every node in the NG that has at least one AWS topology label.
     local nodes_json
     nodes_json=$(kubectl get nodes \
         -l "eks.amazonaws.com/nodegroup=${ng_name},topology.k8s.aws/network-node-layer-1" \
@@ -449,8 +459,7 @@ verify_topology() {
         return 0
     fi
 
-    # Build a uniform per-node topology view: forward layers[] (AWS native)
-    # and reverse-numbered levels[] (our schema). All in one jq pipeline.
+    # Per-node topology view: top-down layers[] from AWS-native labels.
     local topo_json
     topo_json=$(echo "${nodes_json}" | jq '
       [.items[]
@@ -465,78 +474,69 @@ verify_topology() {
           | sort_by(.n)
           | map(.v)) as $layers
        | {
-           node:    $node.metadata.name,
-           az:      ($node.metadata.labels["topology.kubernetes.io/zone"] // "unknown"),
-           depth:   ($layers | length),
-           layers:  $layers,
-           levels:  ($layers | reverse)
+           node:         $node.metadata.name,
+           az:           ($node.metadata.labels["topology.kubernetes.io/zone"] // "unknown"),
+           layers:       $layers,
+           bottom_layer: ($layers | length)
          }
-       | select(.depth > 0)]')
+       | select(.bottom_layer > 0)]')
 
-    # All nodes should share a single depth — bail with WARN otherwise.
-    local depths
-    depths=$(echo "${topo_json}" | jq -r '[.[].depth] | unique | join(",")')
-    local depth_count
-    depth_count=$(echo "${depths}" | tr ',' '\n' | wc -l)
-    if [ "${depth_count}" -ne 1 ]; then
-        echo "  WARN: nodes report mixed fabric depths (${depths}); skipping gate"
+    # All nodes in a single managed NG run the same instance type, so
+    # bottom_layer should be uniform — bail with WARN otherwise.
+    local layer_counts
+    layer_counts=$(echo "${topo_json}" | jq -r '[.[].bottom_layer] | unique | join(",")')
+    local distinct_layer_counts
+    distinct_layer_counts=$(echo "${layer_counts}" | tr ',' '\n' | wc -l)
+    if [ "${distinct_layer_counts}" -ne 1 ]; then
+        echo "  WARN: nodes report mixed layer counts (${layer_counts}); skipping gate"
         return 0
     fi
 
-    local depth
-    depth=$(echo "${topo_json}" | jq -r '.[0].depth')
+    local bottom_layer
+    bottom_layer=$(echo "${topo_json}" | jq -r '.[0].bottom_layer')
 
-    # Resolve level alias → forward AWS layer index (1-based).
-    # forward index = depth - distance_from_leaf + 1
-    local layer_idx
-    case "${level}" in
-        L1)              layer_idx=1 ;;                          # spine (top)
-        L2)              layer_idx=$((depth - 1)) ;;             # one above leaf
-        L3|LEAF|LEVEL_1) layer_idx=${depth} ;;                   # leaf
-        LEVEL_2)         layer_idx=$((depth - 1)) ;;
-        LEVEL_3)         layer_idx=$((depth - 2)) ;;
-        LEVEL_4)         layer_idx=$((depth - 3)) ;;
-        LEVEL_5)         layer_idx=$((depth - 4)) ;;
-        LEVEL_6)         layer_idx=$((depth - 5)) ;;
-        LEVEL_7)         layer_idx=$((depth - 6)) ;;
-        LEVEL_8)         layer_idx=$((depth - 7)) ;;
-        *)
-            echo "ERROR: invalid GPU_TOPOLOGY_GATE_LEVEL='${level}'"
-            echo "       Expected: L1 | L2 | L3 | LEAF | LEVEL_1..LEVEL_8"
-            return 1
-            ;;
-    esac
+    # Resolve `auto` → bottom layer of each instance.
+    local layer_n
+    if [ "${layer}" = "auto" ]; then
+        layer_n=${bottom_layer}
+    elif [[ "${layer}" =~ ^[1-9][0-9]*$ ]]; then
+        layer_n=${layer}
+    else
+        echo "ERROR: invalid GPU_TOPOLOGY_GATE_LAYER='${layer}'"
+        echo "       Expected: auto | <positive integer>"
+        return 1
+    fi
 
-    if [ "${layer_idx}" -lt 1 ] || [ "${layer_idx}" -gt "${depth}" ]; then
-        echo "  WARN: level=${level} resolves to layer-${layer_idx} but fabric depth is ${depth}; out of range, skipping gate"
+    if [ "${layer_n}" -lt 1 ] || [ "${layer_n}" -gt "${bottom_layer}" ]; then
+        echo "  WARN: layer=${layer_n} out of range for instance type with ${bottom_layer} layers; skipping gate"
         return 0
     fi
 
-    # Count unique values at the resolved layer index across all nodes.
+    # Count unique values at AWS layer-N across all nodes.
     # layers[] is 0-indexed in jq; AWS layer-1 = layers[0].
     local unique_nodes
     unique_nodes=$(echo "${topo_json}" \
-        | jq -r --argjson idx "$((layer_idx - 1))" \
+        | jq -r --argjson idx "$((layer_n - 1))" \
             '.[] | (.layers[$idx] // "__missing__")' \
         | sort -u)
     local unique_count
     unique_count=$(printf '%s\n' "${unique_nodes}" | grep -c . || true)
 
     if [ "${unique_count}" -eq 0 ]; then
-        echo "  WARN: no topology layer-${layer_idx} values found across nodes; skipping gate"
+        echo "  WARN: no values found at network-node-layer-${layer_n} across nodes; skipping gate"
         return 0
     fi
 
-    # Operator-friendly map: leaf-first level-N layout regardless of depth.
-    echo "  Topology map (depth=${depth}, leaf→spine):"
+    # Operator-friendly map: top-down layer-N layout per node.
+    echo "  Topology map (${bottom_layer} layers per instance, top-down):"
     echo "${topo_json}" \
         | jq -r '.[]
-                 | "    \(.node)  AZ=\(.az)  depth=\(.depth)  "
-                   + (.levels | to_entries | map("level-\(.key + 1)=\(.value)") | join("  "))'
+                 | "    \(.node)  AZ=\(.az)  "
+                   + (.layers | to_entries | map("layer-\(.key + 1)=\(.value)") | join("  "))'
 
     if [ "${unique_count}" -gt 1 ]; then
         echo ""
-        echo "  ❌ Topology gate FAILED: ${num_nodes} nodes spread across ${unique_count} ${level} (layer-${layer_idx}) values"
+        echo "  ❌ Topology gate FAILED: ${num_nodes} nodes spread across ${unique_count} distinct values at network-node-layer-${layer_n}"
         echo "     Unique values:"
         echo "${unique_nodes}" | sed 's/^/       /'
         echo ""
@@ -563,7 +563,7 @@ verify_topology() {
         esac
     fi
 
-    echo "  ✅ Topology gate PASSED: all ${num_nodes} node(s) share the same ${level} (layer-${layer_idx})"
+    echo "  ✅ Topology gate PASSED: all ${num_nodes} node(s) share the same network-node-layer-${layer_n}"
     return 0
 }
 
@@ -1080,7 +1080,12 @@ pg_name = "${pg_name}"
 #   - Small single-GPU types (g5/g6/g6e.xlarge etc): no EFA support at all
 #     (UnsupportedOperation: "EFA interfaces are not supported on <type>").
 #     Detected via efa_only_count == 0. Fall back to plain ENA on NIC 0.
-# Additional: NetworkCardIndex=1..N, DeviceIndex=1, InterfaceType=efa-only
+# Additional: NetworkCardIndex=1..N, DeviceIndex=0, InterfaceType=efa-only
+#   DeviceIndex=0 matches the AWS-recommended layout for all current EFA-capable
+#   GPU types (p5/p5e/p5en/p6-b200/p6-b300/g7e). Reference:
+#   https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-acc-inst-types.html
+#   DeviceIndex is per-NetworkCard, so DI=0 on secondary NICs does not collide
+#   with DI=0 on the primary NIC (which lives on NetworkCard 0).
 network_interfaces = []
 
 # Primary network card — type depends on the instance
@@ -1103,7 +1108,7 @@ network_interfaces.append({
 for nci in range(1, efa_only_count + 1):
     network_interfaces.append({
         "NetworkCardIndex": nci,
-        "DeviceIndex": 1,
+        "DeviceIndex": 0,
         "InterfaceType": "efa-only",
         "DeleteOnTermination": True,
         "Groups": [gpu_sg_id, cluster_sg_id],
@@ -1186,7 +1191,9 @@ if embed_instance_type:
         "MarketType": "capacity-block"
     }
 
-# Cluster placement group (forces same-leaf placement for EFA locality)
+# Cluster placement group (attempts to co-locate instances within a single AZ
+# for EFA locality; in practice does not guarantee that all instances share
+# the bottom-layer network node — see GPU_PG_STRATEGY notes above).
 if pg_name:
     lt_data["Placement"] = {
         "GroupName": pg_name,
@@ -1318,29 +1325,27 @@ create_gpu_nodegroup() {
     echo "Nodegroup ${ng_name} created"
 
     # Post-ACTIVE topology handling. Dispatched by GPU_TOPOLOGY_MODE.
-    #   gate    run verify_topology with GPU_TOPOLOGY_GATE (strict/warn)
-    #   label   run label_nodegroup_by_leaf (no fail) + print inventory
-    #   both    verify (warn only) + label + inventory  (diagnostic)
-    #   off     skip all topology work
+    #   gate       run verify_topology with GPU_TOPOLOGY_GATE (strict/warn)
+    #   inventory  print AWS-native topology inventory (no fail)
+    #   both       verify (warn only) + print inventory (diagnostic)
+    #   off        skip all topology work
     case "${GPU_TOPOLOGY_MODE}" in
         gate)
-            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LAYER}"
             ;;
-        label)
-            label_nodegroup_by_leaf "${ng_name}"
-            print_leaf_inventory
+        inventory)
+            print_topology_inventory "${ng_name}"
             ;;
         both)
-            verify_topology "${ng_name}" "warn" "${GPU_TOPOLOGY_GATE_LEVEL}" || true
-            label_nodegroup_by_leaf "${ng_name}"
-            print_leaf_inventory
+            verify_topology "${ng_name}" "warn" "${GPU_TOPOLOGY_GATE_LAYER}" || true
+            print_topology_inventory "${ng_name}"
             ;;
         off)
-            echo "GPU_TOPOLOGY_MODE=off; skipping topology verification + labeling"
+            echo "GPU_TOPOLOGY_MODE=off; skipping topology verification and inventory"
             ;;
         *)
             echo "WARN: unknown GPU_TOPOLOGY_MODE='${GPU_TOPOLOGY_MODE}'; defaulting to gate"
-            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LEVEL}"
+            verify_topology "${ng_name}" "${GPU_TOPOLOGY_GATE}" "${GPU_TOPOLOGY_GATE_LAYER}"
             ;;
     esac
 

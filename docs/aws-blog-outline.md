@@ -294,8 +294,8 @@ scripts/
 ├── option_install_csi_drivers.sh       # CSI Drivers（可选）
 ├── option_install_karpenter.sh         # Karpenter（可选）
 ├── option_install_gpu_nodegroups.sh    # GPU 节点组（可选）
-├── option_label_nodegroup_topology.sh  # 节点 EFA 拓扑标签（可选）
-└── *_lib.sh / pod_identity_helpers.sh  # 共享函数库（磁盘检测、架构识别、拓扑标签、Pod Identity）
+├── option_show_nodegroup_topology.sh   # 打印节点组的 AWS 原生拓扑清单（可选）
+└── *_lib.sh / pod_identity_helpers.sh  # 共享函数库（磁盘检测、架构识别、拓扑读取、Pod Identity）
 ```
 
 ### 部署流程
@@ -363,7 +363,7 @@ export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
 **GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（最多 32 张，以 p5.48xlarge 为例），并自动部署 NVIDIA Device Plugin 与 AWS EFA Kubernetes Device Plugin。
 
-> GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（L3 leaf 邻近性调度）**、**存储（FSx for Lustre 训练 + S3 Express One Zone 推理）** 三层架构，任何一层的配置不当都会显著影响训练/推理性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
+> GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（基于 AWS 原生 `topology.k8s.aws/network-node-layer-N` 的邻近性调度）**、**存储（FSx for Lustre 训练 + S3 Express One Zone 推理）** 三层架构，任何一层的配置不当都会显著影响训练/推理性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
 
 ---
 

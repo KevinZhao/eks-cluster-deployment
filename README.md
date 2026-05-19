@@ -56,7 +56,7 @@ kubectl get pods -A
 - ✅ **自动扩缩容** - Cluster Autoscaler 自动管理节点
 - ✅ **完整 CSI 支持** - EBS/EFS/FSx/S3 存储驱动
 - ✅ **GPU 节点支持** - P5/P5en/P6/G7e 实例 + EFA 多网卡 + `vpc.amazonaws.com/efa` 设备插件
-- ✅ **EFA 拓扑感知调度** - NG 起来后自动给节点打 `efa-leaf-id` / `efa-az` 标签；workload 用 nodeAffinity 挑同 leaf (`GPU_TOPOLOGY_MODE=label`)
+- ✅ **EC2 拓扑感知调度** - NG 起来后按 NG 打印拓扑清单(读 cloud-controller-manager 写入的 `topology.k8s.aws/network-node-layer-N`)；workload 用 nodeAffinity 直接绑定 AWS 原生 label,挑出共享同一 bottom-layer network node 的子集 (`GPU_TOPOLOGY_MODE=inventory`)
 
 ### 集群架构
 
@@ -128,7 +128,7 @@ EKS Cluster (Kubernetes 1.35)
 | `option_install_csi_drivers.sh` | 安装 EFS/FSx/S3 CSI Driver | VPC 内 |
 | `option_install_karpenter.sh` | 安装 Karpenter 自动扩缩容 | VPC 内 |
 | `option_install_gpu_nodegroups.sh` | 创建 GPU 托管节点组（EFA + 拓扑感知）| VPC 内 |
-| `option_label_nodegroup_topology.sh` | 为节点组打 EFA leaf / AZ 拓扑标签 | VPC 内 |
+| `option_show_nodegroup_topology.sh` | 打印节点组的 AWS 原生拓扑清单(`topology.k8s.aws/network-node-layer-N`) | VPC 内 |
 | `examples/option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | VPC 内 |
 | `examples/option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | VPC 内 |
 
@@ -279,11 +279,11 @@ eks-cluster-deployment/
 │   ├── option_install_csi_drivers.sh       # 安装 EFS/FSx/S3 CSI（可选）
 │   ├── option_install_karpenter.sh         # 安装 Karpenter（可选）
 │   ├── option_install_gpu_nodegroups.sh    # 创建 GPU 节点组 + EFA（可选）
-│   ├── option_label_nodegroup_topology.sh  # EFA 拓扑标签（可选）
+│   ├── option_show_nodegroup_topology.sh   # 打印节点组的 AWS 原生拓扑清单（可选）
 │   ├── instance_arch_lib.sh                # 共享库：实例架构检测
 │   ├── disk_detection_lib.sh               # 共享库：NVMe 数据盘识别
 │   ├── pod_identity_helpers.sh             # 共享库：Pod Identity
-│   └── topology_labeling_lib.sh            # 共享库：GPU 拓扑标签
+│   └── topology_inventory_lib.sh           # 共享库：读 AWS 原生拓扑标签
 │
 ├── examples/                               # 参考 manifest 与测试脚本
 │   ├── README.md                           # 测试流程说明

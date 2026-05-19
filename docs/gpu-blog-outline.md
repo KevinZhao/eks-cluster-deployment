@@ -1,13 +1,13 @@
 # EKS 上的 GPU 工作负载:节点、网络与高性能存储的架构实践
 
-**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储(训练 + 推理)** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `DescribeInstanceTopology` 的 L3 leaf 标签化调度、训练场景的 FSx for Lustre(PERSISTENT_2)、推理场景的 S3 Express One Zone + Mountpoint CSI Driver 等关键设计决策,并提供完整的自动化部署脚本。
+**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储(训练 + 推理)** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度、训练场景的 FSx for Lustre(PERSISTENT_2)、推理场景的 S3 Express One Zone + Mountpoint CSI Driver 等关键设计决策,并提供完整的自动化部署脚本。
 
 **目录**
 
 01 [一、引言:GPU 工作负载的架构挑战](#section1)
 02 [二、GPU 节点组:EFA 多网卡设计](#section2)
 03 [三、四种定价模式的 Launch Template 架构](#section3)
-04 [四、网络邻近性:基于 DescribeInstanceTopology 的标签化调度](#section4)
+04 [四、网络邻近性:基于 AWS 原生拓扑标签的调度](#section4)
 05 [五、节点本地存储:Instance Store 与容器运行时的解耦](#section5)
 06 [六、训练场景存储:FSx for Lustre 架构](#section6)
 07 [七、推理场景存储:S3 Express One Zone + Mountpoint](#section7)
@@ -26,7 +26,7 @@
 第一篇给出了"能跑起来"的通用集群,本篇聚焦其上的 GPU 工作负载,让集群"能训练、能推理"。随着生成式 AI 与大模型训练在企业环境的快速落地,GPU 工作负载对**计算、网络、存储**三层都提出了超越通用节点的要求:
 
 * **计算层**:GPU 驱动、EFA 多网卡、Device Plugin 协同
-* **网络层**:allreduce 延迟对网络拓扑敏感,需要感知 L3 leaf 邻近性
+* **网络层**:allreduce 延迟对网络拓扑敏感,需要感知 bottom-layer network node 邻近性
 * **存储层**:训练需要高聚合吞吐,推理需要低延迟对象访问,两者选型截然不同
 
 GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Template 中精确控制 EFA 多网卡配置与定价模式。第一篇概览了 EBS / EFS / FSx / S3 四种 CSI Driver 的接入方式,本文将深入 FSx for Lustre 与 S3 Express One Zone 这两类高性能存储在 GPU 训练/推理链路上的选型策略、架构设计、性能优化点与已知限制。
@@ -53,7 +53,7 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │            Network Layer                              │  │
 │  │  EFA 多网卡 (最多 32 张/节点)                           │  │
-│  │  + Topology-aware scheduling (L3 leaf labeling)        │  │
+│  │  + Topology-aware scheduling (AWS network-node-layer)  │  │
 │  └───────────────────────────────────────────────────────┘  │
 │                           │                                   │
 │  ┌───────────────────────────────────────────────────────┐  │
@@ -79,7 +79,7 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 ### 2.2 ENI 配置的三元组
 每张 EFA 网卡在 Launch Template 中由三个字段精确定位:
 - **NetworkCardIndex**:对应物理 NIC 卡槽(0..N)
-- **DeviceIndex**:操作系统设备序号(主 NIC=0,附加 NIC=1)
+- **DeviceIndex**:每张 NIC 卡内的设备序号。AWS 文档对所有当前 EFA-capable GPU 实例的次卡均推荐 `DeviceIndex=0`(参考 [EFA configuration for accelerated instance types](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-acc-inst-types.html))
 - **InterfaceType**:`interface`(纯 ENA)/ `efa`(ENA+EFA)/ `efa-only`(仅 EFA)
 
 ### 2.3 通用拓扑模式
@@ -87,8 +87,9 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 ```
 ENI 0:    NetworkCardIndex=0, DeviceIndex=0, InterfaceType=efa
           (主 IP + EFA,承载管理流量与第一张 EFA 通道)
-ENI 1..N: NetworkCardIndex=1..N, DeviceIndex=1, InterfaceType=efa-only
-          (纯 EFA,专供 NCCL 使用)
+ENI 1..N: NetworkCardIndex=1..N, DeviceIndex=0, InterfaceType=efa-only
+          (纯 EFA,专供 NCCL 使用;DeviceIndex 是每张 NIC 卡内的序号,
+           次卡的 DI=0 与主卡 DI=0 不冲突)
 ```
 各型号 N 的取值(脚本 `gpu_efa_only_nic_count` 按实例类型返回):
 
@@ -104,8 +105,8 @@ p6-b300 具有 `MaximumNetworkCards=17` 但 `MaximumEfaInterfaces=16` 的非对�
 
 脚本针对此型号使用独立分支:
 ```
-ENI 0:     NetworkCardIndex=0, InterfaceType=interface   (纯 ENA)
-ENI 1..16: NetworkCardIndex=1..16, InterfaceType=efa-only (EFA)
+ENI 0:     NetworkCardIndex=0,  DeviceIndex=0, InterfaceType=interface  (纯 ENA)
+ENI 1..16: NetworkCardIndex=1..16, DeviceIndex=0, InterfaceType=efa-only (EFA)
 ```
 
 **架构启示**:LT 代码不能对所有 EFA-capable 实例一刀切,需要按实例型号维护一张拓扑表。
@@ -163,76 +164,79 @@ ODCR 和 Capacity Block 路径会根据预留 ID 自动加后缀,无需手动设
 
 ---
 
-## 四、网络邻近性:基于 DescribeInstanceTopology 的标签化调度
+## 四、网络邻近性:基于 AWS 原生拓扑标签的调度
 
 第一篇聚焦在"把集群跑起来",未涉及跨节点训练的网络拓扑问题。对于分布式训练,节点间网络距离直接影响 allreduce 性能,本章展开这一维度的架构设计。
 
 ### 4.1 训练工作负载的拓扑敏感性
-GPU 训练的 NCCL allreduce 带宽与节点间的网络层级强相关:
-- 同 **L3 leaf**(同一 Top-of-Rack):延迟最低
-- 同 **L2 aggregator**:中等
-- 同 **L1 spine**:较高
-- 跨 spine:最高
+按 [AWS EC2 instance topology 文档](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/how-ec2-instance-topology-works.html),`DescribeInstanceTopology` 返回的 `NetworkNodes` 是一个**自上而下**的网络节点列表,其中**最后一项是连到实例的那个网络节点(bottom layer)**。两个实例的 `NetworkNodes` 共享的层级越低(越接近末尾),它们之间的跳数越少;只有都共享 bottom layer 的实例距离最近。
 
-对于数十节点规模的分布式训练,把所有节点收敛到同一 L3 leaf 是重要的性能优化目标。
+对于数十节点规模的分布式训练,把所有节点收敛到同一 bottom-layer network node 是重要的性能优化目标。
 
-### 4.2 两种方案对比:Placement Group vs Topology Label
-AWS 提供 `cluster` 策略的 Placement Group,目标是把实例放到"低延迟的网络分组"。但实测表明,在 p5 类型实例上,cluster PG 在 EC2 承诺的"同一分组"与实际的 L3 leaf 之间存在差异 —— **同一 PG 内的多个实例可能落在不同的 L3 leaf,仅保证同一 L2 aggregator 级别**。对训练工作负载而言,L2 级别的保证并不足以带来显著的 allreduce 性能提升,而 PG 约束反而可能加剧 `InsufficientInstanceCapacity` 的发生概率。
+### 4.2 两种方案对比:Placement Group vs 直接读 AWS 拓扑标签
+AWS 提供 `cluster` 策略的 Placement Group,目标是把实例放到"低延迟的网络分组"。但实测表明,在 p5 类型实例上,cluster PG 与"实例之间是否共享 bottom-layer network node"之间存在差异 —— **同一 PG 内的多个实例可能落在不同的 bottom-layer network node,只保证共享上一层**。对训练工作负载而言,这一保证并不足以带来显著的 allreduce 性能提升,而 PG 约束反而可能加剧 `InsufficientInstanceCapacity` 的发生概率。
 
-基于此,脚本默认采用**标签化调度(Topology Labeling)**方案:
+基于此,脚本默认采用**直接读 AWS 原生拓扑标签**的方案,不写任何自定义标签:
 1. 不使用 Placement Group(`GPU_PG_STRATEGY=none` 为默认)
-2. 节点 Ready 后，从 AWS cloud-controller-manager 注入的 `topology.k8s.aws/network-node-layer-N` 标签读取拓扑
-3. 将 L3 leaf 的节点标识作为 label 贴到对应的 Kubernetes Node 上
-4. 由工作负载通过 `nodeAffinity` 选择同 leaf 的节点子集
+2. 节点 Ready 后,直接读取 cloud-controller-manager 注入的 `topology.k8s.aws/network-node-layer-N` 与 `topology.k8s.aws/zone-id`
+3. 按 NG 打印 topology inventory,按 bottom-layer network node 分组
+4. 由工作负载通过 `nodeAffinity` 直接绑定到 AWS 原生标签
 
 ### 4.3 拓扑数据来源：K8s 节点标签
 
-AWS cloud-controller-manager 在节点 `Initialize` 阶段就把每个 GPU 实例的网络层级路径写入节点标签，脚本只需 `kubectl get nodes` 一次即可拿到全部数据，无需调用 `ec2:DescribeInstanceTopology`，也不依赖 `eks:DescribeNodegroup` / `autoscaling:DescribeAutoScalingGroups` 等额外 IAM 权限（在 SCP 受限环境中尤其重要）。
+AWS cloud-controller-manager 在节点 `Initialize` 阶段就把每个 GPU 实例的网络层级写入节点标签,脚本只需 `kubectl get nodes` 一次即可拿到全部数据,无需调用 `ec2:DescribeInstanceTopology`,也不依赖 `eks:DescribeNodegroup` / `autoscaling:DescribeAutoScalingGroups` 等额外 IAM 权限(在 SCP 受限环境中尤其重要)。
 
-每个 GPU 节点上由 cloud-controller-manager 写入的标签示意：
+每个 GPU 节点上由 cloud-controller-manager 写入的标签示意(自上而下,最后一项连到实例):
 
 ```
-topology.k8s.aws/network-node-layer-1 = nn-aaaa   # AWS index 0，最远（spine）
-topology.k8s.aws/network-node-layer-2 = nn-bbbb   # 中间层（aggregator 或 BG）
-topology.k8s.aws/network-node-layer-3 = nn-cccc   # 3 层架构上是 leaf，4 层架构上是 aggregator
-topology.k8s.aws/network-node-layer-4 = nn-dddd   # 仅 4 层架构存在
+topology.k8s.aws/network-node-layer-1 = nn-aaaa   # top layer
+topology.k8s.aws/network-node-layer-2 = nn-bbbb   # 中间层
+topology.k8s.aws/network-node-layer-3 = nn-cccc   # 3-node 拓扑上是 bottom layer
+topology.k8s.aws/network-node-layer-4 = nn-dddd   # 仅 4-node 拓扑存在,是 bottom layer
 topology.k8s.aws/zone-id              = usw2-az1
 ```
 
-脚本根据存在的最高 `layer-N` 编号推算 fabric `depth`，再以 distance-from-instance 反向编号生成自己的 `network-topology/level-N`：`level-1` 始终是离实例最近的 leaf（即原始 `layer-depth`），便于工作负载 YAML 在 3 层与 4 层架构之间无差别复用。
+每种实例类型固定返回 3 个或 4 个 NetworkNodes,详见 [AWS Prerequisites for Amazon EC2 topology](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-topology-prerequisites.html):
 
-### 4.4 节点标签
-脚本写入两类标签：以 distance-from-instance 为编号的 `network-topology/level-N`（与 fabric depth 解耦，自动适配 3/4/5 层架构），加上两个无前缀的便捷别名 `efa-leaf-id` 与 `efa-az`，方便工作负载使用。
+| NetworkNodes 长度 | 实例类型 | bottom layer |
+|---|---|---|
+| 3 | p3dn / p4d / p4de / p5 / p5e / **p5en** / p6e-gb200 / g6e / g7e / hpc 系列 / trn1 / trn1n / trn2 / trn2u | `network-node-layer-3` |
+| 4 | **p6-b200.48xlarge** / **p6-b300.48xlarge** | `network-node-layer-4` |
 
-```
-network-topology/depth=<3|4|5>
-network-topology/level-1=<leaf-id>      # distance-1，始终是 leaf
-network-topology/level-2=<id>           # distance-2，aggregator
-network-topology/level-3=<id>           # distance-3，3-layer 上是 spine，4-layer 上是 BG
-network-topology/level-4=<id>           # distance-4，4-layer 上是 spine（depth>=4 时存在）
-efa-leaf-id=<level-1 同值>              # 便捷别名
-efa-az=us-east-1a                       # 便捷别名
-```
+### 4.4 脚本不再叠加自定义标签
+脚本不写任何自己的 label,只读 AWS 原生标签后打印 inventory。
 
-> 上游 `topology.k8s.aws/network-node-layer-N` 标签由 cloud-controller-manager 注入，是脚本的输入；本文使用的 `network-topology/level-N` 是脚本叠加的、按 distance-from-instance 编号的视图标签。
+为什么不再做反向编号或别名:
+- AWS 文档使用的术语就是 `network nodes` / `top layer` / `bottom layer`,自创 `leaf` / `spine` / `aggregator` / `depth` 概念会引入与 AWS 文档不一致的 terminology
+- p5/p5en 与 p6-b300 的 NetworkNodes 长度本来就不同(3 vs 4),任何"反向统一编号"都是脚本层的额外抽象,而不是 AWS 的客观事实
+- 直接面对 AWS 原生 layer-N 编号,workload YAML 与 AWS 文档的字段一一对应,任何阅读 [AWS topology API 文档](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/how-ec2-instance-topology-works.html) 的人都能立即对得上
 
 ### 4.5 工作负载端的使用
+直接使用 AWS 原生 label。一个 NG 内的实例类型固定,因此 `network-node-layer-N` 的 N 也固定,只要按机型选对应的层即可。
+
 ```yaml
+# p6-b300 节点组(NetworkNodes 长度=4,bottom layer 是 layer-4)
 affinity:
   nodeAffinity:
     requiredDuringSchedulingIgnoredDuringExecution:
       nodeSelectorTerms:
         - matchExpressions:
-            - key: efa-leaf-id
+            - key: topology.k8s.aws/network-node-layer-4
               operator: In
-              values: ["nn-cccc"]
+              values: ["nn-dddd"]
+            - key: topology.k8s.aws/zone-id
+              operator: In
+              values: ["usw2-az1"]
 ```
-脚本还提供 `print_leaf_inventory` 辅助命令,列出每个 leaf 下的节点数量,便于调度决策。
+
+如果 NG 跑的是 p5 / p5en(NetworkNodes 长度=3),把 `network-node-layer-4` 改为 `network-node-layer-3`。
+
+脚本提供 `option_show_nodegroup_topology.sh` 命令,按 NG 打印每个节点的 `layer-1..N` 链路并按 bottom-layer network node 分组,便于挑出含 N 个以上节点的同 bottom-layer 子集。
 
 ### 4.6 Gate 模式(可选)
-脚本通过 `GPU_TOPOLOGY_MODE` 控制 4 种行为：`label`（仅打标签，默认）、`gate`（校验拓扑后再决定）、`both`（校验 + 打标签）、`off`（跳过）。
+脚本通过 `GPU_TOPOLOGY_MODE` 控制 4 种行为：`inventory`（默认,只打印拓扑清单）、`gate`（校验后再决定）、`both`（校验 + 打印清单）、`off`（跳过）。
 
-对于要求严格同 leaf 的严苛场景,设置 `GPU_TOPOLOGY_MODE=gate` + `GPU_TOPOLOGY_GATE=strict`：节点创建后校验拓扑，不满足则将 NG 缩到 `minSize=0,maxSize=1,desiredSize=0`（EKS API 不接受 `maxSize=0`，因此保留 1 作为容量上限），实际节点数缩为 0，作为"软暂停"状态。
+对于要求所有节点严格共享同一 bottom-layer network node 的严苛场景,设置 `GPU_TOPOLOGY_MODE=gate` + `GPU_TOPOLOGY_GATE=strict` + `GPU_TOPOLOGY_GATE_LAYER=auto`(默认值,等于该 NG 实例类型的 bottom layer);节点创建后校验拓扑,不满足则将 NG 缩到 `minSize=0,maxSize=1,desiredSize=0`(EKS API 不接受 `maxSize=0`,因此保留 1 作为容量上限),实际节点数缩为 0,作为"软暂停"状态。如果需要在更高一层做校验,可以把 `GPU_TOPOLOGY_GATE_LAYER` 设为具体的层编号(如 `=2`,对应 AWS 自上而下的第 2 层)。
 
 ---
 
@@ -413,7 +417,7 @@ fi_pingpong -p efa      # 端到端 EFA 通信测试
 
 ### 8.4 拓扑标签验证
 ```bash
-kubectl get nodes -L efa-leaf-id,efa-az,network-topology/level-1,network-topology/depth
+kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/network-node-layer-2,topology.k8s.aws/network-node-layer-3,topology.k8s.aws/network-node-layer-4,topology.k8s.aws/zone-id
 ```
 
 ### 8.5 FSx / S3 挂载验证
@@ -441,7 +445,7 @@ kubectl exec inference-pod -- ls /mnt/s3
 ### 9.1 能力沉淀
 本文在第一篇的集群基础上,把 GPU 工作负载的**计算、网络、存储**三层架构一次性打通:
 - **计算层**:覆盖 P5 / P5en / P6 / G7e 四个系列,包含 p6-b300 的非对称拓扑处理,EFA userspace 自动补齐
-- **网络层**:以 `DescribeInstanceTopology` 为基础的标签化调度,让工作负载按 L3 leaf 粒度选择节点
+- **网络层**:直接使用 cloud-controller-manager 写入的 `topology.k8s.aws/network-node-layer-N` 进行调度,让工作负载按 bottom-layer network node 粒度选择节点
 - **存储层**:训练用 FSx for Lustre(PERSISTENT_2,GB/s 级吞吐),推理用 S3 Express One Zone(ms 级延迟,按桶扩展)
 
 ### 9.2 三组关键取舍
@@ -459,7 +463,7 @@ kubectl exec inference-pod -- ls /mnt/s3
 
 * 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，先按照第一篇完成基础集群部署。
 * 在 VPC 内的堡垒机上执行 `./scripts/option_install_gpu_nodegroups.sh` 创建 GPU 节点组，按需选择 On-Demand / Spot / ODCR / Capacity Block 四种定价模式。
-* 通过 `./scripts/option_label_nodegroup_topology.sh` 为 GPU 节点打上 L3 leaf 拓扑标签，启用拓扑感知调度。
+* 通过 `./scripts/option_show_nodegroup_topology.sh` 打印每个 GPU 节点组的 AWS 原生拓扑清单(按 bottom-layer network node 分组),用于拓扑感知调度的决策。
 * 训练工作负载挂载 FSx for Lustre（PERSISTENT_2），推理工作负载挂载 S3 Express One Zone + Mountpoint CSI Driver。
 
 **相关产品：**
