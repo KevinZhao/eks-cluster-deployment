@@ -52,7 +52,7 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 │                           │                                   │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │            Network Layer                              │  │
-│  │  EFA 多网卡 (最多 32 张/节点)                           │  │
+│  │  EFA 多网卡 (p5/p5e 最多 32 张,其它机型见 §2.3/2.4)     │  │
 │  │  + Topology-aware scheduling (AWS network-node-layer)  │  │
 │  └───────────────────────────────────────────────────────┘  │
 │                           │                                   │
@@ -75,7 +75,7 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 ### 2.1 EFA 在 GPU 训练中的作用
 - Elastic Fabric Adapter:AWS 专用的 HPC 互联,支持 OS-bypass
 - 为 NCCL allreduce 提供低延迟、高带宽的集合通信通道
-- 多网卡并行为大规模分布式训练提供极高的聚合带宽(以 p5.48xlarge 为例,聚合网络带宽可达 3.2 Tbps;具体数字请以 [AWS EC2 P5 实例规格文档](https://aws.amazon.com/ec2/instance-types/p5/) 为准)
+- 多网卡并行为大规模分布式训练提供极高的聚合带宽(以 p5.48xlarge 为例,总聚合网络带宽 3,200 Gbps,其中 EFA 最高 3,200 Gbps,IP 流量最高 800 Gbps,两者共享同一条 3,200 Gbps 总管道;参见 [EFA configuration for accelerated instance types](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-acc-inst-types.html))
 
 ### 2.2 ENI 配置的三元组
 每张 EFA 网卡在 Launch Template 中由三个字段精确定位:
@@ -92,9 +92,9 @@ ENI 1..N: NetworkCardIndex=1..N, DeviceIndex=0, InterfaceType=efa-only
           (纯 EFA,专供 NCCL 使用;DeviceIndex 是每张 NIC 卡内的序号,
            次卡的 DI=0 与主卡 DI=0 不冲突)
 ```
-各型号 N 的取值(脚本 `gpu_efa_only_nic_count` 按实例类型返回):
+各型号 N 的取值(脚本 `gpu_efa_only_nic_count` 按实例类型返回;数字对应每张 Network Card 上挂一个 ENI 的部署模式):
 
-| 实例类型 | 总 ENI | 主 NIC | EFA-only NIC |
+| 实例类型 | NIC 卡总数 | 主卡(NCI=0) | EFA-only NIC(NCI=1..N) |
 |---|---|---|---|
 | p5.48xlarge | 32 | 1 | 31 |
 | p5en.48xlarge | 16 | 1 | 15 |
@@ -413,7 +413,10 @@ resources:
     vpc.amazonaws.com/efa: 32   # 常见漏写,导致 NCCL 走 TCP fallback 而非 EFA
 ```
 
-对于 Blackwell 架构(p6-b300),NVIDIA Device Plugin v0.15+ 需启用 `PASS_DEVICE_SPECS=true`,否则 `/dev/nvidia*` 设备无法正确暴露到容器。
+两个与 NVIDIA Device Plugin 相关的实践要点:
+
+- **Blackwell 架构(p6-b200 / p6-b300)的版本要求**:NVIDIA Device Plugin 对 Blackwell 架构的 `nvidia.com/gpu.product` 标签识别由 [PR #1240](https://github.com/NVIDIA/k8s-device-plugin/pull/1240) 引入,backport 到 release-0.17,因此**生产部署 Blackwell GPU 节点应使用 v0.17.2 或更新版本**。脚本默认 `NVIDIA_DEVICE_PLUGIN_VERSION=v0.19.1`(2026-04-23 发布的最新稳定版),在 nvcr.io 不可达的区域(如 cn-*)可通过 `NVIDIA_DEVICE_PLUGIN_IMAGE` 指向私有镜像。
+- **`PASS_DEVICE_SPECS=true`**:[NVIDIA 官方文档](https://github.com/NVIDIA/k8s-device-plugin) 说明该开关的用途是**让 device plugin 与 Kubernetes CPUManager 互操作**(把设备节点路径与权限作为 device specs 透传给 kubelet),与 GPU 架构无关。脚本默认开启此开关并以 `privileged: true` 运行,以便在使用 CPUManager 的节点上可被正确分配设备。
 
 ### 8.2 GPU 节点就绪验证
 ```bash

@@ -361,7 +361,7 @@ export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
 **Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。通过 `./scripts/option_install_karpenter.sh` 一键部署。
 
-**GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（最多 32 张，以 p5.48xlarge 为例），并自动部署 NVIDIA Device Plugin 与 AWS EFA Kubernetes Device Plugin。
+**GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（p5.48xlarge / p5e.48xlarge 上最多 32 张，p5en 16 张，p6-b200 8 张，p6-b300 17 张，g7e.48xlarge 4 张），并自动部署 NVIDIA Device Plugin 与 AWS EFA Kubernetes Device Plugin。
 
 > GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（基于 AWS 原生 `topology.k8s.aws/network-node-layer-N` 的邻近性调度）**、**存储（FSx for Lustre 提供高聚合吞吐；S3 Express One Zone 作为低延迟、高 TPS 的对象存储选项按访问模式选用）** 三层架构，任何一层的配置不当都会显著影响 GPU 工作负载性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
 
@@ -436,7 +436,7 @@ kubectl get storageclass
 
 针对**多样化存储需求**，提供 EBS、EFS、FSx、S3 四种 CSI Driver 的一键部署，覆盖块存储、共享文件系统、高性能存储和对象存储挂载等全部场景。
 
-针对 **GPU 工作负载**，通过 Managed Node Groups 提供 P5、P5en、P6、G7e 等最新 GPU 实例的支持，并集成 EFA 多网卡网络与四种定价模式。更深入的 GPU 架构实践（多网卡拓扑、邻近性调度、训练/推理差异化存储）将在本系列第二篇中展开。
+针对 **GPU 工作负载**，通过 Managed Node Groups 提供 P5、P5en、P6、G7e 等最新 GPU 实例的支持，并集成 EFA 多网卡网络与四种定价模式。更深入的 GPU 架构实践（多网卡拓扑、邻近性调度、按访问模式选型的高性能存储）将在本系列第二篇中展开。
 
 所有这些方案都已沉淀为标准化、自动化的部署脚本，实现约 30 分钟完成生产级集群部署，幂等设计支持重复执行，非交互模式便于 CI/CD 集成。
 

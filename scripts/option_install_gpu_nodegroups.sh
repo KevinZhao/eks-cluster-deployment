@@ -205,7 +205,11 @@ fi
 # NVIDIA Kubernetes device plugin. Override NVIDIA_DEVICE_PLUGIN_IMAGE when
 # deploying to regions where nvcr.io is unreachable (e.g. cn-*) and mirror
 # the image into a reachable registry (ECR/Harbor/etc).
-NVIDIA_DEVICE_PLUGIN_VERSION="${NVIDIA_DEVICE_PLUGIN_VERSION:-v0.15.0}"
+#
+# Default v0.19.1 (released 2026-04-23). Earlier versions <v0.17.2 do not
+# recognize Blackwell architecture in nvidia.com/gpu.product labels, so are
+# unsuitable for p6-b200 / p6-b300 nodegroups.
+NVIDIA_DEVICE_PLUGIN_VERSION="${NVIDIA_DEVICE_PLUGIN_VERSION:-v0.19.1}"
 NVIDIA_DEVICE_PLUGIN_IMAGE="${NVIDIA_DEVICE_PLUGIN_IMAGE:-nvcr.io/nvidia/k8s-device-plugin:${NVIDIA_DEVICE_PLUGIN_VERSION}}"
 
 # Local NVMe Instance Store LVM configuration.
