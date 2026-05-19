@@ -87,9 +87,9 @@
 │  │  ┌───────────────────────────────────────┼───────────────────────────────────────┐  │  │
 │  │  │                              Storage Layer                                    │  │  │
 │  │  │  ┌─────────┐  ┌─────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │  │  │
-│  │  │  │ EBS CSI │  │ EFS CSI │  │ FSx Lustre  │  │ S3 CSI (Mountpoint)         │  │  │  │
-│  │  │  │ (RWO)   │  │ (RWX)   │  │ CSI (RWX)   │  │ (RWX, 非POSIX) + Express 1Z │  │  │  │
-│  │  │  └─────────┘  └─────────┘  └─────────────┘  └─────────────────────────────┘  │  │  │
+│  │  │  │ EBS CSI │  │ EFS CSI │  │ FSx Lustre  │  │ S3 CSI (Mountpoint)         │  │  │
+│  │  │  │ (RWO)   │  │ (RWX)   │  │ CSI (RWX)   │  │ Standard S3 / Express 1Z    │  │  │
+│  │  │  └─────────┘  └─────────┘  └─────────────┘  └─────────────────────────────┘  │  │
 │  │  └───────────────────────────────────────────────────────────────────────────────┘  │  │
 │  │                                                                                     │  │
 │  └─────────────────────────────────────────────────────────────────────────────────────┘  │
@@ -251,7 +251,7 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 > **重要兼容性提示**：本方案系统节点在 user-data 中通过 `dnf install lustre-client` 安装客户端，AL2023 仓库提供的版本为 2.15.x。创建 FSx 时请使用 `DeploymentType=PERSISTENT_2`（Lustre 2.15）。若使用 `SCRATCH_2` 或 `PERSISTENT_1`（Lustre 2.10），挂载会因版本不兼容而失败。
 
-**Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶；配合 **S3 Express One Zone** 可提供个位数毫秒级延迟与极高的请求吞吐，是 GPU 推理场景下模型加载的理想选择。需要注意的是 Mountpoint for S3 并非完整 POSIX 文件系统，写入语义有限（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
+**Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶；可选配合 **S3 Express One Zone** 这一低延迟、高 TPS 的 directory bucket 存储类(同 AZ 共置时首字节延迟约 4 ms,单桶默认 200K reads/s,可申请到 2M reads/s),适合**高 TPS 小对象 random read、低延迟写、跨 Pod 并发拉同一对象**(scale-out 模型分发)等访问模式;**常驻推理服务的模型加载、大文件顺序读、跨 AZ 共享、长期保留**仍以 Standard S3 桶为主。需要注意的是 Mountpoint for S3 并非完整 POSIX 文件系统，写入语义有限（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
 
 FSx for Lustre 与 S3 Express One Zone 在 GPU 工作负载链路上的选型策略、性能优化与已知限制，将在**本系列第二篇**中展开。
 
@@ -396,7 +396,7 @@ kubectl get storageclass
 
 * 私有 API Endpoint（API Server 不暴露公网）
 * Pod Identity 替代 IRSA（简化 IAM 管理）
-* VPC Endpoints 完整配置（13 个 Interface + 1 个 S3 Gateway）
+* VPC Endpoints 完整配置（私有集群 / `VPC_ENDPOINTS_MODE=full` 下创建 13 个 Interface + 1 个 S3 Gateway；公有集群 / `minimal` 模式下仅创建 4 个必需 Interface + 1 个 S3 Gateway）
 * EBS 卷加密（使用 `alias/aws/ebs` 管理的 KMS 密钥）
 * IMDSv2 强制使用（所有节点 Launch Template 设置 `HttpTokens=required`）
 * 容器运行时存储已从系统根卷剥离（LVM `/var/lib/containerd`）

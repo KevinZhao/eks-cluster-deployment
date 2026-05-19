@@ -1,6 +1,6 @@
 # EKS 上的 GPU 工作负载:节点、网络与高性能存储的架构实践
 
-**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度、训练场景的 FSx for Lustre(PERSISTENT_2)、低延迟高 TPS 对象存储 S3 Express One Zone + Mountpoint CSI Driver 等关键设计决策,并提供完整的自动化部署脚本。
+**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度,以及 FSx for Lustre(PERSISTENT_2)与 S3 Express One Zone + Mountpoint CSI Driver 这两类高性能存储按访问模式的选型,并提供完整的自动化部署脚本。
 
 **目录**
 
@@ -280,23 +280,24 @@ affinity:
 └──────────┘                 └──────────────┘                    └──────────┘
 ```
 
-### 6.3 DeploymentType 选型
-FSx for Lustre 提供多个 DeploymentType,截至 2026 年 5 月的对照如下(具体版本请以 [FSx for Lustre 官方文档](https://docs.aws.amazon.com/fsx/latest/LustreGuide/using-fsx-lustre.html) 为准):
+### 6.3 DeploymentType 与 Lustre 版本选型
+FSx for Lustre 当前支持 Lustre LTS **2.10 / 2.12 / 2.15** 三个版本,可通过 `aws fsx update-file-system --file-system-type-version` 在已有文件系统上升级版本(详见 [Managing Lustre versions](https://docs.aws.amazon.com/fsx/latest/LustreGuide/managing-lustre-version.html))。各 DeploymentType 创建时的**默认 Lustre 版本**对照如下:
 
-| DeploymentType | Lustre 版本 | 适用场景 |
+| DeploymentType | 默认 Lustre 版本 | 适用场景 |
 |---|---|---|
 | SCRATCH_1 / SCRATCH_2 | 2.10 | 短期临时文件系统 |
 | PERSISTENT_1 | 2.10 | 长期持久化(已被 PERSISTENT_2 取代) |
-| **PERSISTENT_2** | **2.15** | **长期持久化,推荐** |
+| **PERSISTENT_2**(无 metadata configuration) | **2.12** | 长期持久化,推荐 |
+| **PERSISTENT_2** + metadata configuration | **2.15** | 需要更高 metadata 性能时 |
 
-**重要兼容性要求**:本方案在节点 user-data 中通过 `dnf install lustre-client` 安装客户端，AL2023 仓库提供的版本为 2.15.x，与 Lustre 2.10 服务端不兼容。若 FSx 使用 SCRATCH_2 或 PERSISTENT_1 创建,挂载会失败并报告:
+**重要兼容性要求**:本方案在节点 user-data 中通过 `dnf install lustre-client` 安装客户端,AL2023 仓库当前提供的版本为 **2.15.x**,与 Lustre 2.10 服务端不兼容,与 2.12 服务端可兼容。若 FSx 使用 SCRATCH_2 或 PERSISTENT_1(默认 2.10)创建,挂载会失败并报告:
 ```
 mount.lustre: mount ... failed: Invalid argument
-LustreError: Server MGS version (2.10.5.0) refused connection
-  from this client with an incompatible version (2.15.6).
+LustreError: Server MGS version (2.10.x.x) refused connection
+  from this client with an incompatible version (2.15.x).
 ```
 
-因此 EKS + AL2023 环境下应始终选择 **PERSISTENT_2**。
+因此 EKS + AL2023 环境下应始终选择 **PERSISTENT_2**;若已存在的 SCRATCH_2 / PERSISTENT_1 文件系统不可重建,可先用 `aws fsx update-file-system --file-system-type-version "2.12"`(或 `"2.15"`)把服务端升到客户端兼容的版本。
 
 ### 6.4 推荐的 FSx 创建命令
 ```bash
@@ -377,8 +378,8 @@ Mountpoint for S3 基于对象存储,不提供完整 POSIX 文件系统语义。
 - hard link
 
 **实践意义**:
-- 适合 —— 模型加载(只读)、训练 checkpoint 顺序写入、日志 append
-- 不适合 —— shuffle/swap、数据库文件、需要随机写的工作负载
+- 适合 —— 大文件只读挂载(如模型权重、数据集分片)、顺序写入(训练 checkpoint、日志 append)
+- 不适合 —— shuffle/swap、数据库文件、需要随机写或 rename 的工作负载
 
 ### 7.5 CSI Driver 与 Pod Identity
 - EKS Managed Addon:`aws-mountpoint-s3-csi-driver`
