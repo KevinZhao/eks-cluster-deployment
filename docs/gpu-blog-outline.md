@@ -1,6 +1,6 @@
 # EKS 上的 GPU 工作负载:节点、网络与高性能存储的架构实践
 
-**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储(训练 + 推理)** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度、训练场景的 FSx for Lustre(PERSISTENT_2)、推理场景的 S3 Express One Zone + Mountpoint CSI Driver 等关键设计决策,并提供完整的自动化部署脚本。
+**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度、训练场景的 FSx for Lustre(PERSISTENT_2)、低延迟高 TPS 对象存储 S3 Express One Zone + Mountpoint CSI Driver 等关键设计决策,并提供完整的自动化部署脚本。
 
 **目录**
 
@@ -10,7 +10,7 @@
 04 [四、网络邻近性:基于 AWS 原生拓扑标签的调度](#section4)
 05 [五、节点本地存储:Instance Store 与容器运行时的解耦](#section5)
 06 [六、训练场景存储:FSx for Lustre 架构](#section6)
-07 [七、推理场景存储:S3 Express One Zone + Mountpoint](#section7)
+07 [七、S3 Express One Zone + Mountpoint:低延迟、高 TPS 的对象存储选项](#section7)
 08 [八、端到端验证与最佳实践清单](#section8)
 09 [九、总结:能力沉淀与取舍原则](#section9)
 
@@ -27,15 +27,15 @@
 
 * **计算层**:GPU 驱动、EFA 多网卡、Device Plugin 协同
 * **网络层**:allreduce 延迟对网络拓扑敏感,需要感知 bottom-layer network node 邻近性
-* **存储层**:训练需要高聚合吞吐,推理需要低延迟对象访问,两者选型截然不同
+* **存储层**:训练需要高聚合吞吐,S3 Express One Zone 作为低延迟、高 TPS 的对象存储选项按访问模式选型,而不是按"训练 vs 推理"简单二分
 
-GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Template 中精确控制 EFA 多网卡配置与定价模式。第一篇概览了 EBS / EFS / FSx / S3 四种 CSI Driver 的接入方式,本文将深入 FSx for Lustre 与 S3 Express One Zone 这两类高性能存储在 GPU 训练/推理链路上的选型策略、架构设计、性能优化点与已知限制。
+GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Template 中精确控制 EFA 多网卡配置与定价模式。第一篇概览了 EBS / EFS / FSx / S3 四种 CSI Driver 的接入方式,本文将深入 FSx for Lustre 与 S3 Express One Zone 这两类高性能存储的特征、适用访问模式、架构设计与已知限制。
 
 ### 1.3 本文能带走什么
 读完本文,读者能够:
 - 按实例型号正确配置 EFA 多网卡,避免 `AttachmentLimitExceeded` 等常见启动错误
 - 为分布式训练场景选择合适的邻近性调度方案(Placement Group vs Topology Label)
-- 为训练/推理工作负载选择合适的存储并规避已知的版本兼容性问题
+- 按访问模式为 GPU 工作负载选择合适的高性能存储并规避已知的版本兼容性问题
 - 使用本系列开源的自动化脚本一键部署 GPU 节点组
 
 ### 1.4 架构总览图
@@ -59,10 +59,11 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │            Storage Layer                              │  │
 │  │  ┌──────────────────┐   ┌──────────────────────────┐  │  │
-│  │  │ Training         │   │ Inference                │  │  │
 │  │  │ FSx for Lustre   │   │ S3 Express One Zone      │  │  │
-│  │  │ (并行文件系统)    │   │ + Mountpoint CSI         │  │  │
+│  │  │ (高聚合吞吐并行   │   │ + Mountpoint CSI         │  │  │
+│  │  │  文件系统)        │   │ (低延迟 / 高 TPS 对象存储)│  │  │
 │  │  └──────────────────┘   └──────────────────────────┘  │  │
+│  │  按访问模式选型,不绑定具体工作负载                      │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -327,22 +328,32 @@ aws fsx create-file-system --file-system-type LUSTRE \
 
 ---
 
-## 七、推理场景存储:S3 Express One Zone + Mountpoint
+## 七、S3 Express One Zone + Mountpoint:低延迟、高 TPS 的对象存储选项
 
-### 7.1 推理工作负载的存储特征
-- 模型文件**静态**:写一次,读多次,规模在数 GB 到数百 GB
-- **弹性扩展**:同一个模型可能被数十到数百个推理 Pod 并发加载
-- **按桶限流而非按实例**:推理扩容不会受单文件系统 IOPS 限制
-- 对象存储 + Mountpoint CSI 是云原生的自然选择
+### 7.1 S3 Express One Zone 的特征
+S3 Express One Zone 是 AWS 在 2023 年底推出的高性能 S3 存储类,使用一种新的 **directory bucket** 桶类型,与 Standard S3 桶在 ARN 格式与部分 API 行为上均不同。核心特征:
+
+- **个位数毫秒延迟**:与计算资源**同 AZ 共置(co-located)**,首字节读写延迟约 4 ms;Standard S3 通常 10–30 ms
+- **单桶高 TPS**:默认 200K reads/s + 100K writes/s,可申请到 2M reads/s + 200K writes/s,且不需要按前缀分片
+- **单 AZ**:数据只在一个 AZ 内冗余,**不跨 AZ**,失去多 AZ 容灾,换取计算就近
+- **成本曲线相反**:每 GB-月存储费率高于 Standard,但每请求费率低 50% 左右(超过 512 KB 才按数据传输额外计费),适合"高频请求、短期保留"
+- **AWS 官方 use cases**:[产品页](https://aws.amazon.com/s3/storage-classes/express-one-zone/) 列出 **ML training / interactive analytics / streaming / HPC / media**;推理服务并不在主推用例中
+
+判断是否适合用 S3 Express,可以从三个问题入手:
+1. 工作负载是否对**首字节延迟**或**聚合 TPS** 敏感?如否,Standard 桶就够
+2. 数据是否能容忍**单 AZ 不可用**的风险?如否,不可选(没有跨 AZ 模式)
+3. 数据保留时长是否较短?如长期保留,Standard 在存储费上更划算
 
 ### 7.2 Standard S3 与 S3 Express One Zone 对比
 | 维度 | Standard S3 | S3 Express One Zone |
 |---|---|---|
-| 延迟 | 约 10 毫秒 | 个位数毫秒 |
-| 请求吞吐 | 按桶限流(可申请提升) | 每桶支持数百万 TPS |
+| 延迟 | 10–30 毫秒 | 个位数毫秒(同 AZ 约 4 ms) |
+| 请求吞吐 | 按桶限流(5500 RPS/前缀,可申请提升) | 默认 200K reads/s,可申请到 2M reads/s |
 | 可用区 | 多 AZ 冗余 | 单 AZ |
-| 成本 | 较低 | 较高 |
-| 推荐场景 | 数据湖、备份、训练数据集 | 热模型、低延迟推理、checkpoint 快速写入 |
+| 成本结构 | 存储费率低、请求费率较高 | 存储费率高、请求费率低 |
+| 适合的访问模式 | 大文件顺序读、跨 AZ 共享、数据湖、备份、长期保留;**常驻推理服务的模型加载** | 高 TPS 小对象 random read、低延迟写、跨 Pod 并发拉同一对象(scale-out 模型分发)、训练 checkpoint 高频写、训练数据 shuffle |
+
+> **常驻推理服务的模型加载** 这一行特意放在 Standard 一列:模型加载完即驻留 GPU 显存、推理过程不再访问 S3,这是大文件一次性顺序读,Standard 已经够用,继续用 S3 Express 反而每月多付存储费。
 
 ### 7.3 ARN 格式差异
 两类存储在 IAM 策略和 CSI Driver 配置中的 ARN 格式不同,混用会导致 Pod Identity 配置失败:
@@ -373,6 +384,14 @@ Mountpoint for S3 基于对象存储,不提供完整 POSIX 文件系统语义。
 - EKS Managed Addon:`aws-mountpoint-s3-csi-driver`
 - 脚本通过 `setup_s3_csi_pod_identity` 动态生成 bucket policy,仅授权指定 bucket
 - 避免广泛权限(如 `AmazonS3ReadOnlyAccess`),符合最小权限原则
+
+### 7.6 何时不用 S3 Express One Zone
+不要把 S3 Express 当成"性能更好的 S3"无脑替换。以下场景不适合或不必要:
+
+- **数据需要跨 AZ 容灾**:Express 是单 AZ 存储类,生产 critical 数据用 Standard
+- **长期保留 / 数据湖 / 冷数据**:存储费率劣势会随保留时长指数放大
+- **Standard 桶已满足需求**:大文件顺序读上 Express 与 Standard 性能差距很小,迁移收益不抵成本
+- **常驻推理服务的模型加载**:这是 Pod 启动阶段的一次性顺序读,Standard + Mountpoint 已经够用;只有 scale-out 时多 Pod 并发拉同一权重才有 Express 的并发优势
 
 ---
 
@@ -422,11 +441,11 @@ kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/netw
 
 ### 8.5 FSx / S3 挂载验证
 ```bash
-kubectl apply -f examples/fsx-training-pvc.yaml
-kubectl exec training-pod -- df -h /mnt/fsx
+kubectl apply -f examples/fsx-pvc.yaml
+kubectl exec fsx-pod -- df -h /mnt/fsx
 
-kubectl apply -f examples/s3e1-inference-pvc.yaml
-kubectl exec inference-pod -- ls /mnt/s3
+kubectl apply -f examples/s3-express-pvc.yaml
+kubectl exec s3-pod -- ls /mnt/s3
 ```
 
 ### 8.6 生产就绪清单
@@ -436,7 +455,7 @@ kubectl exec inference-pod -- ls /mnt/s3
 - [ ] 拓扑 label 已贴,工作负载已配置 `nodeAffinity`
 - [ ] FSx for Lustre 使用 PERSISTENT_2
 - [ ] S3 Express bucket ARN 格式与 Pod Identity 策略一致
-- [ ] 训练/推理工作负载使用 Pod Identity,而非静态凭证
+- [ ] GPU 工作负载使用 Pod Identity,而非静态凭证
 
 ---
 
@@ -446,16 +465,16 @@ kubectl exec inference-pod -- ls /mnt/s3
 本文在第一篇的集群基础上,把 GPU 工作负载的**计算、网络、存储**三层架构一次性打通:
 - **计算层**:覆盖 P5 / P5en / P6 / G7e 四个系列,包含 p6-b300 的非对称拓扑处理,EFA userspace 自动补齐
 - **网络层**:直接使用 cloud-controller-manager 写入的 `topology.k8s.aws/network-node-layer-N` 进行调度,让工作负载按 bottom-layer network node 粒度选择节点
-- **存储层**:训练用 FSx for Lustre(PERSISTENT_2,GB/s 级吞吐),推理用 S3 Express One Zone(ms 级延迟,按桶扩展)
+- **存储层**:训练高聚合吞吐用 FSx for Lustre(PERSISTENT_2,GB/s 级吞吐);S3 Express One Zone 作为低延迟、高 TPS 的对象存储选项,按访问模式(高 TPS 小对象 random read、低延迟写、scale-out 模型分发)选用,而不是按工作负载类型简单归类
 
 ### 9.2 三组关键取舍
 - **Placement Group vs Topology Label**:在 p5 类型上,PG 的行为需要验证后再投入生产;标签化调度给工作负载更多控制权
 - **ODCR vs Capacity Block**:ODCR 适合长期稳定的训练集群,Capacity Block 适合有明确时间窗口的短期大规模训练
-- **FSx vs S3 Express One Zone**:训练选 FSx(高聚合吞吐 + Lustre 并行语义),推理选 S3E1(低延迟 + 弹性扩展 + 按桶限流)
+- **FSx vs S3 Express One Zone**:按访问模式选——大文件聚合顺序读 + Lustre 并行语义选 FSx;小对象高 TPS random read、低延迟写、跨 Pod 并发拉同一对象选 S3E1;大文件一次性顺序读且能容忍 10–30 ms 延迟用 Standard S3 即可
 
 ### 9.3 系列回顾:两篇文章的定位
 - **第一篇**《企业级 EKS 集群生产环境配置最佳实践》—— 通用生产级集群的"**地基**":私有 API、Pod Identity、LVM 运行时隔离、四种 CSI Driver、自动化部署脚本
-- **第二篇**(本文)—— GPU 工作负载的"**上层建筑**":EFA 多网卡、拓扑感知调度、训练/推理存储差异化选型
+- **第二篇**(本文)—— GPU 工作负载的"**上层建筑**":EFA 多网卡、拓扑感知调度、按访问模式的高性能存储选型(FSx for Lustre + S3 Express One Zone)
 
 两篇构成一套可落地、可复制、从零到 GPU 生产的完整参考实现。
 
@@ -464,7 +483,7 @@ kubectl exec inference-pod -- ls /mnt/s3
 * 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，先按照第一篇完成基础集群部署。
 * 在 VPC 内的堡垒机上执行 `./scripts/option_install_gpu_nodegroups.sh` 创建 GPU 节点组，按需选择 On-Demand / Spot / ODCR / Capacity Block 四种定价模式。
 * 通过 `./scripts/option_show_nodegroup_topology.sh` 打印每个 GPU 节点组的 AWS 原生拓扑清单(按 bottom-layer network node 分组),用于拓扑感知调度的决策。
-* 训练工作负载挂载 FSx for Lustre（PERSISTENT_2），推理工作负载挂载 S3 Express One Zone + Mountpoint CSI Driver。
+* 高聚合吞吐顺序读场景挂载 FSx for Lustre（PERSISTENT_2）；高 TPS 小对象 random read、低延迟写或 scale-out 模型分发等访问模式挂载 S3 Express One Zone + Mountpoint CSI Driver。
 
 **相关产品：**
 
@@ -481,8 +500,10 @@ kubectl exec inference-pod -- ls /mnt/s3
 * 系列第一篇：《企业级 EKS 集群生产环境配置最佳实践》
 * [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/)
 * [Amazon EC2 Instance Topology API](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-topology.html)
+* [Accelerate machine learning model training with Amazon SageMaker and Amazon S3 Express One Zone](https://aws.amazon.com/about-aws/whats-new/2024/02/machine-learning-model-training-amazon-sagemaker-s3-express-one-zone/)
+* [Choosing an S3 connector for ML training with S3 Express One Zone (AWS re:Post)](https://repost.aws/articles/AROs3zfLYxT56d3MAKp28Tqg/choosing-an-s3-connector-for-ml-training-with-s3-express-one-zone)
 
 **本篇作者**
 
 **Kevin Zhao**
-AWS 解决方案架构师，专注于 Amazon EKS 与 GPU 工作负载的生产级落地实践，包括 EFA 多网卡配置、拓扑感知调度、训练/推理高性能存储等。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
+AWS 解决方案架构师，专注于 Amazon EKS 与 GPU 工作负载的生产级落地实践，包括 EFA 多网卡配置、拓扑感知调度、按访问模式选型的高性能存储等。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
