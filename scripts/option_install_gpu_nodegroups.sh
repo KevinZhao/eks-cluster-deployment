@@ -78,6 +78,7 @@ command -v kubectl >/dev/null 2>&1 || MISSING_DEPS+=("kubectl")
 command -v jq >/dev/null 2>&1 || MISSING_DEPS+=("jq")
 command -v aws >/dev/null 2>&1 || MISSING_DEPS+=("aws cli")
 command -v python3 >/dev/null 2>&1 || MISSING_DEPS+=("python3")
+command -v helm >/dev/null 2>&1 || MISSING_DEPS+=("helm")
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
     echo "ERROR: Missing required dependencies:"
@@ -202,15 +203,36 @@ if [ -n "${GPU_TOPOLOGY_GATE_LEVEL:-}" ]; then
     exit 1
 fi
 
-# NVIDIA Kubernetes device plugin. Override NVIDIA_DEVICE_PLUGIN_IMAGE when
-# deploying to regions where nvcr.io is unreachable (e.g. cn-*) and mirror
-# the image into a reachable registry (ECR/Harbor/etc).
+# NVIDIA Kubernetes device plugin (Helm chart deployment).
 #
-# Default v0.19.1 (released 2026-04-23). Earlier versions <v0.17.2 do not
-# recognize Blackwell architecture in nvidia.com/gpu.product labels, so are
-# unsuitable for p6-b200 / p6-b300 nodegroups.
+# Default chart version 0.19.1 (released 2026-04-23). Earlier versions
+# <v0.17.2 do not recognize Blackwell architecture in nvidia.com/gpu.product
+# labels, so are unsuitable for p6-b200 / p6-b300 nodegroups.
+#
+# Chart values used:
+#   compatWithCPUManager=true   → equivalent to PASS_DEVICE_SPECS=true +
+#                                  privileged: true; required for
+#                                  Kubernetes CPUManager interop.
+#   mofedEnabled=false          → critical: from v0.19.0 the plugin defaults
+#                                  to claiming all /dev/infiniband/uverbs*
+#                                  devices, which conflicts with the AWS EFA
+#                                  Device Plugin. Must be disabled when both
+#                                  plugins coexist.
+#                                  See: https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html
+#   gfd.enabled=true            → enable GPU Feature Discovery sidecar; auto-
+#                                  labels nodes with nvidia.com/gpu.product,
+#                                  nvidia.com/gpu.memory, nvidia.com/cuda.*
+#   nodeSelector.workload-type=gpu → only schedule on our GPU node groups.
+#
+# Image overrides (for nvcr.io-unreachable regions like cn-*):
+#   NVIDIA_DEVICE_PLUGIN_REPO=...    overrides image.repository
+#   NVIDIA_DEVICE_PLUGIN_VERSION=... overrides image.tag (without leading 'v')
+#                                    chart version is also derived from this
+#                                    (strip leading 'v').
 NVIDIA_DEVICE_PLUGIN_VERSION="${NVIDIA_DEVICE_PLUGIN_VERSION:-v0.19.1}"
-NVIDIA_DEVICE_PLUGIN_IMAGE="${NVIDIA_DEVICE_PLUGIN_IMAGE:-nvcr.io/nvidia/k8s-device-plugin:${NVIDIA_DEVICE_PLUGIN_VERSION}}"
+NVIDIA_DEVICE_PLUGIN_REPO="${NVIDIA_DEVICE_PLUGIN_REPO:-nvcr.io/nvidia/k8s-device-plugin}"
+NVIDIA_DEVICE_PLUGIN_NAMESPACE="${NVIDIA_DEVICE_PLUGIN_NAMESPACE:-kube-system}"
+NVIDIA_DEVICE_PLUGIN_RELEASE_NAME="${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME:-nvidia-device-plugin}"
 
 # Local NVMe Instance Store LVM configuration.
 # When enabled, all Instance Store NVMe disks are striped into one VG/LV
@@ -688,8 +710,18 @@ create_gpu_security_group() {
         echo "Created GPU Security Group: ${GPU_SG_ID}"
     fi
 
-    # Self-referencing rule for EFA/NCCL traffic (all protocols)
-    echo "Ensuring security group rules..."
+    # Self-referencing rules for EFA / NCCL cross-node traffic (all protocols).
+    #
+    # Per AWS EFA docs (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html#efa-start-security):
+    #   "An EFA requires a security group that allows all inbound and
+    #    outbound traffic to and from the security group itself."
+    #
+    # New SGs default to 0.0.0.0/0 egress, which keeps EFA working today,
+    # but org-level SCPs or compliance scanners often tighten the default
+    # egress in production. Explicit self-egress guards against that drift
+    # and keeps us aligned with AWS documentation.
+    echo "Ensuring security group rules (EFA self-allow ingress + egress)..."
+
     local sg_result
     if sg_result=$(aws ec2 authorize-security-group-ingress \
         --group-id "${GPU_SG_ID}" \
@@ -701,6 +733,21 @@ create_gpu_security_group() {
         echo "  Self-ingress rule already exists"
     else
         echo "ERROR: Failed to add self-ingress rule to ${GPU_SG_ID}: ${sg_result}"
+        exit 1
+    fi
+
+    # authorize-security-group-egress does NOT accept --source-group; use
+    # --ip-permissions JSON form to express the self-reference.
+    local egress_result
+    if egress_result=$(aws ec2 authorize-security-group-egress \
+        --group-id "${GPU_SG_ID}" \
+        --ip-permissions "IpProtocol=-1,UserIdGroupPairs=[{GroupId=${GPU_SG_ID}}]" \
+        --region "${AWS_REGION}" 2>&1); then
+        echo "  Self-egress rule added"
+    elif echo "${egress_result}" | grep -q "already exists"; then
+        echo "  Self-egress rule already exists"
+    else
+        echo "ERROR: Failed to add self-egress rule to ${GPU_SG_ID}: ${egress_result}"
         exit 1
     fi
 
@@ -1399,10 +1446,11 @@ bounce_nvidia_device_plugin_for_ng() {
 
     local bounced=0
     for node in ${node_names}; do
-        # Look up device plugin pod on this node
+        # Look up device plugin pod on this node. Helm chart sets
+        # app.kubernetes.io/name=nvidia-device-plugin on its pods.
         local dp_pod
-        dp_pod=$(kubectl get pods -n kube-system \
-            -l name=nvidia-device-plugin-ds \
+        dp_pod=$(kubectl get pods -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
+            -l "app.kubernetes.io/name=nvidia-device-plugin" \
             --field-selector spec.nodeName="${node}" \
             -o name 2>/dev/null | head -1)
         if [ -z "${dp_pod}" ]; then
@@ -1425,14 +1473,14 @@ bounce_nvidia_device_plugin_for_ng() {
         # Unhealthy: allocatable shows 0 GPUs. Grep pod logs for the
         # known failure mode to confirm before bouncing.
         local log_tail
-        log_tail=$(kubectl logs -n kube-system "${dp_pod}" --tail=30 2>/dev/null || echo "")
+        log_tail=$(kubectl logs -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" "${dp_pod}" --tail=30 2>/dev/null || echo "")
         if echo "${log_tail}" | grep -qE 'No devices found|ERROR_DRIVER_NOT_LOADED|Failed to initialize NVML'; then
             echo "  ${node}: device-plugin stuck at init (matched known symptom); deleting pod to bounce"
-            kubectl delete "${dp_pod}" -n kube-system --wait=false >/dev/null 2>&1 || true
+            kubectl delete "${dp_pod}" -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" --wait=false >/dev/null 2>&1 || true
             bounced=$((bounced + 1))
         else
             echo "  ${node}: allocatable nvidia.com/gpu=0 but pod logs don't match known symptom; leaving alone"
-            echo "    (manual check: kubectl logs -n kube-system ${dp_pod})"
+            echo "    (manual check: kubectl logs -n ${NVIDIA_DEVICE_PLUGIN_NAMESPACE} ${dp_pod})"
         fi
     done
 
@@ -1452,103 +1500,75 @@ bounce_nvidia_device_plugin_for_ng() {
 }
 
 # ===================================================================
-# NVIDIA Device Plugin (kubectl apply)
+# NVIDIA Device Plugin (Helm chart)
 # ===================================================================
+# Deploys the upstream NVIDIA k8s-device-plugin via the official Helm
+# chart (https://nvidia.github.io/k8s-device-plugin). On EKS-optimized
+# AL2023 NVIDIA AMI the host already has the NVIDIA driver, the NVIDIA
+# Container Toolkit and a containerd config that registers `nvidia` as
+# the runtime handler — so the plugin needs no hostPath workarounds,
+# library symlinks, or runtimeClassName overrides.
+#
+# Earlier revisions of this script shipped a hand-written DaemonSet
+# that mounted /usr/lib64 into the plugin container and symlinked
+# libnvidia-ml.so before launching the binary. That workaround
+# predated the AMI's pre-configured nvidia runtime and is now
+# unnecessary; running the binary under the default containerd runtime
+# allows nvidia-container-toolkit to inject NVML/CUDA libs naturally.
 
 install_nvidia_device_plugin() {
-    echo "Installing NVIDIA Device Plugin via kubectl..."
+    echo "Installing NVIDIA Device Plugin via Helm chart..."
 
-    # Check if already installed
-    if kubectl get daemonset nvidia-device-plugin-daemonset -n kube-system &>/dev/null; then
-        echo "NVIDIA Device Plugin already installed"
-        return 0
+    # Strip leading 'v' from version for chart version + image tag
+    local plugin_ver="${NVIDIA_DEVICE_PLUGIN_VERSION#v}"
+
+    # Add upstream repo (idempotent)
+    helm repo add nvdp https://nvidia.github.io/k8s-device-plugin \
+        >/dev/null 2>&1 || true
+    helm repo update nvdp >/dev/null
+
+    echo "  Chart:      nvdp/nvidia-device-plugin --version ${plugin_ver}"
+    echo "  Repository: ${NVIDIA_DEVICE_PLUGIN_REPO}"
+    echo "  Tag:        v${plugin_ver}"
+    echo "  Namespace:  ${NVIDIA_DEVICE_PLUGIN_NAMESPACE}"
+    echo "  Release:    ${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}"
+
+    # Critical values:
+    #   compatWithCPUManager=true → PASS_DEVICE_SPECS=true + privileged
+    #   mofedEnabled=false        → don't claim /dev/infiniband/uverbs* (EFA owns it)
+    #   gfd.enabled=true          → install GPU Feature Discovery sidecar
+    #   nodeSelector              → only schedule on our GPU NGs
+    helm upgrade --install "${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}" \
+        nvdp/nvidia-device-plugin \
+        --namespace "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
+        --create-namespace \
+        --version "${plugin_ver}" \
+        --set image.repository="${NVIDIA_DEVICE_PLUGIN_REPO}" \
+        --set image.tag="v${plugin_ver}" \
+        --set compatWithCPUManager=true \
+        --set mofedEnabled=false \
+        --set gfd.enabled=true \
+        --set nodeSelector."workload-type"=gpu \
+        --wait --timeout 5m || {
+            echo "WARNING: helm upgrade for NVIDIA Device Plugin failed or timed out"
+            echo "  (this can be normal if no GPU nodes exist yet — the chart will become Ready"
+            echo "   once a GPU node joins and gets the workload-type=gpu label)"
+            return 0
+        }
+
+    echo "NVIDIA Device Plugin Helm release deployed"
+
+    # Quick sanity check on the rolled-out daemonset (chart names it
+    # <release>; pod label name=nvidia-device-plugin)
+    local ds_name
+    ds_name=$(kubectl get daemonset -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
+        -l "app.kubernetes.io/instance=${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME},app.kubernetes.io/name=nvidia-device-plugin" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -n "${ds_name}" ]; then
+        echo "  DaemonSet: ${ds_name}"
+        kubectl get daemonset "${ds_name}" -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
+            -o jsonpath='{"  desired/ready: "}{.status.desiredNumberScheduled}{"/"}{.status.numberReady}{"\n"}'
     fi
-
-    # Apply custom NVIDIA device plugin with host library symlinks
-    # Required for EKS optimized GPU AMI where NVML libraries are on the host
-    echo "Applying NVIDIA Device Plugin DaemonSet (with host library symlinks)..."
-    echo "  Image: ${NVIDIA_DEVICE_PLUGIN_IMAGE}"
-    kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: nvidia-device-plugin-daemonset
-  namespace: kube-system
-spec:
-  selector:
-    matchLabels:
-      name: nvidia-device-plugin-ds
-  updateStrategy:
-    type: RollingUpdate
-  template:
-    metadata:
-      labels:
-        name: nvidia-device-plugin-ds
-    spec:
-      nodeSelector:
-        workload-type: gpu
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      priorityClassName: system-node-critical
-      hostPID: true
-      containers:
-      - image: ${NVIDIA_DEVICE_PLUGIN_IMAGE}
-        name: nvidia-device-plugin-ctr
-        command: ["/bin/sh", "-c"]
-        args:
-        - |
-          # Symlink NVIDIA libraries from host to container library paths
-          # Required because NVML libs are installed on host, not in container image
-          ln -sf /host-lib64/libnvidia-ml.so.* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true
-          ln -sf /host-lib64/libnvidia-ml.so.* /usr/lib64/ 2>/dev/null || true
-          exec /usr/bin/nvidia-device-plugin
-        env:
-        - name: FAIL_ON_INIT_ERROR
-          value: "false"
-        - name: PASS_DEVICE_SPECS
-          value: "true"
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: device-plugin
-          mountPath: /var/lib/kubelet/device-plugins
-        - name: host-lib64
-          mountPath: /host-lib64
-          readOnly: true
-      volumes:
-      - name: device-plugin
-        hostPath:
-          path: /var/lib/kubelet/device-plugins
-      - name: host-lib64
-        hostPath:
-          path: /usr/lib64
-EOF
-
-    echo "Waiting for NVIDIA Device Plugin to be ready..."
-    for i in {1..30}; do
-        local ready=$(kubectl get daemonset nvidia-device-plugin-daemonset -n kube-system \
-            -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
-        local desired=$(kubectl get daemonset nvidia-device-plugin-daemonset -n kube-system \
-            -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
-
-        echo "  NVIDIA Device Plugin: ${ready}/${desired} ready"
-
-        # If no GPU nodes yet (desired=0), plugin is ready
-        if [ "${desired}" = "0" ]; then
-            echo "NVIDIA Device Plugin installed (waiting for GPU nodes)"
-            return 0
-        fi
-
-        if [ "${ready}" = "${desired}" ] && [ "${ready}" != "0" ]; then
-            echo "NVIDIA Device Plugin is ready"
-            return 0
-        fi
-        sleep 10
-    done
-
-    echo "WARNING: NVIDIA Device Plugin may not be fully ready"
 }
 
 # ===================================================================
@@ -1979,7 +1999,7 @@ echo "Created resources:"
 echo "  • IAM Role: ${GPU_NODE_ROLE_NAME}"
 echo "  • Security Group: ${GPU_SG_ID}"
 echo "  • GPU AMI: ${GPU_AMI_ID}"
-echo "  • NVIDIA Device Plugin: nvidia-device-plugin-daemonset (${NVIDIA_DEVICE_PLUGIN_VERSION})"
+echo "  • NVIDIA Device Plugin: helm release '${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}' in ns/${NVIDIA_DEVICE_PLUGIN_NAMESPACE} (${NVIDIA_DEVICE_PLUGIN_VERSION}, with GFD)"
 [ "${INSTALL_EFA_DEVICE_PLUGIN}" = "true" ] && echo "  • EFA Device Plugin: aws-efa-k8s-device-plugin-daemonset (${EFA_DEVICE_PLUGIN_VERSION})"
 if [ "${GPU_ENABLE_LOCAL_LVM}" = "true" ]; then
     echo "  • Local NVMe LVM: ${GPU_LOCAL_LVM_VG_NAME}/${GPU_LOCAL_LVM_LV_NAME} (striped, ${GPU_LOCAL_LVM_FS}) → ${GPU_LOCAL_LVM_MOUNT}"

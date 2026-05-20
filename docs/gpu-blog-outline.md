@@ -120,6 +120,24 @@ EKS GPU AMI 默认仅包含 kernel-side EFA 模块(驱动和 ibverbs 支持),不
 ### 2.6 EFA 与 Pod ENI 的关系澄清
 第一篇介绍过 VPC CNI 的 Pod ENI(branch ENI)机制,用于 Pod 级别安全组。EFA 多网卡使用的是 primary / secondary ENI(trunk ENI),与 Pod ENI 属于**不同的 ENI 子系统**,两者的额度独立计算、互不占用。GPU 节点即使启用了 `ENABLE_POD_ENI=true`,EFA 网卡数量也不会受影响。
 
+### 2.7 GPU 安全组的 EFA 自引用要求
+AWS 对 EFA 启用的安全组有一条**硬性要求**(参见 [Get started with EFA — Step 1: Prepare an EFA-enabled security group](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-start.html#efa-start-security)):
+
+> An EFA requires a security group that allows all inbound and outbound traffic **to and from the security group itself**.
+
+也就是 GPU 节点的安全组**必须同时**包含两条**自引用规则**:
+
+| 方向 | 协议 | 来源 / 目的 |
+|---|---|---|
+| Inbound | All (`-1`) | 自身 SG ID |
+| Outbound | All (`-1`) | 自身 SG ID |
+
+为什么是"自引用"?跨节点的 EFA / NCCL 流量走的是 RDMA over EFA(基于 ibverbs),既不是标准 TCP/UDP 端口、也不在 VPC 内常规的"放行整个子网 CIDR"规则覆盖范围内。**只有显式让 SG 信任自己**,同 SG 内不同节点之间的 EFA 流量才能通过。这个失败模式的特点是**单节点测试完全正常**(`fi_pingpong` 单机能通、单卡 NCCL 单机 all-reduce 能跑),**只有跨节点 NCCL 会卡死或回退到 TCP fallback**,排查难度高。
+
+新创建的 SG 默认 outbound 是 `0.0.0.0/0`,EFA 通信表面上能跑通,但企业环境通常通过 SCP / 合规策略**收紧默认 outbound**;一旦默认规则被改动而没有显式 self-egress,EFA 就会断。脚本 `create_gpu_security_group` 函数因此**显式写入两条自引用规则**(inbound + outbound),作为防御性最佳实践,与 AWS 文档对齐。
+
+Launch Template 把 GPU SG 与 EKS cluster security group 一起赋给所有 ENI(主 NIC + 全部 EFA-only NIC),保证 K8s control plane 通信与 EFA 数据面共存。
+
 ---
 
 ## 三、四种定价模式的 Launch Template 架构
@@ -401,10 +419,10 @@ Mountpoint for S3 基于对象存储,不提供完整 POSIX 文件系统语义。
 ### 8.1 两个 Device Plugin 的协同
 GPU + EFA 工作负载依赖**两个独立的 Device Plugin**,职责边界清晰但容易漏配:
 
-| Device Plugin | 暴露资源 | 作用 |
-|---|---|---|
-| `nvidia-device-plugin-ds` | `nvidia.com/gpu` | 让 Pod 申请 GPU 并挂载 `/dev/nvidia*` |
-| `aws-efa-k8s-device-plugin-daemonset` | `vpc.amazonaws.com/efa` | 让 Pod 申请并独占 EFA 网卡 |
+| Device Plugin | 暴露资源 | 部署方式 | 作用 |
+|---|---|---|---|
+| NVIDIA Kubernetes Device Plugin | `nvidia.com/gpu` | Helm chart(`nvdp/nvidia-device-plugin`) | 让 Pod 申请 GPU 并挂载 `/dev/nvidia*` |
+| AWS EFA Kubernetes Device Plugin | `vpc.amazonaws.com/efa` | DaemonSet(`aws-efa-k8s-device-plugin-daemonset`) | 让 Pod 申请并独占 EFA 网卡 |
 
 分布式训练的工作负载必须**同时申请两类资源**:
 ```yaml
@@ -414,24 +432,33 @@ resources:
     vpc.amazonaws.com/efa: 32   # 常见漏写,导致 NCCL 走 TCP fallback 而非 EFA
 ```
 
-两个与 NVIDIA Device Plugin 相关的实践要点:
+NVIDIA Device Plugin 部署方式与关键开关:
 
-- **Blackwell 架构(p6-b200 / p6-b300)的版本要求**:NVIDIA Device Plugin 对 Blackwell 架构的 `nvidia.com/gpu.product` 标签识别由 [PR #1240](https://github.com/NVIDIA/k8s-device-plugin/pull/1240) 引入,backport 到 release-0.17,因此**生产部署 Blackwell GPU 节点应使用 v0.17.2 或更新版本**。脚本默认 `NVIDIA_DEVICE_PLUGIN_VERSION=v0.19.1`(2026-04-23 发布的最新稳定版),在 nvcr.io 不可达的区域(如 cn-*)可通过 `NVIDIA_DEVICE_PLUGIN_IMAGE` 指向私有镜像。
-- **`PASS_DEVICE_SPECS=true`**:[NVIDIA 官方文档](https://github.com/NVIDIA/k8s-device-plugin) 说明该开关的用途是**让 device plugin 与 Kubernetes CPUManager 互操作**(把设备节点路径与权限作为 device specs 透传给 kubelet),与 GPU 架构无关。脚本默认开启此开关并以 `privileged: true` 运行,以便在使用 CPUManager 的节点上可被正确分配设备。
+- **EKS-optimized AL2023 NVIDIA AMI 已预装** NVIDIA driver + NVIDIA Container Toolkit,nodeadm 已把 `nvidia` 注册为 containerd 默认 runtime——因此 device plugin 容器启动时由 nvidia-container-toolkit 自动注入 NVML/CUDA 库与设备节点,**不需要 hostPath 挂载、库 symlink 或自定义 RuntimeClass**。
+- **采用上游 Helm chart 部署**(参考 [Manage NVIDIA GPU devices on EKS](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)),以 helm release 形式运行;脚本默认 `NVIDIA_DEVICE_PLUGIN_VERSION=v0.19.1`(2026-04-23 最新稳定版),在 nvcr.io 不可达的区域(如 cn-*)通过 `NVIDIA_DEVICE_PLUGIN_REPO` 指向私有 ECR 镜像。
+- **关键 chart values**:
+  - `compatWithCPUManager=true` —— 等价于设置 `PASS_DEVICE_SPECS=true` + `privileged: true`,使 device plugin 与 K8s CPUManager 互操作时能正确传递设备节点路径与权限([NVIDIA 官方说明](https://github.com/NVIDIA/k8s-device-plugin))。
+  - `mofedEnabled=false` —— **关键**:从 v0.19.0 起 NVIDIA Device Plugin 默认会挂载所有 `/dev/infiniband/uverbs*` 设备到申请 GPU 的 Pod 内,这与 AWS EFA Device Plugin 管理 uverbs 设备的职责冲突,导致 Pod 取不到全部 EFA 网卡或 EFA Device Plugin 无法暴露资源。两类 plugin 共存时**必须显式关闭**该开关,详见 [AWS EKS 文档](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)。
+  - `gfd.enabled=true` —— 启用 GPU Feature Discovery sidecar,自动给节点贴 `nvidia.com/gpu.product`、`nvidia.com/gpu.memory`、`nvidia.com/cuda.driver-version` 等属性标签,便于工作负载按 GPU 型号选择节点。
+- **Blackwell 架构(p6-b200 / p6-b300)的版本要求**:NVIDIA Device Plugin 对 Blackwell 架构的 `nvidia.com/gpu.product` 标签识别由 [PR #1240](https://github.com/NVIDIA/k8s-device-plugin/pull/1240) 引入,backport 到 release-0.17,因此**生产部署 Blackwell GPU 节点应使用 v0.17.2 或更新版本**。
 
 ### 8.2 GPU 节点就绪验证
 ```bash
 # GPU 可见
 kubectl get nodes -o=custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu'
 
-# Device Plugin 健康
-kubectl get pods -n kube-system -l name=nvidia-device-plugin-ds
+# NVIDIA Device Plugin 健康(helm chart 起的 daemonset 用 app.kubernetes.io 标签)
+kubectl get pods -n kube-system -l app.kubernetes.io/name=nvidia-device-plugin
+
+# GPU Feature Discovery 自动贴的标签
+kubectl get nodes -L nvidia.com/gpu.product,nvidia.com/gpu.memory,nvidia.com/cuda.driver-version
 
 # EFA Device Plugin 健康
-kubectl get pods -n kube-system -l name=aws-efa-k8s-device-plugin-daemonset
+kubectl get pods -n kube-system -l name=aws-efa-k8s-device-plugin
 ```
 
 ### 8.3 EFA 链路验证
+EFA 用户态工具(`fi_info`、`fi_pingpong`)由 host 上的 `/opt/amazon/efa/` 提供,**前提是节点 user-data 启用了 `GPU_INSTALL_EFA_USERSPACE=true`**(脚本默认开启)。
 ```bash
 # 在节点上(通过 kubectl debug)
 fi_info -p efa          # 期望看到每张 EFA 网卡
@@ -443,20 +470,58 @@ fi_pingpong -p efa      # 端到端 EFA 通信测试
 kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/network-node-layer-2,topology.k8s.aws/network-node-layer-3,topology.k8s.aws/network-node-layer-4,topology.k8s.aws/zone-id
 ```
 
-### 8.5 FSx / S3 挂载验证
-```bash
-kubectl apply -f examples/fsx-pvc.yaml
-kubectl exec fsx-pod -- df -h /mnt/fsx
+### 8.5 端到端 GPU + EFA 验证脚本(单节点 + 跨节点)
+仓库提供 `option_verify_gpu_efa.sh` 一键验证脚本,基于 AWS 官方 [`public.ecr.aws/hpc-cloud/nccl-tests`](https://gallery.ecr.aws/hpc-cloud/nccl-tests) 镜像(自带 EFA installer、AWS-OFI-NCCL、NCCL、nccl-tests、sshd、Open MPI),支持两种模式:
 
-kubectl apply -f examples/s3-express-pvc.yaml
-kubectl exec s3-pod -- ls /mnt/s3
+**单节点模式**(默认,验证本机 GPU + EFA stack 的可用性):
+```bash
+./scripts/option_verify_gpu_efa.sh <ng_name>
+```
+检查项:① `nvidia-smi` 看到全部 GPU;② `/dev/nvidia[0-9]*` 设备节点数与 GPU 数一致;③ `fi_info -p efa` 列出全部 EFA 卡;④ `/dev/infiniband/uverbs*` 数与 EFA 数一致;⑤ AWS-OFI-NCCL plugin (`libnccl-net.so`) 存在;⑥ 单节点 NCCL `all_reduce_perf` 跑通。
+
+**跨节点模式**(`--multi N`,N≥2):
+```bash
+./scripts/option_verify_gpu_efa.sh <ng_name> --multi 2
+```
+脚本会:在 NG 内挑 N 个 Ready 节点,创建 headless Service + N 个 Pod(每个 Pod 钉到一个节点上,共消耗 `N × GPUs/node` 个 GPU 与 `N × EFAs/node` 个 EFA),通过 Open MPI + sshd 启动跨节点 `all_reduce_perf -b 8 -e 1G -f 2 -g 1 -np <N×GPU>`。验证项:
+
+- mpirun 跨节点完成,所有 ranks 加入并 ring/tree formed
+- NCCL_DEBUG 输出含 `NET/AWS Libfabric` 或 `NET/Plugin/Loaded`(确认走 AWS-OFI-NCCL → EFA,而非 `NET/Socket` 的 TCP fallback)
+- (可选)通过 `VERIFY_BUSBW_THRESHOLD=<GB/s>` 设置带宽底线,低于阈值时报 FAIL
+
+**为什么必须做跨节点验证?** §2.7 描述的 GPU 安全组自引用规则错误属于**单节点测试无法发现**的故障——单节点 NCCL all-reduce 永远在同一台机器内,SG 只过滤跨节点流量。只有跨节点 NCCL 真正发起 host-to-host EFA 通信时,SG 配置不全的故障才会暴露。脚本 `--multi` 模式专门用于覆盖这一类。
+
+失败时脚本会打印典型排查方向:GPU SG 自引用规则缺失、`mofedEnabled=false` 是否设置、AWS-OFI-NCCL plugin 是否加载。
+
+### 8.6 FSx / S3 挂载验证
+仓库内已带可直接使用的示例 manifest:[`examples/fsx-app.yaml`](https://github.com/KevinZhao/eks-cluster-deployment/blob/master/examples/fsx-app.yaml) 与 [`examples/s3-app.yaml`](https://github.com/KevinZhao/eks-cluster-deployment/blob/master/examples/s3-app.yaml),分别覆盖 FSx for Lustre PERSISTENT_2、Standard S3 桶与 S3 Express One Zone 三种挂载场景。两个 YAML 都使用 `envsubst` 占位符,用法见各文件头部注释。
+
+```bash
+# FSx for Lustre 静态挂载(两个 Pod 共享读写,验证 RWX)
+export FSX_ID=fs-xxxxxxxxxxxxxxxxx
+export FSX_DNS=fs-xxx.fsx.us-east-1.amazonaws.com
+export FSX_MOUNT_NAME=xxxxx
+envsubst < examples/fsx-app.yaml | kubectl apply -f -
+kubectl logs fsx-test-1   # 期望:在 /data 写入 100MB 测试文件
+kubectl logs fsx-test-2   # 期望:从同一 PVC 读到 Pod 1 写的文件
+
+# Standard S3 + S3 Express One Zone 挂载
+source scripts/0_setup_env.sh
+export S3_BUCKET_NAME=your-standard-bucket
+export S3_EXPRESS_BUCKET_NAME=your-bucket--use1-az1--x-s3
+export AWS_REGION=us-east-1
+envsubst < examples/s3-app.yaml | kubectl apply -f -
+kubectl logs s3-test          # Standard 桶
+kubectl logs s3-express-test  # S3 Express directory bucket
 ```
 
-### 8.6 生产就绪清单
+### 8.7 生产就绪清单
 - [ ] GPU 节点的 EFA 网卡数量与实例类型匹配
 - [ ] `GPU_INSTALL_EFA_USERSPACE=true` 已启用(若工作负载依赖 host libfabric)
 - [ ] Instance Store 已 stripe 至 `/data`,且不承载容器运行时
 - [ ] 拓扑 label 已贴,工作负载已配置 `nodeAffinity`
+- [ ] **GPU 安全组同时包含 inbound + outbound 自引用规则**(EFA 跨节点通信硬性要求,见 §2.7)
+- [ ] **跨节点 NCCL 验证已通过**(`option_verify_gpu_efa.sh --multi 2`),NCCL_DEBUG 显示走 AWS-OFI-NCCL 而非 TCP fallback
 - [ ] FSx for Lustre 使用 PERSISTENT_2
 - [ ] S3 Express bucket ARN 格式与 Pod Identity 策略一致
 - [ ] GPU 工作负载使用 Pod Identity,而非静态凭证
