@@ -442,6 +442,24 @@ NVIDIA Device Plugin 部署方式与关键开关:
   - `gfd.enabled=true` —— 启用 GPU Feature Discovery sidecar,自动给节点贴 `nvidia.com/gpu.product`、`nvidia.com/gpu.memory`、`nvidia.com/cuda.driver-version` 等属性标签,便于工作负载按 GPU 型号选择节点。
 - **Blackwell 架构(p6-b200 / p6-b300)的版本要求**:NVIDIA Device Plugin 对 Blackwell 架构的 `nvidia.com/gpu.product` 标签识别由 [PR #1240](https://github.com/NVIDIA/k8s-device-plugin/pull/1240) 引入,backport 到 release-0.17,因此**生产部署 Blackwell GPU 节点应使用 v0.17.2 或更新版本**。
 
+**关于启动竞态(为什么不再需要"手动 bounce")**:
+
+GPU 节点首次启动时,nvidia-device-plugin 容器与 nvidia 内核模块加载存在潜在竞态——plugin 先起、`/dev/nvidia*` 后创建,plugin 看不到 GPU。NVIDIA 官方推荐通过 `failOnInitError=true`(env `FAIL_ON_INIT_ERROR`,helm chart 同名 value)解决:**plugin init 失败时立即 crash,kubelet 触发 `CrashLoopBackOff` 自动重启,几秒后下一次启动等到设备就绪自然恢复**。这是 helm chart 的默认行为,我们不 override。
+
+下面两层防护进一步收紧竞态窗口:
+- **AMI 层**:EKS AL2023 NVIDIA AMI 提供 `nvidia-kmod-load.service`,声明 `Before=containerd.service`,在 host 层把驱动加载排在 containerd 之前(参见 [amazon-eks-ami install-nvidia-driver.sh](https://github.com/awslabs/amazon-eks-ami/blob/main/templates/al2023/provisioners/install-nvidia-driver.sh))
+- **Plugin 层**:v0.19.0 的两条修复 "Honor fail-on-init-error when no resources are found"、"Ensure FAIL_ON_INIT_ERROR boolean env is quoted" 进一步堵住了 silent block 的 corner case
+
+> **历史背景**:本仓库脚本早期版本曾用一段"扫描所有 GPU 节点 + grep `No devices found` + `kubectl delete pod` 强制重启"的兜底逻辑,因为彼时手写 DaemonSet 显式设了 `FAIL_ON_INIT_ERROR=false`,plugin 在 stuck 时会 silent block 而非 crash。切换到 helm chart 后该 env 默认 `true`,kubelet 接管自愈,bounce 逻辑已经从脚本里删除。
+
+排查思路(plugin 看似 `Running` 但 `nvidia.com/gpu` allocatable 仍为 0):
+```bash
+kubectl logs -n kube-system -l app.kubernetes.io/name=nvidia-device-plugin --tail=50
+# 关注:"No devices found. Waiting indefinitely." → 命中 NVIDIA upstream issue #1080 / bug 5129637
+# 进一步:登录节点 ls /dev/nvidia* 看驱动是否真的加载
+#         journalctl -u nvidia-kmod-load.service 看 kmod 加载日志
+```
+
 ### 8.2 GPU 节点就绪验证
 ```bash
 # GPU 可见
