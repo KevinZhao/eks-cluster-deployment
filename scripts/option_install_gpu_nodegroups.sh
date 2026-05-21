@@ -209,10 +209,7 @@ fi
 # <v0.17.2 do not recognize Blackwell architecture in nvidia.com/gpu.product
 # labels, so are unsuitable for p6-b200 / p6-b300 nodegroups.
 #
-# Chart values used:
-#   compatWithCPUManager=true   → equivalent to PASS_DEVICE_SPECS=true +
-#                                  privileged: true; required for
-#                                  Kubernetes CPUManager interop.
+# Chart values used (minimal — let toolkit 1.18+ jit-cdi handle injection):
 #   mofedEnabled=false          → critical: from v0.19.0 the plugin defaults
 #                                  to claiming all /dev/infiniband/uverbs*
 #                                  devices, which conflicts with the AWS EFA
@@ -1017,7 +1014,20 @@ if [ "\${LOCAL_SSD_TOTAL_GB}" -gt 0 ]; then
   NODE_LABEL_FLAGS="--node-labels=local-ssd=true,local-ssd-size-gb=\${LOCAL_SSD_TOTAL_GB}"
 fi
 
-# Create nodeadm config
+# ============================================================
+# Create nodeadm config (with SystemdCgroup overlay)
+# ============================================================
+# nvidia-ctk's "runtime configure" step has been observed to drop
+# SystemdCgroup=true from [runtimes.nvidia.options] when overlaying its
+# config on top of nodeadm's template. Without it, kubelet (systemd
+# cgroup driver) and runc (cgroupfs default) disagree and pod sandbox
+# creation fails with:
+#   FailedCreatePodSandBox: expected cgroupsPath to be of format
+#   "slice:prefix:name" for systemd cgroups
+#
+# Fix: supply SystemdCgroup=true via NodeConfig.containerd.config so
+# nodeadm merges it LAST, after both its own template and any nvidia-ctk
+# overlay. Removable when nvidia-container-toolkit ships a fix.
 mkdir -p /etc/eks/nodeadm.d
 if [ -n "\${NODE_LABEL_FLAGS}" ]; then
 cat > /etc/eks/nodeadm.d/nodeconfig.yaml <<NODECONFIG
@@ -1033,6 +1043,10 @@ spec:
   kubelet:
     flags:
       - "\${NODE_LABEL_FLAGS}"
+  containerd:
+    config: |
+      [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]
+      SystemdCgroup = true
 NODECONFIG
 else
 cat > /etc/eks/nodeadm.d/nodeconfig.yaml <<NODECONFIG
@@ -1045,6 +1059,10 @@ spec:
     apiServerEndpoint: ${CLUSTER_ENDPOINT}
     certificateAuthority: ${CLUSTER_CA}
     cidr: ${SERVICE_IPV4_CIDR}
+  containerd:
+    config: |
+      [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]
+      SystemdCgroup = true
 NODECONFIG
 fi
 
@@ -1054,6 +1072,26 @@ cat /etc/eks/nodeadm.d/nodeconfig.yaml
 # Run nodeadm init to bootstrap the node
 echo "Running nodeadm init..."
 nodeadm init --config-source file:///etc/eks/nodeadm.d/nodeconfig.yaml
+
+# ============================================================
+# Force containerd + kubelet to reload config
+# ============================================================
+# nodeadm's EnsureRunning() uses systemd StartUnit which is a no-op when
+# containerd is already running (enabled at boot). The freshly-written
+# /etc/containerd/config.toml — including the NodeConfig.containerd.config
+# overlay above — therefore never gets loaded; the in-memory config
+# remains the boot-time default.
+#
+# Symptom: pod sandboxes are created with cgroupfs-format cgroupsPath
+# and fail with the systemd/cgroupfs mismatch above.
+#
+# Fix landed upstream as awslabs/amazon-eks-ami#2705 (StartDaemon →
+# RestartDaemon) but the patched nodeadm only ships in AMIs released
+# after 2026-05-13. Until our pinned AMI carries the fix, force the
+# reload here. kubelet must follow because its CRI runtime info is
+# cached and would otherwise stay tied to the old containerd PID.
+systemctl restart containerd
+systemctl restart kubelet
 
 # ============================================================
 # EFA userspace packages (libfabric-aws, openmpi5-aws, etc.)
@@ -1457,11 +1495,17 @@ install_nvidia_device_plugin() {
     echo "  Namespace:  ${NVIDIA_DEVICE_PLUGIN_NAMESPACE}"
     echo "  Release:    ${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}"
 
-    # Critical values:
-    #   compatWithCPUManager=true → PASS_DEVICE_SPECS=true + privileged
-    #   mofedEnabled=false        → don't claim /dev/infiniband/uverbs* (EFA owns it)
-    #   gfd.enabled=true          → install GPU Feature Discovery sidecar
-    #   nodeSelector              → only schedule on our GPU NGs
+    # Critical values (per AWS docs):
+    #   mofedEnabled=false  → AWS EFA plugin owns /dev/infiniband/uverbs* (chart 0.19+ default true)
+    #   gfd.enabled=true    → install GPU Feature Discovery sidecar (gpu.product, gpu.memory labels)
+    #   nodeSelector        → only schedule on our GPU NGs
+    #
+    # Earlier revisions added compatWithCPUManager=true to make the
+    # plugin pod privileged. That was a workaround for legacy-mode
+    # driver injection — under nvidia-container-toolkit 1.18+ default
+    # jit-cdi the plugin works unprivileged like any other workload.
+    # Setting it now actively encourages people to write privileged
+    # workload pods to "match", so we leave it off.
     helm upgrade --install "${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}" \
         nvdp/nvidia-device-plugin \
         --namespace "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
@@ -1469,7 +1513,6 @@ install_nvidia_device_plugin() {
         --version "${plugin_ver}" \
         --set image.repository="${NVIDIA_DEVICE_PLUGIN_REPO}" \
         --set image.tag="v${plugin_ver}" \
-        --set compatWithCPUManager=true \
         --set mofedEnabled=false \
         --set gfd.enabled=true \
         --set nodeSelector."workload-type"=gpu \
