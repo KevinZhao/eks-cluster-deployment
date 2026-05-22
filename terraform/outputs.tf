@@ -27,6 +27,10 @@ output "gpu_nodegroup_names" {
   value = try(module.eks_gpu_nodegroup[0].nodegroup_names, [])
 }
 
+output "gpu_stack_mode" {
+  value = try(module.eks_gpu_stack[0].stack_mode, null)
+}
+
 output "kubeconfig_command" {
   value       = "aws eks update-kubeconfig --name ${module.eks_cluster.cluster_name} --region ${var.aws_region}"
   description = "Run this to populate ~/.kube/config from a host with VPC access."

@@ -121,27 +121,7 @@ variable "ec2_key_name" {
   type    = string
   default = ""
 }
-variable "helm_replace_existing" {
-  type    = bool
-  default = false
-}
 
-variable "nvidia_device_plugin_version" {
-  type    = string
-  default = "v0.19.1"
-}
-
-variable "nvidia_device_plugin_repo" {
-  type    = string
-  default = "nvcr.io/nvidia/k8s-device-plugin"
-}
-
-variable "efa_device_plugin_version" {
-  type    = string
-  default = "v0.5.18"
-}
-
-variable "efa_device_plugin_image" {
-  type    = string
-  default = ""
-}
+# Note: helm/kubernetes resources for the K8s GPU stack
+# (nvidia-device-plugin, EFA device plugin, dcgm-exporter, etc.) live in
+# the eks-gpu-stack module. This module is now AWS-only (IAM/SG/LT/NG).

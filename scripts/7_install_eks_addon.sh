@@ -185,6 +185,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set resources.limits.memory=256Mi \
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels.app\.kubernetes\.io/name=aws-load-balancer-controller" \
     --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
+    --set image.tag="${ALB_CONTROLLER_VERSION}" \
     --version "${ALB_CONTROLLER_CHART_VERSION}"
 
 # 5.2 Verify Load Balancer Controller

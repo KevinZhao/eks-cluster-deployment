@@ -130,7 +130,7 @@ module "eks_karpenter" {
 }
 
 # =====================================================================
-# GPU nodegroups (optional; replaces option_install_gpu_nodegroups.sh)
+# GPU nodegroups — AWS infra (IAM/SG/LT/NodeGroup) only
 # =====================================================================
 module "eks_gpu_nodegroup" {
   source = "./modules/eks-gpu-nodegroup"
@@ -156,12 +156,52 @@ module "eks_gpu_nodegroup" {
   local_lvm_mount       = var.gpu_local_lvm_mount
   local_lvm_fs          = var.gpu_local_lvm_fs
   ec2_key_name          = var.ec2_key_name
-  helm_replace_existing = var.helm_replace_existing
-
-  nvidia_device_plugin_version = var.nvidia_device_plugin_version
-  nvidia_device_plugin_repo    = var.nvidia_device_plugin_repo
-  efa_device_plugin_version    = var.efa_device_plugin_version
-  efa_device_plugin_image      = var.efa_device_plugin_image
 
   depends_on = [module.eks_addons]
+}
+
+# =====================================================================
+# GPU K8s stack — device-plugin / EFA / monitoring / Operator
+# =====================================================================
+# Independent of install_gpu_nodegroups so the stack can be iterated
+# without re-applying nodegroup infra. Mode is mutually exclusive
+# (standard | operator) — see modules/eks-gpu-stack/main.tf for the
+# conflict points the dispatch prevents.
+module "eks_gpu_stack" {
+  source = "./modules/eks-gpu-stack"
+  count  = var.install_gpu_stack ? 1 : 0
+
+  region                = var.aws_region
+  helm_replace_existing = var.helm_replace_existing
+
+  stack_mode = var.gpu_stack_mode
+
+  install_efa_device_plugin = var.install_efa_device_plugin
+  efa_device_plugin_version = var.efa_device_plugin_version
+  efa_device_plugin_image   = var.efa_device_plugin_image
+
+  # standard mode
+  nvidia_device_plugin_version  = var.nvidia_device_plugin_version
+  nvidia_device_plugin_repo     = var.nvidia_device_plugin_repo
+  install_dcgm_exporter         = var.install_dcgm_exporter
+  dcgm_exporter_version         = var.dcgm_exporter_version
+  install_node_problem_detector = var.install_node_problem_detector
+  node_problem_detector_version = var.node_problem_detector_version
+  install_gpu_health_check      = var.install_gpu_health_check
+
+  # operator mode
+  gpu_operator_version         = var.gpu_operator_version
+  gpu_operator_namespace       = var.gpu_operator_namespace
+  gpu_operator_driver_enabled  = var.gpu_operator_driver_enabled
+  gpu_operator_toolkit_enabled = var.gpu_operator_toolkit_enabled
+  gpu_operator_mofed_enabled   = var.gpu_operator_mofed_enabled
+  gpu_operator_mig_strategy    = var.gpu_operator_mig_strategy
+
+  # Wait for nodegroup module so DaemonSets become Ready when nodes join.
+  # When install_gpu_nodegroups=false, callers are expected to provide
+  # GPU nodes another way (manual NG, Karpenter NodePool, etc.).
+  depends_on = [
+    module.eks_addons,
+    module.eks_gpu_nodegroup,
+  ]
 }

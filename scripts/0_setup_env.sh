@@ -111,11 +111,11 @@ export SERVICE_IPV4_CIDR="${SERVICE_IPV4_CIDR:-172.20.0.0/16}"
 export CLUSTER_AUTOSCALER_VERSION="${CLUSTER_AUTOSCALER_VERSION:-v1.35.0}"
 
 # AWS Load Balancer Controller
-export ALB_CONTROLLER_VERSION="${ALB_CONTROLLER_VERSION:-v2.13.0}"
+export ALB_CONTROLLER_VERSION="${ALB_CONTROLLER_VERSION:-v2.14.1}"
 export ALB_CONTROLLER_CHART_VERSION="${ALB_CONTROLLER_CHART_VERSION:-1.16.0}"
 
 # Karpenter
-export KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
+export KARPENTER_VERSION="${KARPENTER_VERSION:-1.12.1}"
 
 # CSI Drivers, CoreDNS, and Metrics Server are installed as EKS Managed Addons.
 # Versions are automatically selected by AWS based on EKS version compatibility —
@@ -189,7 +189,7 @@ export IO2_IOPS="${IO2_IOPS:-10000}"
 
 # Auto-scaling
 export INSTALL_KARPENTER=$(normalize_bool "${INSTALL_KARPENTER:-false}")
-export KARPENTER_VERSION="${KARPENTER_VERSION:-1.8.3}"
+export KARPENTER_VERSION="${KARPENTER_VERSION:-1.12.1}"
 
 # File Systems (Optional)
 export INSTALL_EFS_CSI=$(normalize_bool "${INSTALL_EFS_CSI:-false}")

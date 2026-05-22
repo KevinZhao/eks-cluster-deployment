@@ -13,11 +13,27 @@ data "aws_caller_identity" "current" {}
 locals {
   efa_layout_default = { efa_only_count = 0, primary_efa = false }
   efa_layout = {
+    # Multi-NIC training accelerators
     "p5.48xlarge"      = { efa_only_count = 31, primary_efa = true }
     "p5en.48xlarge"    = { efa_only_count = 15, primary_efa = true }
     "p6-b200.48xlarge" = { efa_only_count = 7, primary_efa = true }
     "p6-b300.48xlarge" = { efa_only_count = 16, primary_efa = false } # NIC 0 = ENA only
-    "g7e.48xlarge"     = { efa_only_count = 3, primary_efa = true }
+
+    # G6e (NVIDIA L40S) — EFA enabled on 8xlarge+; smaller sizes have no EFA.
+    # MaximumNetworkCards: 1 for 8/12/16xlarge, 2 for 24xlarge, 4 for 48xlarge.
+    "g6e.8xlarge"  = { efa_only_count = 0, primary_efa = true }
+    "g6e.12xlarge" = { efa_only_count = 0, primary_efa = true }
+    "g6e.16xlarge" = { efa_only_count = 0, primary_efa = true }
+    "g6e.24xlarge" = { efa_only_count = 1, primary_efa = true }
+    "g6e.48xlarge" = { efa_only_count = 3, primary_efa = true }
+
+    # G7e (NVIDIA RTX PRO 6000 Blackwell) — EFAv4, GPUDirect RDMA on multi-GPU sizes.
+    # MaximumNetworkCards: 1 for 8/12xlarge, 2 for 24xlarge, 4 for 48xlarge.
+    # 2/4xlarge sizes have no EFA support and intentionally absent.
+    "g7e.8xlarge"  = { efa_only_count = 0, primary_efa = true }
+    "g7e.12xlarge" = { efa_only_count = 0, primary_efa = true }
+    "g7e.24xlarge" = { efa_only_count = 1, primary_efa = true }
+    "g7e.48xlarge" = { efa_only_count = 3, primary_efa = true }
   }
 
   # NG key = "<resource-name>-<purchase>-<suffix>". Used as for_each key
@@ -34,10 +50,14 @@ locals {
   }
 
   # Primary NIC interface_type per NG.
-  #   - p6-b300 + non-EFA types: "interface" (ENA only)
-  #   - others: "efa" (EFA + ENA on the same NIC)
+  #   - primary_efa=true : "efa" (EFA + ENA on the same NIC; covers single-NIC
+  #                       EFA shapes like g6e.8/12/16xlarge and g7e.8/12xlarge
+  #                       where efa_only_count=0 but the primary NIC still
+  #                       carries EFA)
+  #   - primary_efa=false: "interface" (pure ENA — p6-b300 NIC0, or non-EFA
+  #                       fallback)
   ng_primary_interface_type = {
-    for k, l in local.ng_layout : k => (l.primary_efa && l.efa_only_count > 0 ? "efa" : "interface")
+    for k, l in local.ng_layout : k => (l.primary_efa ? "efa" : "interface")
   }
 }
 
@@ -439,154 +459,3 @@ resource "aws_autoscaling_group_tag" "gpu" {
   }
 }
 
-# ===================================================================
-# NVIDIA Device Plugin (Helm chart)
-#
-# Minimal helm values per AWS docs:
-#   https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html
-#
-#   gfd.enabled=true     → GPU Feature Discovery sidecar (gpu.product, gpu.memory labels)
-#   mofedEnabled=false   → AWS EFA plugin owns /dev/infiniband/uverbs* (chart 0.19+ default true)
-#
-# We deliberately do NOT set compatWithCPUManager=true — that knob makes
-# the plugin pod privileged, which was a workaround for legacy-mode driver
-# injection. With toolkit 1.19's default jit-cdi path the plugin works
-# unprivileged just like any other workload.
-# ===================================================================
-locals {
-  nvidia_plugin_chart_version = trimprefix(var.nvidia_device_plugin_version, "v")
-  nvidia_plugin_image_tag     = var.nvidia_device_plugin_version
-}
-
-resource "helm_release" "nvidia_device_plugin" {
-  name             = "nvidia-device-plugin"
-  repository       = "https://nvidia.github.io/k8s-device-plugin"
-  chart            = "nvidia-device-plugin"
-  namespace        = "kube-system"
-  create_namespace = false
-  version          = local.nvidia_plugin_chart_version
-
-  cleanup_on_fail = true
-  replace         = var.helm_replace_existing
-  values = [yamlencode({
-    image = {
-      repository = var.nvidia_device_plugin_repo
-      tag        = local.nvidia_plugin_image_tag
-    }
-    mofedEnabled = false
-    gfd = {
-      enabled = true
-    }
-    nodeSelector = {
-      "workload-type" = "gpu"
-    }
-    tolerations = [
-      {
-        key      = "nvidia.com/gpu"
-        operator = "Exists"
-        effect   = "NoSchedule"
-      },
-    ]
-  })]
-
-  # Don't block apply if no GPU nodes are up yet — the chart will become
-  # ready when nodes join. depends_on covers the LT/NG creation order.
-  wait    = false
-  timeout = 300
-
-  depends_on = [aws_eks_node_group.gpu]
-}
-
-# ===================================================================
-# AWS EFA Kubernetes Device Plugin (DaemonSet)
-# ===================================================================
-locals {
-  efa_image = (
-    var.efa_device_plugin_image != "" ? var.efa_device_plugin_image :
-    startswith(var.region, "cn-") ?
-    "961992271922.dkr.ecr.${var.region}.amazonaws.com.cn/eks/aws-efa-k8s-device-plugin:${var.efa_device_plugin_version}" :
-    "602401143452.dkr.ecr.${var.region}.amazonaws.com/eks/aws-efa-k8s-device-plugin:${var.efa_device_plugin_version}"
-  )
-}
-
-resource "kubernetes_daemon_set_v1" "efa_device_plugin" {
-  metadata {
-    name      = "aws-efa-k8s-device-plugin-daemonset"
-    namespace = "kube-system"
-    labels = {
-      "app.kubernetes.io/name" = "aws-efa-k8s-device-plugin"
-    }
-  }
-
-  spec {
-    selector {
-      match_labels = {
-        name = "aws-efa-k8s-device-plugin"
-      }
-    }
-
-    strategy {
-      type = "RollingUpdate"
-    }
-
-    template {
-      metadata {
-        labels = {
-          name = "aws-efa-k8s-device-plugin"
-        }
-      }
-      spec {
-        host_network = true
-        node_selector = {
-          "workload-type" = "gpu"
-        }
-        toleration {
-          key      = "nvidia.com/gpu"
-          operator = "Exists"
-          effect   = "NoSchedule"
-        }
-        toleration {
-          key      = "CriticalAddonsOnly"
-          operator = "Exists"
-        }
-        priority_class_name = "system-node-critical"
-        container {
-          name              = "aws-efa-k8s-device-plugin"
-          image             = local.efa_image
-          image_pull_policy = "IfNotPresent"
-          security_context {
-            privileged = true
-          }
-          resources {
-            requests = {
-              cpu    = "10m"
-              memory = "20Mi"
-            }
-          }
-          volume_mount {
-            name       = "device-plugin"
-            mount_path = "/var/lib/kubelet/device-plugins"
-          }
-          volume_mount {
-            name       = "infiniband-volume"
-            mount_path = "/dev/infiniband/"
-          }
-        }
-        volume {
-          name = "device-plugin"
-          host_path {
-            path = "/var/lib/kubelet/device-plugins"
-          }
-        }
-        volume {
-          name = "infiniband-volume"
-          host_path {
-            path = "/dev/infiniband/"
-          }
-        }
-      }
-    }
-  }
-
-  depends_on = [aws_eks_node_group.gpu]
-}

@@ -18,6 +18,11 @@ echo "  • p5.48xlarge:      1 EFA + 31 EFA-only (NetworkCardIndex 0-31)"
 echo "  • p5en.48xlarge:    1 EFA + 15 EFA-only (NetworkCardIndex 0-15)"
 echo "  • p6-b200.48xlarge: 1 EFA + 7 EFA-only  (NetworkCardIndex 0-7)"
 echo "  • p6-b300.48xlarge: 16 EFA-only on NIC 1-16 (NIC 0 = ENA only; MaxEFA=16)"
+echo "  • g6e.8/12/16xlarge: 1 EFA on NIC 0 (single NIC, EFA-capable)"
+echo "  • g6e.24xlarge:     1 EFA + 1 EFA-only  (NetworkCardIndex 0-1)"
+echo "  • g6e.48xlarge:     1 EFA + 3 EFA-only  (NetworkCardIndex 0-3)"
+echo "  • g7e.8/12xlarge:   1 EFA on NIC 0 (single NIC, EFAv4)"
+echo "  • g7e.24xlarge:     1 EFA + 1 EFA-only  (NetworkCardIndex 0-1)"
 echo "  • g7e.48xlarge:     1 EFA + 3 EFA-only  (NetworkCardIndex 0-3)"
 echo ""
 echo "Pricing options (mutually exclusive - choose ONE):"
@@ -116,9 +121,6 @@ DEPLOY_GPU_SPOT="${DEPLOY_GPU_SPOT:-true}"
 DEPLOY_GPU_ODCR="${DEPLOY_GPU_ODCR:-false}"
 DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 
-INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
-EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.17}"
-
 # Install the full EFA userspace (libfabric-aws + openmpi5-aws + utils
 # under /opt/amazon/efa/) in the node userdata. The EKS GPU AMI ships
 # only kernel-side EFA; this adds `fi_info`, `fi_pingpong`, etc. for
@@ -203,33 +205,10 @@ if [ -n "${GPU_TOPOLOGY_GATE_LEVEL:-}" ]; then
     exit 1
 fi
 
-# NVIDIA Kubernetes device plugin (Helm chart deployment).
-#
-# Default chart version 0.19.1 (released 2026-04-23). Earlier versions
-# <v0.17.2 do not recognize Blackwell architecture in nvidia.com/gpu.product
-# labels, so are unsuitable for p6-b200 / p6-b300 nodegroups.
-#
-# Chart values used (minimal — let toolkit 1.18+ jit-cdi handle injection):
-#   mofedEnabled=false          → critical: from v0.19.0 the plugin defaults
-#                                  to claiming all /dev/infiniband/uverbs*
-#                                  devices, which conflicts with the AWS EFA
-#                                  Device Plugin. Must be disabled when both
-#                                  plugins coexist.
-#                                  See: https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html
-#   gfd.enabled=true            → enable GPU Feature Discovery sidecar; auto-
-#                                  labels nodes with nvidia.com/gpu.product,
-#                                  nvidia.com/gpu.memory, nvidia.com/cuda.*
-#   nodeSelector.workload-type=gpu → only schedule on our GPU node groups.
-#
-# Image overrides (for nvcr.io-unreachable regions like cn-*):
-#   NVIDIA_DEVICE_PLUGIN_REPO=...    overrides image.repository
-#   NVIDIA_DEVICE_PLUGIN_VERSION=... overrides image.tag (without leading 'v')
-#                                    chart version is also derived from this
-#                                    (strip leading 'v').
-NVIDIA_DEVICE_PLUGIN_VERSION="${NVIDIA_DEVICE_PLUGIN_VERSION:-v0.19.1}"
-NVIDIA_DEVICE_PLUGIN_REPO="${NVIDIA_DEVICE_PLUGIN_REPO:-nvcr.io/nvidia/k8s-device-plugin}"
-NVIDIA_DEVICE_PLUGIN_NAMESPACE="${NVIDIA_DEVICE_PLUGIN_NAMESPACE:-kube-system}"
-NVIDIA_DEVICE_PLUGIN_RELEASE_NAME="${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME:-nvidia-device-plugin}"
+# NVIDIA Kubernetes device plugin and other K8s GPU stack components are
+# installed by option_install_gpu_stack.sh — this script no longer owns
+# their version pins or helm releases. See that script for
+# NVIDIA_DEVICE_PLUGIN_VERSION / EFA_DEVICE_PLUGIN_VERSION / GPU_STACK_MODE.
 
 # Local NVMe Instance Store LVM configuration.
 # When enabled, all Instance Store NVMe disks are striped into one VG/LV
@@ -280,8 +259,34 @@ get_efa_only_card_count() {
         p5en.48xlarge)    echo 15 ;;   # NetworkCardIndex 1-15
         p6-b200.48xlarge) echo 7 ;;    # NetworkCardIndex 1-7
         p6-b300.48xlarge) echo 16 ;;   # NetworkCardIndex 1-16
+        # G6e (L40S) — EFA on 8xlarge+; multi-NIC starts at 24xlarge
+        g6e.8xlarge)      echo 0 ;;    # 1 NIC, EFA on NIC0
+        g6e.12xlarge)     echo 0 ;;    # 1 NIC, EFA on NIC0
+        g6e.16xlarge)     echo 0 ;;    # 1 NIC, EFA on NIC0
+        g6e.24xlarge)     echo 1 ;;    # NetworkCardIndex 1
+        g6e.48xlarge)     echo 3 ;;    # NetworkCardIndex 1-3
+        # G7e (RTX PRO 6000 Blackwell) — EFAv4 on 8xlarge+
+        g7e.8xlarge)      echo 0 ;;    # 1 NIC, EFA on NIC0
+        g7e.12xlarge)     echo 0 ;;    # 1 NIC, EFA on NIC0
+        g7e.24xlarge)     echo 1 ;;    # NetworkCardIndex 1
         g7e.48xlarge)     echo 3 ;;    # NetworkCardIndex 1-3
         *)                echo 0 ;;
+    esac
+}
+
+# Whether the primary NIC (NetworkCardIndex 0, DeviceIndex 0) supports EFA.
+# Most EFA-capable types: yes. Special case: p6-b300 NIC 0 is ENA-only.
+# Single-NIC EFA shapes (g6e.8/12/16xlarge, g7e.8/12xlarge) report
+# efa_only_count=0 but DO support EFA on the primary NIC — distinguish them
+# from truly-non-EFA types like g5.xlarge by checking against this list.
+instance_supports_primary_efa() {
+    local instance_type=$1
+    case "$instance_type" in
+        p5.48xlarge|p5en.48xlarge|p6-b200.48xlarge) return 0 ;;
+        g6e.8xlarge|g6e.12xlarge|g6e.16xlarge|g6e.24xlarge|g6e.48xlarge) return 0 ;;
+        g7e.8xlarge|g7e.12xlarge|g7e.24xlarge|g7e.48xlarge) return 0 ;;
+        p6-b300.48xlarge) return 1 ;;   # NIC 0 = ENA only
+        *) return 1 ;;
     esac
 }
 
@@ -765,6 +770,10 @@ create_gpu_launch_template() {
     local instance_type="$gpu_type"
     local resource_name=$(get_resource_name "$gpu_type")
     local efa_only_count=$(get_efa_only_card_count "$gpu_type")
+    local primary_efa="false"
+    if instance_supports_primary_efa "$gpu_type"; then
+        primary_efa="true"
+    fi
     local lt_name="${CLUSTER_NAME}-gpu-${resource_name}-${purchase_option}${suffix}-lt"
 
     # Capacity Block requires InstanceType to be embedded in the Launch Template.
@@ -778,6 +787,7 @@ create_gpu_launch_template() {
     echo "  Instance Type: ${instance_type}"
     echo "  Embed InstanceType in LT: ${embed_instance_type}"
     echo "  EFA-only Cards: ${efa_only_count}"
+    echo "  Primary NIC EFA: ${primary_efa}"
     if [[ -n "${EC2_KEY_NAME:-}" ]]; then
         echo "  EC2 Key Pair: ${EC2_KEY_NAME}"
     fi
@@ -1152,6 +1162,7 @@ ami_id = "${GPU_AMI_ID}"
 gpu_sg_id = "${GPU_SG_ID}"
 cluster_sg_id = "${CLUSTER_SG_ID}"
 efa_only_count = ${efa_only_count}
+primary_efa = "${primary_efa}" == "true"
 capacity_reservation_id = "${capacity_reservation_id}"
 userdata_b64 = "${userdata_b64}"
 ec2_key_name = "${EC2_KEY_NAME:-}"
@@ -1161,29 +1172,25 @@ pg_name = "${pg_name}"
 
 # Network interfaces configuration
 # Primary: NetworkCardIndex=0, DeviceIndex=0
-#   - Most multi-NIC EFA GPU types: InterfaceType=efa (EFA + ENA on same primary NIC)
-#   - p6-b300.48xlarge: InterfaceType=interface (ENA only) — Network Card 0 does
-#     NOT accept EFA on this type (MaximumEfaInterfaces=16 but MaximumNetworkCards=17;
-#     EFA is only allowed on NetworkCardIndex 1..16). Using InterfaceType=efa on
-#     NIC 0 yields AttachmentLimitExceeded on Network Card 0 with limit 0.
-#   - Small single-GPU types (g5/g6/g6e.xlarge etc): no EFA support at all
-#     (UnsupportedOperation: "EFA interfaces are not supported on <type>").
-#     Detected via efa_only_count == 0. Fall back to plain ENA on NIC 0.
+#   - primary_efa=True : InterfaceType=efa (EFA + ENA on the same NIC).
+#     Covers multi-NIC training shapes (p5/p5en/p6-b200) AND single-NIC
+#     EFA shapes (g6e.8/12/16xlarge, g7e.8/12xlarge) where efa_only_count=0
+#     but the primary NIC still carries EFA.
+#   - primary_efa=False : InterfaceType=interface (pure ENA).
+#     - p6-b300.48xlarge: NIC 0 is ENA-only (MaximumEfaInterfaces=16 but
+#       MaximumNetworkCards=17; EFA only on NetworkCardIndex 1..16). Using
+#       efa here yields AttachmentLimitExceeded on Network Card 0 limit 0.
+#     - Truly non-EFA types (g5/g6/g6e.xlarge etc): no EFA support
+#       (UnsupportedOperation: "EFA interfaces are not supported on <type>").
 # Additional: NetworkCardIndex=1..N, DeviceIndex=0, InterfaceType=efa-only
 #   DeviceIndex=0 matches the AWS-recommended layout for all current EFA-capable
-#   GPU types (p5/p5e/p5en/p6-b200/p6-b300/g7e). Reference:
+#   GPU types (p5/p5e/p5en/p6-b200/p6-b300/g6e/g7e). Reference:
 #   https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-acc-inst-types.html
 #   DeviceIndex is per-NetworkCard, so DI=0 on secondary NICs does not collide
 #   with DI=0 on the primary NIC (which lives on NetworkCard 0).
 network_interfaces = []
 
-# Primary network card — type depends on the instance
-if instance_type == "p6-b300.48xlarge":
-    primary_interface_type = "interface"   # pure ENA, no EFA on NIC 0
-elif efa_only_count == 0:
-    primary_interface_type = "interface"   # no EFA support on this type
-else:
-    primary_interface_type = "efa"         # EFA + ENA on NIC 0
+primary_interface_type = "efa" if primary_efa else "interface"
 
 network_interfaces.append({
     "NetworkCardIndex": 0,
@@ -1456,199 +1463,11 @@ create_gpu_nodegroup() {
     # If you ever observe a pod stuck at the "No devices found" log line
     # despite failOnInitError=true (NVIDIA upstream issue #1080 has hit
     # this in some edge cases), check:
-    #   kubectl logs -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
+    #   kubectl logs -n kube-system \
     #     -l app.kubernetes.io/name=nvidia-device-plugin --tail=50
     # and report to NVIDIA bug 5129637.
 }
 
-# ===================================================================
-# NVIDIA Device Plugin (Helm chart)
-# ===================================================================
-# Deploys the upstream NVIDIA k8s-device-plugin via the official Helm
-# chart (https://nvidia.github.io/k8s-device-plugin). On EKS-optimized
-# AL2023 NVIDIA AMI the host already has the NVIDIA driver, the NVIDIA
-# Container Toolkit and a containerd config that registers `nvidia` as
-# the runtime handler — so the plugin needs no hostPath workarounds,
-# library symlinks, or runtimeClassName overrides.
-#
-# Earlier revisions of this script shipped a hand-written DaemonSet
-# that mounted /usr/lib64 into the plugin container and symlinked
-# libnvidia-ml.so before launching the binary. That workaround
-# predated the AMI's pre-configured nvidia runtime and is now
-# unnecessary; running the binary under the default containerd runtime
-# allows nvidia-container-toolkit to inject NVML/CUDA libs naturally.
-
-install_nvidia_device_plugin() {
-    echo "Installing NVIDIA Device Plugin via Helm chart..."
-
-    # Strip leading 'v' from version for chart version + image tag
-    local plugin_ver="${NVIDIA_DEVICE_PLUGIN_VERSION#v}"
-
-    # Add upstream repo (idempotent)
-    helm repo add nvdp https://nvidia.github.io/k8s-device-plugin \
-        >/dev/null 2>&1 || true
-    helm repo update nvdp >/dev/null
-
-    echo "  Chart:      nvdp/nvidia-device-plugin --version ${plugin_ver}"
-    echo "  Repository: ${NVIDIA_DEVICE_PLUGIN_REPO}"
-    echo "  Tag:        v${plugin_ver}"
-    echo "  Namespace:  ${NVIDIA_DEVICE_PLUGIN_NAMESPACE}"
-    echo "  Release:    ${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}"
-
-    # Critical values (per AWS docs):
-    #   mofedEnabled=false  → AWS EFA plugin owns /dev/infiniband/uverbs* (chart 0.19+ default true)
-    #   gfd.enabled=true    → install GPU Feature Discovery sidecar (gpu.product, gpu.memory labels)
-    #   nodeSelector        → only schedule on our GPU NGs
-    #
-    # Earlier revisions added compatWithCPUManager=true to make the
-    # plugin pod privileged. That was a workaround for legacy-mode
-    # driver injection — under nvidia-container-toolkit 1.18+ default
-    # jit-cdi the plugin works unprivileged like any other workload.
-    # Setting it now actively encourages people to write privileged
-    # workload pods to "match", so we leave it off.
-    helm upgrade --install "${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}" \
-        nvdp/nvidia-device-plugin \
-        --namespace "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
-        --create-namespace \
-        --version "${plugin_ver}" \
-        --set image.repository="${NVIDIA_DEVICE_PLUGIN_REPO}" \
-        --set image.tag="v${plugin_ver}" \
-        --set mofedEnabled=false \
-        --set gfd.enabled=true \
-        --set nodeSelector."workload-type"=gpu \
-        --wait --timeout 5m || {
-            echo "WARNING: helm upgrade for NVIDIA Device Plugin failed or timed out"
-            echo "  (this can be normal if no GPU nodes exist yet — the chart will become Ready"
-            echo "   once a GPU node joins and gets the workload-type=gpu label)"
-            return 0
-        }
-
-    echo "NVIDIA Device Plugin Helm release deployed"
-
-    # Quick sanity check on the rolled-out daemonset (chart names it
-    # <release>; pod label name=nvidia-device-plugin)
-    local ds_name
-    ds_name=$(kubectl get daemonset -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
-        -l "app.kubernetes.io/instance=${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME},app.kubernetes.io/name=nvidia-device-plugin" \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    if [ -n "${ds_name}" ]; then
-        echo "  DaemonSet: ${ds_name}"
-        kubectl get daemonset "${ds_name}" -n "${NVIDIA_DEVICE_PLUGIN_NAMESPACE}" \
-            -o jsonpath='{"  desired/ready: "}{.status.desiredNumberScheduled}{"/"}{.status.numberReady}{"\n"}'
-    fi
-}
-
-# ===================================================================
-# AWS EFA Kubernetes Device Plugin (kubectl apply)
-# ===================================================================
-
-install_efa_device_plugin() {
-    if [ "${INSTALL_EFA_DEVICE_PLUGIN}" != "true" ]; then
-        echo "EFA Device Plugin installation skipped (INSTALL_EFA_DEVICE_PLUGIN=${INSTALL_EFA_DEVICE_PLUGIN})"
-        return 0
-    fi
-
-    echo "Installing AWS EFA Kubernetes Device Plugin via kubectl..."
-
-    if kubectl get daemonset aws-efa-k8s-device-plugin-daemonset -n kube-system &>/dev/null; then
-        echo "EFA Device Plugin already installed"
-        return 0
-    fi
-
-    # Region-aware ECR image prefix.
-    # China regions: 961992271922 is the standard CN EKS add-on ECR account,
-    # but AWS has not always mirrored aws-efa-k8s-device-plugin there. If a
-    # CN deployment hits ImagePullBackOff, override EFA_DEVICE_PLUGIN_IMAGE
-    # with a reachable registry (e.g. a customer-hosted ECR mirror).
-    local efa_image
-    if [ -n "${EFA_DEVICE_PLUGIN_IMAGE:-}" ]; then
-        efa_image="${EFA_DEVICE_PLUGIN_IMAGE}"
-    else
-        case "${AWS_REGION}" in
-            cn-*) efa_image="961992271922.dkr.ecr.${AWS_REGION}.amazonaws.com.cn/eks/aws-efa-k8s-device-plugin:${EFA_DEVICE_PLUGIN_VERSION}" ;;
-            *)    efa_image="602401143452.dkr.ecr.${AWS_REGION}.amazonaws.com/eks/aws-efa-k8s-device-plugin:${EFA_DEVICE_PLUGIN_VERSION}" ;;
-        esac
-    fi
-    echo "  Image: ${efa_image}"
-
-    kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: aws-efa-k8s-device-plugin-daemonset
-  namespace: kube-system
-  labels:
-    app.kubernetes.io/name: aws-efa-k8s-device-plugin
-spec:
-  selector:
-    matchLabels:
-      name: aws-efa-k8s-device-plugin
-  updateStrategy:
-    type: RollingUpdate
-  template:
-    metadata:
-      labels:
-        name: aws-efa-k8s-device-plugin
-    spec:
-      hostNetwork: true
-      nodeSelector:
-        workload-type: gpu
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      - key: CriticalAddonsOnly
-        operator: Exists
-      priorityClassName: system-node-critical
-      containers:
-      - name: aws-efa-k8s-device-plugin
-        image: ${efa_image}
-        imagePullPolicy: IfNotPresent
-        # Upstream chart uses privileged container; required to open
-        # /dev/infiniband/uverbs* and advertise vpc.amazonaws.com/efa.
-        securityContext:
-          privileged: true
-        resources:
-          requests:
-            cpu: 10m
-            memory: 20Mi
-        volumeMounts:
-        - name: device-plugin
-          mountPath: /var/lib/kubelet/device-plugins
-        - name: infiniband-volume
-          mountPath: /dev/infiniband/
-      volumes:
-      - name: device-plugin
-        hostPath:
-          path: /var/lib/kubelet/device-plugins
-      - name: infiniband-volume
-        hostPath:
-          path: /dev/infiniband/
-EOF
-
-    echo "Waiting for EFA Device Plugin to be ready..."
-    for i in {1..30}; do
-        local ready=$(kubectl get daemonset aws-efa-k8s-device-plugin-daemonset -n kube-system \
-            -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
-        local desired=$(kubectl get daemonset aws-efa-k8s-device-plugin-daemonset -n kube-system \
-            -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
-
-        echo "  EFA Device Plugin: ${ready}/${desired} ready"
-
-        if [ "${desired}" = "0" ]; then
-            echo "EFA Device Plugin installed (waiting for GPU nodes)"
-            return 0
-        fi
-
-        if [ "${ready}" = "${desired}" ] && [ "${ready}" != "0" ]; then
-            echo "EFA Device Plugin is ready"
-            return 0
-        fi
-        sleep 10
-    done
-
-    echo "WARNING: EFA Device Plugin may not be fully ready"
-}
 
 # ===================================================================
 # Main Execution
@@ -1948,17 +1767,29 @@ for gpu_type in "${GPU_TYPE_ARRAY[@]}"; do
     fi
 done
 
-# Step 6: Install NVIDIA Device Plugin
-echo ""
-echo "Step 6: Installing NVIDIA Device Plugin..."
-install_nvidia_device_plugin
+# ===================================================================
+# K8s GPU stack (device-plugin / EFA / DCGM / NPD / health-check / Operator)
+# is now a SEPARATE script so that:
+#   1. node-level infra (this script) and cluster-level workloads
+#      (option_install_gpu_stack.sh) can be iterated independently
+#   2. standard vs operator mode mutual-exclusion logic lives in one
+#      place and isn't intermixed with EC2/IAM/LT lifecycle
+#
+# Default behavior preserves the old "one command" UX: this script
+# auto-invokes the stack installer at the end. Set
+# SKIP_GPU_STACK_AUTO_INSTALL=true to skip and run it yourself.
+# ===================================================================
+if [ "${SKIP_GPU_STACK_AUTO_INSTALL:-false}" = "true" ]; then
+    echo ""
+    echo "Step 6: Skipping GPU stack install (SKIP_GPU_STACK_AUTO_INSTALL=true)"
+    echo "  Run it manually with: bash ${SCRIPT_DIR}/option_install_gpu_stack.sh"
+else
+    echo ""
+    echo "Step 6: Installing GPU stack (delegating to option_install_gpu_stack.sh)..."
+    bash "${SCRIPT_DIR}/option_install_gpu_stack.sh"
+fi
 
-# Step 7: Install AWS EFA Kubernetes Device Plugin
-echo ""
-echo "Step 7: Installing AWS EFA Kubernetes Device Plugin..."
-install_efa_device_plugin
-
-# Step 8: Summary
+# Step 7: Summary
 echo ""
 echo "=== GPU Node Groups Installation Complete ==="
 echo ""
@@ -1966,8 +1797,7 @@ echo "Created resources:"
 echo "  • IAM Role: ${GPU_NODE_ROLE_NAME}"
 echo "  • Security Group: ${GPU_SG_ID}"
 echo "  • GPU AMI: ${GPU_AMI_ID}"
-echo "  • NVIDIA Device Plugin: helm release '${NVIDIA_DEVICE_PLUGIN_RELEASE_NAME}' in ns/${NVIDIA_DEVICE_PLUGIN_NAMESPACE} (${NVIDIA_DEVICE_PLUGIN_VERSION}, with GFD)"
-[ "${INSTALL_EFA_DEVICE_PLUGIN}" = "true" ] && echo "  • EFA Device Plugin: aws-efa-k8s-device-plugin-daemonset (${EFA_DEVICE_PLUGIN_VERSION})"
+echo "  • K8s GPU stack: see option_install_gpu_stack.sh output above"
 if [ "${GPU_ENABLE_LOCAL_LVM}" = "true" ]; then
     echo "  • Local NVMe LVM: ${GPU_LOCAL_LVM_VG_NAME}/${GPU_LOCAL_LVM_LV_NAME} (striped, ${GPU_LOCAL_LVM_FS}) → ${GPU_LOCAL_LVM_MOUNT}"
     echo "  • Node labels:    local-ssd=true, local-ssd-size-gb=<total>"

@@ -66,7 +66,8 @@ graph edges, but logically:
 4. `eks-addons` (CoreDNS + Metrics Server addons; CA + ALB Controller helm releases)
 5. `eks-csi-drivers` (EBS always; EFS/FSx/S3 optional)
 6. `eks-karpenter` (optional)
-7. `eks-gpu-nodegroup` (optional; LT with multi-NIC EFA + NVIDIA + EFA device plugins)
+7. `eks-gpu-nodegroup` (optional; AWS-side: IAM/SG/LT with multi-NIC EFA + EKS Managed NodeGroup)
+8. `eks-gpu-stack` (optional; K8s-side: device-plugin / EFA / monitoring **or** GPU Operator)
 
 ## GPU nodegroups
 
@@ -89,7 +90,63 @@ gpu_nodegroups = [
 ```
 
 EFA NIC layout per instance type is built into the module (see
-`modules/eks-gpu-nodegroup/main.tf` — `local.efa_layout`).
+`modules/eks-gpu-nodegroup/main.tf` — `local.efa_layout`). Currently
+registered:
+
+| Instance | NIC0 type | Extra EFA-only NICs | Notes |
+|---|---|---|---|
+| `p5.48xlarge` | `efa` | 31 | H100, full multi-NIC |
+| `p5en.48xlarge` | `efa` | 15 | H200 |
+| `p6-b200.48xlarge` | `efa` | 7 | B200 |
+| `p6-b300.48xlarge` | `interface` | 16 | B300; NIC 0 = ENA only |
+| `g6e.8xlarge` / `12xlarge` / `16xlarge` | `efa` | 0 | L40S, single NIC |
+| `g6e.24xlarge` | `efa` | 1 | L40S, 2 NICs |
+| `g6e.48xlarge` | `efa` | 3 | L40S, 4 NICs |
+| `g7e.8xlarge` / `12xlarge` | `efa` | 0 | RTX PRO 6000, EFAv4 |
+| `g7e.24xlarge` | `efa` | 1 | 2 NICs, EFAv4 |
+| `g7e.48xlarge` | `efa` | 3 | 4 NICs, EFAv4, GPUDirect RDMA |
+
+Anything else falls back to `{ efa_only_count = 0, primary_efa = false }`
+— LT will provision a plain ENA NIC and skip EFA scaffolding.
+
+## GPU K8s stack (`eks-gpu-stack`)
+
+The K8s-side components live in a separate module so the stack can be
+swapped or upgraded without touching nodegroup infra. Two **mutually
+exclusive** modes via `gpu_stack_mode`:
+
+| Mode | What it installs |
+|---|---|
+| `standard` (default) | nvidia-device-plugin · aws-efa-k8s-device-plugin · dcgm-exporter · node-problem-detector · gpu-health-check DS |
+| `operator` | NVIDIA GPU Operator (driver/toolkit/mofed disabled to coexist with EKS GPU AMI + AWS EFA plugin) · aws-efa-k8s-device-plugin |
+
+Why mutual exclusion is enforced:
+
+| Conflict | `standard` provides | `operator` provides |
+|---|---|---|
+| `nvidia.com/gpu` | helm `nvidia-device-plugin` DS | Operator's plugin DS |
+| Port 9400 metrics | helm `dcgm-exporter` | Operator's `nvidia-dcgm-exporter` |
+| GFD labels | chart-internal GFD sidecar | Operator's GFD DS |
+| `/dev/infiniband/uverbs*` | AWS EFA plugin (sole owner) | mofedDriver (forced off) |
+
+Decision table:
+
+| Need | Pick |
+|---|---|
+| Training, integer GPU requests, EFA + NCCL | `standard` |
+| `standard` + Prometheus + boot health-check | `standard` (defaults already cover this) |
+| MIG slicing, vGPU, GDS, Confidential Computing | `operator` |
+| Don't know yet | `standard` (you can switch later) |
+
+Switching modes:
+
+```bash
+# bash
+GPU_STACK_MODE=operator GPU_STACK_FORCE_SWITCH=true bash scripts/option_install_gpu_stack.sh
+
+# terraform — flip the variable, plan/apply will retire stale resources of the old mode
+gpu_stack_mode = "operator"
+```
 
 ## What is intentionally NOT in Terraform
 
@@ -126,8 +183,10 @@ cd terraform
 The script:
 
 1. `helm uninstall` every managed release in reverse install order
-   (karpenter-pools → karpenter → nvidia-device-plugin →
-   aws-load-balancer-controller → cluster-autoscaler → aws-fsx-csi-driver)
+   (karpenter-pools → karpenter → nvidia-device-plugin → dcgm-exporter →
+   node-problem-detector → aws-load-balancer-controller →
+   cluster-autoscaler → aws-fsx-csi-driver), plus gpu-operator from
+   ns/gpu-operator and the gpu-health-check DaemonSet
 2. `kubectl delete serviceaccount` the SAs Terraform created
    (karpenter / cluster-autoscaler / aws-load-balancer-controller /
    fsx-csi-controller-sa) — Pod Identity associations vanish with TF,

@@ -52,7 +52,16 @@ source scripts/0_setup_env.sh
 ./scripts/option_install_karpenter.sh
 
 # Install GPU node groups with EFA support (uses Managed Node Groups, not Karpenter)
+# By default, this also auto-invokes option_install_gpu_stack.sh at the end
+# (GPU_STACK_MODE=standard|operator). Set SKIP_GPU_STACK_AUTO_INSTALL=true to
+# install the K8s stack separately.
 ./scripts/option_install_gpu_nodegroups.sh
+
+# Install ONLY the K8s GPU stack (device-plugin / EFA / monitoring or Operator).
+# Idempotent; safe to re-run after switching GPU_STACK_MODE.
+GPU_STACK_MODE=standard ./scripts/option_install_gpu_stack.sh
+# or
+GPU_STACK_MODE=operator ./scripts/option_install_gpu_stack.sh
 
 # Install CSI drivers (EFS, FSx, S3)
 # Method 1: Positional arguments
@@ -252,23 +261,29 @@ warn "message"          # Warning logging (no exit)
 
 ## GPU Node Support (Managed Node Groups)
 
-**GPU Nodes (P5/P5en/P6/G7e):** `option_install_gpu_nodegroups.sh`
+GPU support is split across two scripts (and two terraform modules) by
+responsibility:
+
+**Layer 1 — `option_install_gpu_nodegroups.sh` (AWS infra)**
 - Uses AWS Managed Node Groups (not Karpenter) for EFA multi-NIC support
-- Launch Templates pre-configure all EFA interfaces at node launch time
+- IAM role + GPU SG (with EFA self-egress) + Launch Template + NodeGroup
 - EFA interface counts:
   - p5.48xlarge: 32 ENIs (1 primary + 31 EFA-only)
   - p5en.48xlarge: 16 ENIs (1 primary + 15 EFA-only)
   - p6-b200.48xlarge: 8 ENIs (1 primary + 7 EFA-only)
   - p6-b300.48xlarge: 17 ENIs (1 primary + 16 EFA-only)
   - g7e.48xlarge: 4 ENIs (1 primary + 3 EFA-only)
-- Pricing options (mutually exclusive - choose ONE):
-  - Spot: Cost-effective for fault-tolerant workloads
-  - ODCR: Guaranteed capacity with on-demand pricing
-  - Capacity Block: Time-limited reserved capacity
-- LVM configuration for containerd (same as system nodes)
-- NVIDIA Device Plugin installed via kubectl (with host library symlinks)
-- Node labels: `workload-type=gpu`, `gpu-instance-type=<instance-type>`, `purchase-option=spot|odcr|cb`
+- Pricing options (mutually exclusive — choose ONE): OD / Spot / ODCR / CB
+- LVM configuration for containerd data volume + Instance Store scratch
+- Node labels: `workload-type=gpu`, `gpu-instance-type=<type>`, `purchase-option=<od|spot|odcr|cb>`
 - Taints: `nvidia.com/gpu:NoSchedule`
+
+**Layer 2 — `option_install_gpu_stack.sh` (K8s workloads)**
+- Two mutually-exclusive modes via `GPU_STACK_MODE`:
+  - `standard` (default): nvidia-device-plugin + EFA plugin + dcgm-exporter + node-problem-detector + gpu-health-check DS
+  - `operator`: NVIDIA GPU Operator (driver/toolkit/mofed disabled) + EFA plugin
+- Mode-switch protected by `GPU_STACK_FORCE_SWITCH=true` to auto-uninstall conflicting releases
+- Auto-invoked from layer 1 by default; skip with `SKIP_GPU_STACK_AUTO_INSTALL=true`
 
 ## Testing and Validation
 

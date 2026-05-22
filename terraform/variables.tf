@@ -159,18 +159,18 @@ variable "cluster_autoscaler_version" {
 variable "cluster_autoscaler_chart_version" {
   type        = string
   description = "kubernetes/autoscaler helm chart version (independent of image tag). Bump together with cluster_autoscaler_version when upgrading. 9.48+ ships v1.35.0 as the default image tag, matching our cluster version."
-  default     = "9.48.0"
+  default     = "9.57.0"
 }
 
 variable "alb_controller_chart_version" {
   type        = string
-  description = "AWS Load Balancer Controller helm chart version. Must be paired with alb_controller_app_version (chart 1.14.x ↔ app v2.13.x; chart 1.16.x ↔ app v2.14.x)."
+  description = "AWS Load Balancer Controller helm chart version. Must be paired with alb_controller_app_version (chart 1.14.x ↔ app v2.13.x; chart 1.16.x ↔ app v2.14.x). NOTE: upstream v3.0+ is a major bump (CRD changes + chart version scheme realignment with the app); deferred — pin v2.14.x until the v3 migration path is exercised end-to-end."
   default     = "1.16.0"
 }
 
 variable "alb_controller_app_version" {
   type        = string
-  description = "AWS Load Balancer Controller image tag. Sourced from upstream release. The IAM policy fetched at apply time follows this tag exactly."
+  description = "AWS Load Balancer Controller image tag. Sourced from upstream release. The IAM policy fetched at apply time follows this tag exactly. See alb_controller_chart_version for the v3 deferral note."
   default     = "v2.14.1"
 }
 
@@ -186,7 +186,7 @@ variable "alb_controller_iam_policy_source" {
 
 variable "karpenter_version" {
   type        = string
-  default     = "1.10.0"
+  default     = "1.12.1"
   description = "Karpenter helm chart version (matches app version)."
 }
 
@@ -299,16 +299,35 @@ variable "gpu_local_lvm_fs" {
   default = "xfs"
 }
 
-# NVIDIA + EFA device plugin
-variable "nvidia_device_plugin_version" {
-  type    = string
-  default = "v0.19.1"
+# =====================================================================
+# K8s GPU stack (eks-gpu-stack module)
+# =====================================================================
+# Two mutually exclusive modes:
+#   standard — nvidia-device-plugin + EFA + dcgm-exporter +
+#              node-problem-detector + gpu-health-check
+#   operator — NVIDIA GPU Operator (driver/toolkit/mofed disabled to
+#              coexist with EKS GPU AMI + AWS EFA plugin) + EFA
+variable "install_gpu_stack" {
+  type        = bool
+  description = "Install K8s-side GPU components (device-plugin / EFA / monitoring / Operator). Independent of install_gpu_nodegroups so users can iterate either layer alone. Default false to mirror install_gpu_nodegroups — enabling the stack on a cluster without GPU nodes creates DaemonSets that idle at desired=0 and helm releases that hold no actual workloads, which surprises operators."
+  default     = false
 }
 
-variable "nvidia_device_plugin_repo" {
+variable "gpu_stack_mode" {
   type        = string
-  default     = "nvcr.io/nvidia/k8s-device-plugin"
-  description = "Override for regions where nvcr.io is unreachable (cn-*)."
+  description = "Mutually exclusive K8s GPU stack mode: 'standard' or 'operator'."
+  default     = "standard"
+
+  validation {
+    condition     = contains(["standard", "operator"], var.gpu_stack_mode)
+    error_message = "gpu_stack_mode must be 'standard' or 'operator'."
+  }
+}
+
+# --- Shared (both modes) ---
+variable "install_efa_device_plugin" {
+  type    = bool
+  default = true
 }
 
 variable "efa_device_plugin_version" {
@@ -320,6 +339,89 @@ variable "efa_device_plugin_image" {
   type        = string
   description = "Full image override for the AWS EFA k8s device plugin (e.g. private mirror in cn-* regions). Empty falls back to the public ECR image map."
   default     = ""
+}
+
+# --- Standard mode ---
+variable "nvidia_device_plugin_version" {
+  type    = string
+  default = "v0.19.1"
+}
+
+variable "nvidia_device_plugin_repo" {
+  type        = string
+  default     = "nvcr.io/nvidia/k8s-device-plugin"
+  description = "Override for regions where nvcr.io is unreachable (cn-*)."
+}
+
+variable "install_dcgm_exporter" {
+  type        = bool
+  description = "Install dcgm-exporter for pod-level GPU metrics (standard mode only — Operator bundles its own)."
+  default     = true
+}
+
+variable "dcgm_exporter_version" {
+  type    = string
+  default = "4.8.2"
+}
+
+variable "install_node_problem_detector" {
+  type        = bool
+  description = "Install node-problem-detector to surface GPU XID errors / kernel issues as NodeConditions (standard mode only)."
+  default     = true
+}
+
+variable "node_problem_detector_version" {
+  type    = string
+  default = "2.3.14"
+}
+
+variable "install_gpu_health_check" {
+  type        = bool
+  description = "Install boot-time GPU health-check DaemonSet that taints node with gpu-unhealthy=true:NoSchedule on nvidia-smi failure (standard mode only)."
+  default     = true
+}
+
+# --- Operator mode ---
+# NOTE: upstream v26.x is the latest major (released 2026-03-20). Stay on
+# v25.3.4 until the v26 upgrade path is verified end-to-end on B300 — v25.3.4
+# was verified 2026-05-22 (8× B300 SXM6, EFA + nvidia.com/gpu + DCGM metrics).
+variable "gpu_operator_version" {
+  type    = string
+  default = "v25.3.4"
+}
+
+variable "gpu_operator_namespace" {
+  type    = string
+  default = "gpu-operator"
+}
+
+variable "gpu_operator_driver_enabled" {
+  type        = bool
+  description = "Operator's containerized driver. Default false because the EKS GPU AMI ships a tested driver."
+  default     = false
+}
+
+variable "gpu_operator_toolkit_enabled" {
+  type        = bool
+  description = "Operator's containerized nvidia-container-toolkit. Default false because the EKS GPU AMI ships it."
+  default     = false
+}
+
+variable "gpu_operator_mofed_enabled" {
+  type        = bool
+  description = "Operator's MOFED driver. Default false because AWS EFA plugin owns /dev/infiniband/uverbs*."
+  default     = false
+}
+
+variable "gpu_operator_mig_strategy" {
+  type        = string
+  description = "MIG strategy: 'none' (no migManager), 'single', or 'mixed'. Set to 'single' or 'mixed' on A100/H100 multi-tenancy."
+  default     = "none"
+
+  validation {
+    condition     = contains(["none", "single", "mixed"], var.gpu_operator_mig_strategy)
+    error_message = "gpu_operator_mig_strategy must be one of: none, single, mixed."
+  }
 }
 
 # =====================================================================

@@ -66,7 +66,9 @@ else
     echo "==> Helm uninstall (reverse install order)..."
     # karpenter-pools depends on karpenter; karpenter depends on cluster.
     # Other releases are independent but share the same cluster.
-    for release in karpenter-pools karpenter nvidia-device-plugin aws-load-balancer-controller cluster-autoscaler aws-fsx-csi-driver; do
+    # Added 2026-05-22: dcgm-exporter, node-problem-detector (standard mode);
+    # gpu-operator lives in its own namespace and is handled below.
+    for release in karpenter-pools karpenter nvidia-device-plugin dcgm-exporter node-problem-detector aws-load-balancer-controller cluster-autoscaler aws-fsx-csi-driver; do
       if helm $KCTX list -n "${NS}" --short 2>/dev/null | grep -qx "${release}"; then
         echo "  - uninstalling ${release}"
         helm $KCTX uninstall "${release}" -n "${NS}" --wait --timeout 5m \
@@ -75,6 +77,28 @@ else
         echo "  - ${release}: not installed, skip"
       fi
     done
+
+    # Operator-mode artifacts: helm release lives in its own ns/gpu-operator,
+    # and the namespace itself must be removed for a clean state.
+    if helm $KCTX list -n gpu-operator --short 2>/dev/null | grep -qx "gpu-operator"; then
+      echo "  - uninstalling gpu-operator (ns=gpu-operator)"
+      helm $KCTX uninstall gpu-operator -n gpu-operator --wait --timeout 10m \
+        || echo "    WARN: helm uninstall gpu-operator failed; continuing"
+    fi
+    kubectl $KCTX delete namespace gpu-operator --ignore-not-found --timeout=120s 2>/dev/null \
+      || echo "  WARN: failed to delete ns/gpu-operator; continuing"
+
+    # Standalone health-check resources (kubectl-managed in bash path,
+    # terraform-managed in tf path — but safe-destroy runs before the
+    # helm/k8s API is torn down, so pre-clean either way).
+    kubectl $KCTX delete daemonset gpu-health-check -n "${NS}" --ignore-not-found --timeout=60s 2>/dev/null \
+      || echo "  WARN: failed to delete ds/gpu-health-check; continuing"
+    kubectl $KCTX delete clusterrolebinding gpu-health-check --ignore-not-found --timeout=30s 2>/dev/null \
+      || echo "  WARN: failed to delete clusterrolebinding/gpu-health-check; continuing"
+    kubectl $KCTX delete clusterrole gpu-health-check --ignore-not-found --timeout=30s 2>/dev/null \
+      || echo "  WARN: failed to delete clusterrole/gpu-health-check; continuing"
+    kubectl $KCTX delete serviceaccount gpu-health-check -n "${NS}" --ignore-not-found --timeout=30s 2>/dev/null \
+      || echo "  WARN: failed to delete sa/gpu-health-check; continuing"
 
     echo "==> Deleting ServiceAccounts that Terraform won't clean by itself..."
     for sa in karpenter cluster-autoscaler aws-load-balancer-controller fsx-csi-controller-sa; do
