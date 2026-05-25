@@ -82,6 +82,18 @@ variable "enable_irsa" {
   default     = false
 }
 
+variable "extra_api_ingress_security_group_ids" {
+  type        = list(string)
+  description = "Extra security groups allowed inbound to the cluster API on tcp/443. Use for in-VPC bastions / CI runners that need to reach a private API endpoint. Only works for sources in the same VPC; cross-VPC sources must use extra_api_ingress_cidrs."
+  default     = []
+}
+
+variable "extra_api_ingress_cidrs" {
+  type        = list(string)
+  description = "Extra CIDR blocks allowed inbound to the cluster API on tcp/443. Use for operators / bastions reaching the cluster via DX / VPN / VPC peering / TGW — anywhere SG references can't span. Empty by default."
+  default     = []
+}
+
 # =====================================================================
 # VPC Endpoints
 # =====================================================================

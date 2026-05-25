@@ -26,16 +26,18 @@ module "vpc_endpoints" {
 module "eks_cluster" {
   source = "./modules/eks-cluster"
 
-  cluster_name               = var.cluster_name
-  k8s_version                = var.k8s_version
-  private_subnet_ids         = var.private_subnet_ids
-  public_subnet_ids          = var.public_subnet_ids
-  cluster_mode               = var.cluster_mode
-  public_access_cidrs        = var.public_access_cidrs
-  service_ipv4_cidr          = var.service_ipv4_cidr
-  kms_key_arn                = var.kms_key_arn
-  enable_deletion_protection = var.enable_deletion_protection
-  enable_irsa                = var.enable_irsa
+  cluster_name                         = var.cluster_name
+  k8s_version                          = var.k8s_version
+  private_subnet_ids                   = var.private_subnet_ids
+  public_subnet_ids                    = var.public_subnet_ids
+  cluster_mode                         = var.cluster_mode
+  public_access_cidrs                  = var.public_access_cidrs
+  service_ipv4_cidr                    = var.service_ipv4_cidr
+  kms_key_arn                          = var.kms_key_arn
+  enable_deletion_protection           = var.enable_deletion_protection
+  enable_irsa                          = var.enable_irsa
+  extra_api_ingress_security_group_ids = var.extra_api_ingress_security_group_ids
+  extra_api_ingress_cidrs              = var.extra_api_ingress_cidrs
 
   depends_on = [module.vpc_endpoints]
 }

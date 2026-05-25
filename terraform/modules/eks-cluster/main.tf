@@ -105,6 +105,40 @@ resource "aws_iam_openid_connect_provider" "cluster" {
 }
 
 # =====================================================================
+# Extra API ingress on the cluster security group
+# =====================================================================
+# EKS auto-creates the cluster security group with one rule: a self-
+# reference allowing all traffic between SG members. Anyone outside that
+# group — bastion / CI runner / DX-attached operator — must be allowed
+# explicitly. We keep the rules separate from the EKS-managed self-ref
+# so they survive cluster-config updates and are easy to audit.
+#
+# SG-vs-CIDR choice: SG references are preferred for in-VPC sources
+# (they survive IP renumbering), but only span the same VPC; DX/VPN/
+# peering/TGW callers must come in by CIDR. Both lists can be set.
+resource "aws_vpc_security_group_ingress_rule" "api_extra_sg" {
+  for_each = toset(var.extra_api_ingress_security_group_ids)
+
+  security_group_id            = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
+  referenced_security_group_id = each.key
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  description                  = "Extra SG allowed inbound to cluster API"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_extra_cidr" {
+  for_each = toset(var.extra_api_ingress_cidrs)
+
+  security_group_id = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
+  cidr_ipv4         = each.key
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  description       = "Extra CIDR allowed inbound to cluster API"
+}
+
+# =====================================================================
 # Core managed addons that must be present before workloads land:
 #   - vpc-cni (with Pod ENI configured later via env if needed)
 #   - kube-proxy
