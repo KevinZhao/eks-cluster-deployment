@@ -9,7 +9,9 @@ multi-NIC), expressed declaratively.
 
 ```
 terraform/
-├── bootstrap/                     # Run ONCE per account/region: S3 + DynamoDB for backend
+├── bootstrap/                     # S3 + DynamoDB for remote state backend (optional)
+├── bootstrap-vpc/                 # Standalone 3-AZ VPC for testing the rest of the stack
+├── bootstrap-bastion/             # SSM-only t4g.small bastion in a private subnet
 ├── backend.tf                     # S3 backend (configured via -backend-config flags)
 ├── providers.tf                   # aws / kubernetes / helm with EKS exec auth
 ├── versions.tf
@@ -17,6 +19,7 @@ terraform/
 ├── main.tf                        # Wires modules together
 ├── outputs.tf
 ├── terraform.tfvars.example       # Copy to terraform.tfvars
+├── scripts/safe-destroy.sh        # Tear-down wrapper (helm uninstall → tf destroy)
 └── modules/
     ├── vpc-endpoints/             # Replaces 1_enable_vpc_dns.sh + 3_create_vpc_endpoints.sh
     ├── eks-cluster/               # Replaces 4_install_eks_cluster.sh
@@ -24,8 +27,105 @@ terraform/
     ├── eks-addons/                # Replaces 7_install_eks_addon.sh (CoreDNS/Metrics/CA/ALB)
     ├── eks-csi-drivers/           # Replaces option_install_csi_drivers.sh (EBS/EFS/FSx/S3)
     ├── eks-karpenter/             # Replaces option_install_karpenter.sh
-    └── eks-gpu-nodegroup/         # Replaces option_install_gpu_nodegroups.sh (EFA multi-NIC)
+    ├── eks-gpu-nodegroup/         # Replaces option_install_gpu_nodegroups.sh (EFA multi-NIC)
+    └── eks-gpu-stack/             # K8s-side GPU stack (standard / NVIDIA Operator)
 ```
+
+## Three-stack layout for private-cluster deploys
+
+For `cluster_mode = "private"`, the API endpoint is only reachable
+from inside the VPC. Run terraform from a bastion. Three independent
+stacks chain in this order:
+
+```
+┌─ dev host ─────────────────────────────────────────────────────────┐
+│  1. terraform -chdir=bootstrap-vpc apply                           │
+│       → vpc_id + private/public subnet IDs                         │
+│  2. terraform -chdir=bootstrap-bastion apply                       │
+│       -var "vpc_id=<from step 1>"                                  │
+│       -var "subnet_id=<one private subnet from step 1>"            │
+│       → bastion_instance_id + bastion_role_arn                     │
+└────────────────────────────────────────────────────────────────────┘
+                                ↓
+                     aws ssm start-session --target …
+                                ↓
+┌─ bastion ──────────────────────────────────────────────────────────┐
+│  3. git clone <repo> + scp/SSM the tfvars (tfvars are gitignored)  │
+│  4. terraform -chdir=terraform init                                │
+│  5. terraform -chdir=terraform apply                               │
+│       → cluster + system NG + addons + GPU (if enabled)            │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Each stack has its own state. Tear down in reverse order. The
+`bootstrap_cluster_creator_admin_permissions=true` flag automatically
+grants cluster-admin to **whichever IAM ran the apply** — when applied
+from the bastion, that's the bastion role, so no extra access entry
+is needed for the smoke path.
+
+## Public-cluster shortcut
+
+For dev iteration without a bastion: set `cluster_mode = "public"` and
+`public_access_cidrs = ["<your IP>/32"]`. Skip `bootstrap-bastion`
+entirely. Apply the root stack directly from the dev host.
+
+## Cluster API ingress
+
+The EKS-managed cluster security group only allows traffic between its
+own members by default. Anyone outside that group (bastion, CI runner,
+DX-attached operator) needs an explicit allow. Two knobs in `terraform.tfvars`:
+
+```hcl
+# Same-VPC sources (preferred — survives IP renumbering)
+extra_api_ingress_security_group_ids = ["sg-bastion"]
+
+# Cross-VPC sources (DX / VPN / peering / TGW — SG refs can't span)
+extra_api_ingress_cidrs = ["10.100.0.0/16"]
+```
+
+## Pod Identity vs IRSA
+
+This stack is **Pod Identity-only by default** (`enable_irsa = false`),
+matching the bash flow's `withOIDC: false`. Karpenter, Cluster Autoscaler,
+ALB Controller, and every CSI driver use `aws_eks_pod_identity_association`
+— there is no IAM OIDC provider unless you opt in.
+
+Enable IRSA only if external systems need to verify cluster-issued
+JWTs (e.g. GitHub Actions OIDC federation, cross-account workload
+identity). **Important caveat for private clusters**: the `eks` VPC
+interface endpoint's auto-created private hosted zone
+`eks.<region>.amazonaws.com` shadows the sibling subdomain
+`oidc.eks.<region>.amazonaws.com`. The VPC resolver answers NXDOMAIN
+authoritatively for that name, so any tool that fetches the OIDC
+issuer (terraform's `data.tls_certificate`, IRSA token verifiers)
+fails out of the box. Operators who set `enable_irsa = true` on a
+private cluster must arrange DNS for that subdomain themselves —
+typically via a `/etc/hosts` pin or a systemd-resolved per-domain
+forward to public DNS, applied to whatever host fetches the issuer.
+
+## Extra cluster admins
+
+`bootstrap_cluster_creator_admin_permissions=true` gives admin RBAC to
+whoever ran `terraform apply`. To grant the same level to other
+principals (typical: applied from CI, operated through bastion):
+
+```hcl
+extra_cluster_admin_role_arns = [
+  "arn:aws:iam::123456789012:role/eks-bastion-role",
+]
+```
+
+**Never list the apply-time identity here** — it already has admin and
+the access entry creation will fail with `ResourceInUseException`.
+
+## Health check
+
+After every apply, run `scripts/option_inspect_eks.sh` from the same
+host that has cluster API access. Nine checks: control plane, addons,
+system NG, node-internal kubelet/containerd/LVM, helm releases, VPC
+endpoints, SG ingress, Pod Identity associations, in-cluster DNS +
+spot vCPU quota. Read-only; safe to re-run. Exit 0 on all PASS,
+1 on any FAIL.
 
 ## Quick start
 

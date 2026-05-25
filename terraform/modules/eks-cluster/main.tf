@@ -139,6 +139,39 @@ resource "aws_vpc_security_group_ingress_rule" "api_extra_cidr" {
 }
 
 # =====================================================================
+# Extra cluster admins
+# =====================================================================
+# bootstrap_cluster_creator_admin_permissions=true already gives admin
+# to the IAM principal that ran `terraform apply`. These resources are
+# for *additional* principals — typical case: cluster is applied from a
+# dev host or CI runner, but day-2 operators connect through a separate
+# bastion / ops IAM role and need cluster-admin level kubectl access.
+#
+# Listing the apply-time principal here would collide (ResourceInUseException
+# on access entry creation). The variable description spells this out.
+resource "aws_eks_access_entry" "extra_admin" {
+  for_each = toset(var.extra_cluster_admin_role_arns)
+
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.key
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "extra_admin" {
+  for_each = toset(var.extra_cluster_admin_role_arns)
+
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.key
+  policy_arn    = "arn:${data.aws_partition.current.partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.extra_admin]
+}
+
+# =====================================================================
 # Core managed addons that must be present before workloads land:
 #   - vpc-cni (with Pod ENI configured later via env if needed)
 #   - kube-proxy

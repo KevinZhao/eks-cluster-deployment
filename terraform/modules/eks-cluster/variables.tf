@@ -61,3 +61,9 @@ variable "extra_api_ingress_cidrs" {
   description = "Extra CIDR blocks allowed inbound to the cluster API on tcp/443. Use for operators / bastions that reach the cluster via DX, Site-to-Site VPN, peered VPCs, or TGW — anywhere AWS SG references can't span. SG IDs are preferred when both sides live in the same VPC because they survive IP renumbering."
   default     = []
 }
+
+variable "extra_cluster_admin_role_arns" {
+  type        = list(string)
+  description = "Extra IAM role ARNs to grant AmazonEKSClusterAdminPolicy on this cluster. Useful when the operator/bastion role is NOT the same identity that ran `terraform apply` (e.g. dev host applies, bastion role does day-2 ops; or CI/CD applies and a separate ops role takes over). Empty by default — bootstrap_cluster_creator_admin_permissions=true already gives admin to whoever ran apply, and listing that same principal here would collide on access entry creation. NEVER list the cluster creator itself."
+  default     = []
+}

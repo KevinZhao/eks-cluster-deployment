@@ -40,6 +40,8 @@ manifests/iam/alb-controller-iam-policy.json
 *.tfplan.*
 terraform.tfvars
 terraform.tfvars.*
+# but allow the checked-in template
+!terraform.tfvars.example
 .terraform/
 .terraform.lock.hcl
 

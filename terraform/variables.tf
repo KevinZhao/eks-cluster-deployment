@@ -94,6 +94,12 @@ variable "extra_api_ingress_cidrs" {
   default     = []
 }
 
+variable "extra_cluster_admin_role_arns" {
+  type        = list(string)
+  description = "Extra IAM role ARNs to grant cluster-admin RBAC. Cluster creator (the IAM that runs `terraform apply`) is admin automatically; list here only OTHER principals that need admin (typical case: bastion role differs from apply-time role). NEVER list the apply-time identity — the access entry already exists and will conflict."
+  default     = []
+}
+
 # =====================================================================
 # VPC Endpoints
 # =====================================================================

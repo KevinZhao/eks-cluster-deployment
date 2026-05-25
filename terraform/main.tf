@@ -38,6 +38,7 @@ module "eks_cluster" {
   enable_irsa                          = var.enable_irsa
   extra_api_ingress_security_group_ids = var.extra_api_ingress_security_group_ids
   extra_api_ingress_cidrs              = var.extra_api_ingress_cidrs
+  extra_cluster_admin_role_arns        = var.extra_cluster_admin_role_arns
 
   depends_on = [module.vpc_endpoints]
 }
