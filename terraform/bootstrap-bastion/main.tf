@@ -182,12 +182,15 @@ locals {
     set -euxo pipefail
     exec > >(tee -a /var/log/bastion-bootstrap.log) 2>&1
 
-    echo "==> wait for cloud-init / background dnf to finish so the rpm lock is free"
-    # AL2023 ships its own dnf-makecache / package-cleanup running at boot;
-    # racing them on /var/lib/rpm/.rpm.lock breaks GPG-key imports.
-    cloud-init status --wait || true
-    for i in {1..30}; do
+    echo "==> wait for background dnf-makecache to release the rpm lock"
+    # AL2023's package-cleanup / dnf-makecache fires at boot and competes with
+    # us for /var/lib/rpm/.rpm.lock — first dnf install hits "Key import failed"
+    # if it loses the race. Don't use `cloud-init status --wait` here: this
+    # script IS being run by cloud-init's final stage, so waiting on it
+    # deadlocks (the process waits on its own parent).
+    for i in {1..60}; do
       if ! pgrep -x dnf >/dev/null && ! fuser /var/lib/rpm/.rpm.lock >/dev/null 2>&1; then
+        echo "rpm lock free after $i checks"
         break
       fi
       echo "rpm lock busy, waiting (attempt $i)..."
