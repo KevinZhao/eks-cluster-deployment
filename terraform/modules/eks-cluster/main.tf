@@ -83,17 +83,25 @@ resource "aws_eks_cluster" "this" {
 }
 
 # =====================================================================
-# OIDC provider (used by IRSA-based add-ons; Pod Identity does not need it
-# but other tooling commonly does)
+# IRSA — opt-in legacy OIDC provider
+# =====================================================================
+# Default off because every managed component in this stack uses Pod
+# Identity (var.enable_irsa). The data.tls_certificate fetch below
+# would otherwise touch oidc.eks.<region>.amazonaws.com, which is
+# unreachable from a private subnet that has the eks VPC interface
+# endpoint enabled (the endpoint's private hosted zone shadows the
+# subdomain — see modules/eks-cluster/variables.tf for context).
 # =====================================================================
 data "tls_certificate" "cluster" {
-  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
+  count = var.enable_irsa ? 1 : 0
+  url   = aws_eks_cluster.this.identity[0].oidc[0].issuer
 }
 
 resource "aws_iam_openid_connect_provider" "cluster" {
+  count           = var.enable_irsa ? 1 : 0
   url             = aws_eks_cluster.this.identity[0].oidc[0].issuer
   client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.cluster.certificates[0].sha1_fingerprint]
+  thumbprint_list = [data.tls_certificate.cluster[0].certificates[0].sha1_fingerprint]
 }
 
 # =====================================================================

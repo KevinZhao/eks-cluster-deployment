@@ -15,11 +15,13 @@ output "cluster_security_group_id" {
 }
 
 output "oidc_provider_arn" {
-  value = aws_iam_openid_connect_provider.cluster.arn
+  description = "Empty unless enable_irsa = true. With Pod Identity (the default) this stack does not create an OIDC provider."
+  value       = var.enable_irsa ? aws_iam_openid_connect_provider.cluster[0].arn : ""
 }
 
 output "oidc_issuer_url" {
-  value = aws_eks_cluster.this.identity[0].oidc[0].issuer
+  description = "OIDC issuer URL exposed by the cluster. Always populated (the cluster always has one) so downstream tooling that needs IRSA can opt in without re-deriving it."
+  value       = aws_eks_cluster.this.identity[0].oidc[0].issuer
 }
 
 output "cluster_role_arn" {

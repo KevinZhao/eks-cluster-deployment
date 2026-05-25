@@ -35,6 +35,7 @@ module "eks_cluster" {
   service_ipv4_cidr          = var.service_ipv4_cidr
   kms_key_arn                = var.kms_key_arn
   enable_deletion_protection = var.enable_deletion_protection
+  enable_irsa                = var.enable_irsa
 
   depends_on = [module.vpc_endpoints]
 }

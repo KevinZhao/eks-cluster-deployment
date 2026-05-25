@@ -76,6 +76,12 @@ variable "enable_deletion_protection" {
   default     = true
 }
 
+variable "enable_irsa" {
+  type        = bool
+  description = "Create the legacy IAM OIDC provider for IRSA. Default false to match the bash flow's `withOIDC: false` and the rest of this stack's Pod Identity-only design (Karpenter / Cluster Autoscaler / ALB Controller / every CSI driver are all Pod Identity-driven). Enable only if external workloads need to verify cluster-issued JWTs (e.g. GitHub Actions OIDC federation). Private clusters that opt in must also unblock oidc.eks.<region>.amazonaws.com DNS — the eks VPC interface endpoint's private hosted zone shadows that subdomain and breaks the OIDC issuer fetch."
+  default     = false
+}
+
 # =====================================================================
 # VPC Endpoints
 # =====================================================================
