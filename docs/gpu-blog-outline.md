@@ -416,7 +416,100 @@ Mountpoint for S3 基于对象存储,不提供完整 POSIX 文件系统语义。
 
 ## 八、端到端验证与最佳实践清单
 
-### 8.1 两个 Device Plugin 的协同
+### 8.1 两种 K8s GPU 栈部署模式:Standard vs Operator
+
+GPU 节点本身只是基础设施(driver + nvidia-container-toolkit + EFA + LVM),要让 K8s 真正"看到 GPU 并能调度",还需要在集群里装一套 K8s GPU stack(device plugin、Feature Discovery、监控、健康检查等)。脚本通过 `option_install_gpu_stack.sh` 提供**两种互斥模式**,使用者按需选择:
+
+```bash
+# 默认模式
+GPU_STACK_MODE=standard ./scripts/option_install_gpu_stack.sh
+
+# 或切换到 NVIDIA GPU Operator 模式
+GPU_STACK_MODE=operator ./scripts/option_install_gpu_stack.sh
+```
+
+#### Standard 模式(默认)
+
+逐组件用上游 Helm chart 部署,职责清晰、与 EKS NVIDIA AMI 已预装的 driver / toolkit 自然分工:
+
+| 组件 | Chart / 资源 | 作用 |
+|---|---|---|
+| nvidia-device-plugin | `nvdp/nvidia-device-plugin`(含 GFD sidecar) | 暴露 `nvidia.com/gpu` 资源 + 节点 GPU 属性标签 |
+| aws-efa-k8s-device-plugin | DaemonSet | 暴露 `vpc.amazonaws.com/efa` 资源 |
+| **dcgm-exporter** | `nvidia/dcgm-exporter` | **Pod 级 GPU 指标**(利用率、显存、温度、功耗、ECC、XID 错误等),Prometheus `:9400/metrics` |
+| **node-problem-detector** | `deliveryhero/node-problem-detector` | **节点级 GPU XID / kernel 事件** 上报为 NodeCondition / Event |
+| gpu-health-check | 内置 DaemonSet | 节点启动时执行 `nvidia-smi`,失败则给节点打 taint,阻止误调度 |
+
+特点:
+- 与 EKS NVIDIA AMI 直接配合 —— AMI 已经装好 driver / toolkit / NVIDIA Container Toolkit,Standard 模式只补 K8s 层组件,**不重复装 driver**
+- 组件少、依赖浅、helm release 个数可控,适合**已有自建 Prometheus 栈**或希望对每个组件版本独立掌控的团队
+- 出问题时排查路径短:每个组件是单独的 helm release / DaemonSet,日志聚焦
+
+#### Operator 模式(NVIDIA GPU Operator)
+
+由 NVIDIA 官方维护的 [GPU Operator](https://github.com/NVIDIA/gpu-operator) 一个 helm chart 全包,内部以 CRD + controller 方式拉起 device-plugin / GFD / NFD / dcgm-exporter / validator 等子组件。脚本里启用方式:
+
+```bash
+GPU_STACK_MODE=operator \
+GPU_OPERATOR_VERSION=v25.3.4 \
+  ./scripts/option_install_gpu_stack.sh
+```
+
+针对 EKS NVIDIA AMI 的关键 chart values(脚本默认值):
+```
+driver.enabled = false      # AMI 已预装,不让 Operator 再装一遍 driver
+toolkit.enabled = false     # AMI 已预装 nvidia-container-toolkit
+mofedDriver.enabled = false # AWS EFA Device Plugin 接管 /dev/infiniband/uverbs*
+mig.strategy = none         # MIG 仅 A100/H100/B200 启用,默认关
+```
+
+特点:
+- 一个 chart 拉起整套 GPU stack,**升级时跟随 NVIDIA 官方版本节奏**,跨云一致(GKE / AKS / on-prem 都能用)
+- 内置 dcgm-exporter / GFD / NFD / validator,**监控开箱即用**
+- 适合**纯 NVIDIA 工具链**、希望统一管理面、未来可能切换 cloud provider 的团队
+- 注意:driver / toolkit 必须显式禁用,否则会与 AMI 预装版本冲突
+
+#### 两种模式都自带 GPU 监控
+
+无论选哪种,都会向集群部署 dcgm-exporter,以 Prometheus `:9400/metrics` 暴露 Pod 级 GPU 指标,标准 Prometheus + Grafana 栈直接抓取即可:
+
+```yaml
+# Prometheus ServiceMonitor / PodMonitor 抓取示意
+- port: metrics
+  path: /metrics
+  interval: 30s
+```
+
+关键 metrics:
+- `DCGM_FI_DEV_GPU_UTIL` —— GPU 利用率
+- `DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_FREE` —— 显存使用
+- `DCGM_FI_DEV_GPU_TEMP` / `DCGM_FI_DEV_POWER_USAGE` —— 温度 / 功耗
+- `DCGM_FI_DEV_ECC_DBE_AGG_TOTAL` / `DCGM_FI_DEV_XID_ERRORS` —— 硬件 ECC / XID 故障
+
+Standard 模式额外提供 node-problem-detector,把 GPU XID / 内核错误转成 K8s `NodeCondition` 与 `Event`,可被 K8s 原生告警链路(Alertmanager / EventRouter)直接消费。Operator 模式下,XID 监控由其自带的 nvidia-validator + dcgm-exporter 完成,event 化需要再叠加 NPD 或自定义 webhook。
+
+#### 两种模式互斥(脚本会 fail-fast)
+
+下列资源在两种模式下会冲突,脚本检测到对侧的 helm release 或 DaemonSet 会直接报错并要求清理:
+- `nvidia.com/gpu` 资源 advertise(两边都注册同名 device plugin)
+- DCGM `:9400` 端口(两边都跑 dcgm-exporter)
+- GFD 节点标签(两边都打 `nvidia.com/gpu.product` 等)
+
+切换模式前必须 `helm uninstall` 对侧组件;脚本支持 `GPU_STACK_FORCE_MODE_SWITCH=true` 自动清理对侧 release。
+
+#### 选择建议
+
+| 团队画像 | 推荐 |
+|---|---|
+| 已有自建 Prometheus + Grafana,希望最小 footprint | **Standard** |
+| 希望未来跨云保持一致(EKS / GKE / AKS / on-prem) | **Operator** |
+| 已经在用 NVIDIA AI Enterprise / NIM 等 NVIDIA 商业栈 | **Operator** |
+| 团队不熟悉 GPU Operator CRD,出问题需要短链路排查 | **Standard** |
+| 需要 MIG 自动配置(A100 / H100 / B200) | **Operator**(`mig.strategy=mixed/single`) |
+
+本系列文档与脚本的端到端验证以 **Standard 模式** 为主完成,因为它对 AMI 已有组件的耦合更轻、调试链路更短;Operator 模式作为可选路径完整提供且**所有 chart values 对齐 EKS NVIDIA AMI 的预装栈**,可在生产环境直接选用。
+
+### 8.2 两个 Device Plugin 的协同
 GPU + EFA 工作负载依赖**两个独立的 Device Plugin**,职责边界清晰但容易漏配:
 
 | Device Plugin | 暴露资源 | 部署方式 | 作用 |
@@ -437,9 +530,9 @@ NVIDIA Device Plugin 部署方式与关键开关:
 - **EKS-optimized AL2023 NVIDIA AMI 已预装** NVIDIA driver + NVIDIA Container Toolkit,nodeadm 已把 `nvidia` 注册为 containerd 默认 runtime——因此 device plugin 容器启动时由 nvidia-container-toolkit 自动注入 NVML/CUDA 库与设备节点,**不需要 hostPath 挂载、库 symlink 或自定义 RuntimeClass**。
 - **采用上游 Helm chart 部署**(参考 [Manage NVIDIA GPU devices on EKS](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)),以 helm release 形式运行;脚本默认 `NVIDIA_DEVICE_PLUGIN_VERSION=v0.19.1`(2026-04-23 最新稳定版),在 nvcr.io 不可达的区域(如 cn-*)通过 `NVIDIA_DEVICE_PLUGIN_REPO` 指向私有 ECR 镜像。
 - **关键 chart values**:
-  - `compatWithCPUManager=true` —— 等价于设置 `PASS_DEVICE_SPECS=true` + `privileged: true`,使 device plugin 与 K8s CPUManager 互操作时能正确传递设备节点路径与权限([NVIDIA 官方说明](https://github.com/NVIDIA/k8s-device-plugin))。
   - `mofedEnabled=false` —— **关键**:从 v0.19.0 起 NVIDIA Device Plugin 默认会挂载所有 `/dev/infiniband/uverbs*` 设备到申请 GPU 的 Pod 内,这与 AWS EFA Device Plugin 管理 uverbs 设备的职责冲突,导致 Pod 取不到全部 EFA 网卡或 EFA Device Plugin 无法暴露资源。两类 plugin 共存时**必须显式关闭**该开关,详见 [AWS EKS 文档](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)。
   - `gfd.enabled=true` —— 启用 GPU Feature Discovery sidecar,自动给节点贴 `nvidia.com/gpu.product`、`nvidia.com/gpu.memory`、`nvidia.com/cuda.driver-version` 等属性标签,便于工作负载按 GPU 型号选择节点。
+- **不再设置** `compatWithCPUManager=true`:在 nvidia-container-toolkit 1.18 之前,该选项让 device plugin 跑成 privileged,以绕开 legacy hook 注入路径在非特权容器上的限制。toolkit 1.18+ 默认走 just-in-time CDI(jit-cdi),由 `nvidia-container-runtime` 在 OCI spec 上直接生成 device 注入,plugin 与 workload pod 都不再需要 privileged。继续显式开启反而让 plugin pod 长期保持过高权限,无安全收益。AWS EKS NVIDIA AL2023 AMI 已预装 toolkit 1.19+,本方案直接信任 jit-cdi 默认路径。
 - **Blackwell 架构(p6-b200 / p6-b300)的版本要求**:NVIDIA Device Plugin 对 Blackwell 架构的 `nvidia.com/gpu.product` 标签识别由 [PR #1240](https://github.com/NVIDIA/k8s-device-plugin/pull/1240) 引入,backport 到 release-0.17,因此**生产部署 Blackwell GPU 节点应使用 v0.17.2 或更新版本**。
 
 **关于启动竞态(为什么不再需要"手动 bounce")**:
@@ -460,7 +553,59 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=nvidia-device-plugin --tai
 #         journalctl -u nvidia-kmod-load.service 看 kmod 加载日志
 ```
 
-### 8.2 GPU 节点就绪验证
+**关于 cgroupsPath 与 containerd config 重载(AMI v20260512 及之前必备)**:
+
+EKS NVIDIA AL2023 AMI 在 nvidia-ctk 配置 containerd 时,`[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]` 下的 `SystemdCgroup` 可能丢失为默认 `false`,与 kubelet 的 systemd cgroup driver 不一致,导致 pod sandbox 创建报:
+
+```
+runc create failed: expected cgroupsPath to be of format
+"slice:prefix:name" for systemd cgroups
+```
+
+同时,nodeadm 在 AMI v20260516 之前的版本里 `EnsureRunning()` 调用 `StartUnit`,对已运行的 containerd 是 no-op,导致它写下的 `/etc/containerd/config.toml` 永远不会被加载(参见 [awslabs/amazon-eks-ami#2705](https://github.com/awslabs/amazon-eks-ami/pull/2705),2026-05-13 已 merged)。
+
+GPU 节点 userdata 因此做两件事:
+
+1. **`NodeConfig.spec.containerd.config` 注入 `SystemdCgroup=true`**,nodeadm 会把它 merge 在 nvidia-ctk overlay 之上,确保最终落盘的 config 总带 `SystemdCgroup=true`。
+2. **`nodeadm init` 之后显式 `systemctl restart containerd && systemctl restart kubelet`**,强制加载新写的 config。
+
+上游 AMI 含 #2705 fix(v20260516+)的版本可以移除 (2);(1) 可以在 nvidia-container-toolkit 解决该 SystemdCgroup drop 问题后移除。
+
+### 8.3 Workload pod 镜像选择
+
+nvidia-container-toolkit 1.18+ 的默认 jit-cdi 路径下,workload pod **不需要镜像 bake driver libs**,也不需要 privileged。容器启动时由 `nvidia-container-runtime` 把 host 的 driver libs(`libnvidia-ml.so.580.x` 等)和工具(`nvidia-smi`)通过 OCI 设备注入到容器 rootfs。
+
+经验证可工作的 workload pod 形态:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-test
+spec:
+  containers:
+  - name: app
+    image: nvcr.io/nvidia/cuda:12.4.1-runtime-ubuntu22.04   # 任何 stripped CUDA 镜像
+    command: ["nvidia-smi"]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+  tolerations:
+  - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+```
+
+容器内 `nvidia-smi` 直接可用,输出的 driver / CUDA 版本与 host 一致(实测 `NVIDIA-SMI 580.159.03 / Driver Version: 580.159.03 / CUDA Version: 13.0`)。对于自建镜像,只需在 Dockerfile 内声明:
+
+```dockerfile
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+```
+
+并在 K8s manifest 中申请 `nvidia.com/gpu` 资源即可。
+
+> **历史背景**:在 toolkit 1.18 之前的 legacy 注入路径下,曾流行的"workaround 三件套"——把 `nvidia-container-runtime` mode 强制改成 `legacy`、关闭 `enable_cdi`、再给 device plugin 设 `compatWithCPUManager=true` 让它跑成 privileged——在 jit-cdi 时代反而是 anti-pattern,会把工作路径强制退回到已 deprecated 的 prestart-hook,触发 containerd 2.x 上的若干 corner case。本方案完全不动 toolkit / containerd 配置(除上一节 SystemdCgroup overlay 与 restart),让 jit-cdi 默认路径自然工作。
+
+### 8.4 GPU 节点就绪验证
 ```bash
 # GPU 可见
 kubectl get nodes -o=custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu'
@@ -475,7 +620,7 @@ kubectl get nodes -L nvidia.com/gpu.product,nvidia.com/gpu.memory,nvidia.com/cud
 kubectl get pods -n kube-system -l name=aws-efa-k8s-device-plugin
 ```
 
-### 8.3 EFA 链路验证
+### 8.5 EFA 链路验证
 EFA 用户态工具(`fi_info`、`fi_pingpong`)由 host 上的 `/opt/amazon/efa/` 提供,**前提是节点 user-data 启用了 `GPU_INSTALL_EFA_USERSPACE=true`**(脚本默认开启)。
 ```bash
 # 在节点上(通过 kubectl debug)
@@ -483,12 +628,12 @@ fi_info -p efa          # 期望看到每张 EFA 网卡
 fi_pingpong -p efa      # 端到端 EFA 通信测试
 ```
 
-### 8.4 拓扑标签验证
+### 8.6 拓扑标签验证
 ```bash
 kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/network-node-layer-2,topology.k8s.aws/network-node-layer-3,topology.k8s.aws/network-node-layer-4,topology.k8s.aws/zone-id
 ```
 
-### 8.5 端到端 GPU + EFA 验证脚本(单节点 + 跨节点)
+### 8.7 端到端 GPU + EFA 验证脚本(单节点 + 跨节点)
 仓库提供 `option_verify_gpu_efa.sh` 一键验证脚本,基于 AWS 官方 [`public.ecr.aws/hpc-cloud/nccl-tests`](https://gallery.ecr.aws/hpc-cloud/nccl-tests) 镜像(自带 EFA installer、AWS-OFI-NCCL、NCCL、nccl-tests、sshd、Open MPI),支持两种模式:
 
 **单节点模式**(默认,验证本机 GPU + EFA stack 的可用性):
@@ -511,7 +656,7 @@ kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/netw
 
 失败时脚本会打印典型排查方向:GPU SG 自引用规则缺失、`mofedEnabled=false` 是否设置、AWS-OFI-NCCL plugin 是否加载。
 
-### 8.6 FSx / S3 挂载验证
+### 8.8 FSx / S3 挂载验证
 仓库内已带可直接使用的示例 manifest:[`examples/fsx-app.yaml`](https://github.com/KevinZhao/eks-cluster-deployment/blob/master/examples/fsx-app.yaml) 与 [`examples/s3-app.yaml`](https://github.com/KevinZhao/eks-cluster-deployment/blob/master/examples/s3-app.yaml),分别覆盖 FSx for Lustre PERSISTENT_2、Standard S3 桶与 S3 Express One Zone 三种挂载场景。两个 YAML 都使用 `envsubst` 占位符,用法见各文件头部注释。
 
 ```bash
@@ -533,7 +678,7 @@ kubectl logs s3-test          # Standard 桶
 kubectl logs s3-express-test  # S3 Express directory bucket
 ```
 
-### 8.7 生产就绪清单
+### 8.9 生产就绪清单
 - [ ] GPU 节点的 EFA 网卡数量与实例类型匹配
 - [ ] `GPU_INSTALL_EFA_USERSPACE=true` 已启用(若工作负载依赖 host libfabric)
 - [ ] Instance Store 已 stripe 至 `/data`,且不承载容器运行时

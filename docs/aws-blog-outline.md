@@ -361,7 +361,7 @@ export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
 **Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。通过 `./scripts/option_install_karpenter.sh` 一键部署。
 
-**GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（p5.48xlarge / p5e.48xlarge 上最多 32 张，p5en 16 张，p6-b200 8 张，p6-b300 17 张，g7e.48xlarge 4 张），并自动部署 NVIDIA Device Plugin 与 AWS EFA Kubernetes Device Plugin。
+**GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（p5/p5e 32 张 EFA，p5en 16 张 EFA，p6-b200 8 张 EFA，p6-b300 16 张 EFA + 1 张 ENA-only 共 17 张 NIC，g7e 4 张 EFA），并通过 `option_install_gpu_stack.sh` 安装 K8s GPU 栈。**K8s GPU 栈提供两种互斥的部署模式**：`GPU_STACK_MODE=standard`（默认，逐组件 Helm 部署 NVIDIA Device Plugin + AWS EFA Device Plugin + DCGM Exporter + Node Problem Detector + GPU Health Check）或 `GPU_STACK_MODE=operator`（NVIDIA GPU Operator 一站式部署），两种模式都内置 DCGM Exporter 提供 Pod 级 GPU 指标（利用率 / 显存 / 温度 / 功耗 / ECC / XID）以 Prometheus `:9400/metrics` 暴露，便于 GPU 集群的统一监控与告警。两种模式的取舍详见**本系列第二篇**。
 
 > GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（基于 AWS 原生 `topology.k8s.aws/network-node-layer-N` 的邻近性调度）**、**存储（FSx for Lustre 提供高聚合吞吐；S3 Express One Zone 作为低延迟、高 TPS 的对象存储选项按访问模式选用）** 三层架构，任何一层的配置不当都会显著影响 GPU 工作负载性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
 
