@@ -6,12 +6,12 @@ export AWS_PAGER=""
 
 # 获取脚本所在目录的父目录（项目根目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "=== Installing Karpenter on EKS Cluster ==="
 
 # 1. 设置环境变量
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # 1.1 设置 KUBECONFIG 环境变量
 export KUBECONFIG="${HOME:-/root}/.kube/config"
@@ -674,10 +674,10 @@ if [ "${DEPLOY_GRAVITON_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         -e "s|\${SSH_PUBLIC_KEY}|${SSH_PUBLIC_KEY:-}|g" \
-        "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
+        "${PROJECT_ROOT}/terraform/assets/karpenter/ec2nodeclass-graviton.yaml" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-        "${PROJECT_ROOT}/manifests/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
+        "${PROJECT_ROOT}/terraform/assets/karpenter/nodepool-graviton.yaml" | kubectl apply -f -
     echo "  ✓ Graviton EC2NodeClass and NodePool deployed (arm64, r/c/m 4-16 vCPU)"
 fi
 
@@ -686,10 +686,10 @@ if [ "${DEPLOY_X86_NODEPOOL:-true}" = "true" ]; then
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
         -e "s|\${SSH_PUBLIC_KEY}|${SSH_PUBLIC_KEY:-}|g" \
-        "${PROJECT_ROOT}/manifests/karpenter/ec2nodeclass-x86.yaml" | kubectl apply -f -
+        "${PROJECT_ROOT}/terraform/assets/karpenter/ec2nodeclass-x86.yaml" | kubectl apply -f -
     sed -e "s/\${CLUSTER_NAME}/$CLUSTER_NAME/g" \
         -e "s/\${AWS_REGION}/$AWS_REGION/g" \
-        "${PROJECT_ROOT}/manifests/karpenter/nodepool-x86.yaml" | kubectl apply -f -
+        "${PROJECT_ROOT}/terraform/assets/karpenter/nodepool-x86.yaml" | kubectl apply -f -
     echo "  ✓ x86 EC2NodeClass and NodePool deployed (amd64, r/c/m 4-16 vCPU)"
 fi
 
@@ -738,5 +738,5 @@ echo "Next steps:"
 echo "  1. Check Karpenter logs: kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter"
 echo "  2. Test provisioning: kubectl scale deployment inflate --replicas=10"
 echo "  3. Monitor nodes: kubectl get nodes -w"
-echo "  4. Customize NodePools: edit manifests/karpenter/*.yaml and reapply"
+echo "  4. Customize NodePools: edit terraform/assets/karpenter/*.yaml and reapply"
 echo ""

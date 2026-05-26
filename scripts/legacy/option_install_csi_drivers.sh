@@ -5,7 +5,7 @@ set -o pipefail
 export AWS_PAGER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "==========================================="
 echo "Optional CSI Drivers Installation (EKS Managed Addons)"
@@ -13,7 +13,7 @@ echo "==========================================="
 echo ""
 
 # 加载环境变量和 helper 函数
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # 设置 KUBECONFIG 环境变量
 export KUBECONFIG="${HOME:-/root}/.kube/config"
@@ -98,7 +98,7 @@ EOF
     echo ""
     echo "Creating StorageClasses (gp3, io2)..."
     sed -e "s/\${IO2_IOPS}/${IO2_IOPS}/g" \
-        "${PROJECT_ROOT}/manifests/storage/storageclass.yaml" | kubectl apply -f -
+        "${SCRIPT_DIR}/manifests/storage/storageclass.yaml" | kubectl apply -f -
 
     # 7. 删除旧的 gp2 StorageClass (only after gp3 is confirmed ready)
     if kubectl get storageclass gp3 &>/dev/null; then

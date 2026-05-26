@@ -200,7 +200,7 @@ variable "alb_controller_app_version" {
 
 variable "alb_controller_iam_policy_source" {
   type        = string
-  description = "Where to source the AWS Load Balancer Controller IAM policy: 'http' fetches from the upstream release tag (matches alb_controller_app_version), 'file' uses the bundled manifests/iam/alb-controller-iam-policy.json. Use 'file' for air-gapped environments or when GitHub.com is blocked."
+  description = "Where to source the AWS Load Balancer Controller IAM policy: 'http' fetches from the upstream release tag (matches alb_controller_app_version), 'file' uses the bundled terraform/assets/iam/alb-controller-iam-policy.json. Use 'file' for air-gapped environments or when GitHub.com is blocked."
   default     = "http"
   validation {
     condition     = contains(["http", "file"], var.alb_controller_iam_policy_source)

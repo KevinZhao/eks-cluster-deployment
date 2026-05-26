@@ -231,7 +231,7 @@ locals {
   alb_iam_policy_body = (
     var.alb_controller_iam_policy_source == "http"
     ? data.http.alb_iam_policy[0].response_body
-    : file("${path.module}/../../../manifests/iam/alb-controller-iam-policy.json")
+    : file("${path.module}/../../assets/iam/alb-controller-iam-policy.json")
   )
 }
 

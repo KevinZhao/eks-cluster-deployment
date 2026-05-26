@@ -78,7 +78,7 @@ git checkout -b fix/resolve-timeout-issue
 
 ```bash
 # 修改文件
-vim scripts/4_install_eks_cluster.sh
+vim scripts/legacy/4_install_eks_cluster.sh
 
 # 查看修改
 git status
@@ -89,7 +89,7 @@ git diff
 
 ```bash
 # 添加文件
-git add scripts/4_install_eks_cluster.sh
+git add scripts/legacy/4_install_eks_cluster.sh
 
 # 提交（遵循提交规范）
 git commit -m "feat: add custom node labels support"
@@ -214,7 +214,7 @@ cp .env.example .env
 vim .env  # 填写测试配置
 
 # 2. 运行脚本
-./scripts/4_install_eks_cluster.sh
+./scripts/legacy/4_install_eks_cluster.sh
 
 # 3. 验证集群
 kubectl get nodes
@@ -238,29 +238,31 @@ eksctl delete cluster \
 
 ```
 eks-cluster-deployment/
+├── terraform/                           # ★ 新部署的入口
+│   ├── modules/                         # vpc-endpoints / eks-cluster / 系统&GPU NG / addons / CSI / karpenter / GPU stack
+│   ├── assets/{iam,karpenter}/          # 模块引用的静态文件
+│   └── bootstrap{,-vpc,-bastion}/       # state backend / 测试 VPC / 堡垒机
 ├── scripts/
-│   ├── 0_setup_env.sh                   # 环境变量加载与校验
-│   ├── 4_install_eks_cluster.sh         # 控制平面创建
-│   ├── 6_create_system_nodegroup.sh     # 系统节点组（LVM + Launch Template）
-│   ├── 7_install_eks_addon.sh           # 核心 addon 安装
-│   ├── option_*.sh                      # 可选功能（bastion、CSI、Karpenter、GPU 等）
-│   ├── instance_arch_lib.sh             # 共享库：架构检测
-│   ├── disk_detection_lib.sh            # 共享库：数据盘识别
-│   ├── pod_identity_helpers.sh          # 共享库：Pod Identity
-│   └── topology_inventory_lib.sh        # 共享库：读 AWS 原生拓扑标签
-├── manifests/
-│   ├── addons/                          # Cluster Autoscaler 等
-│   ├── iam/                             # IAM 策略 JSON
-│   ├── karpenter/                       # Karpenter NodePool / EC2NodeClass
-│   └── storage/                         # StorageClass
-├── examples/                            # 参考 manifest 与测试脚本
+│   ├── 0_setup_env.sh                   # 环境变量加载（ops 与 legacy 共用）
+│   ├── topology_inventory_lib.sh        # 共享库：读 AWS 原生拓扑标签
+│   ├── option_inspect_eks.sh            # 9 项集群健康检查
+│   ├── option_verify_gpu_efa.sh         # 跨节点 NCCL benchmark
+│   ├── option_show_nodegroup_topology.sh
+│   ├── option_create_bastion.sh
+│   └── legacy/                          # 已废弃的 bash 部署管线
+│       ├── 1_*.sh ... 7_*.sh
+│       ├── option_install_*.sh
+│       ├── pod_identity_helpers.sh / instance_arch_lib.sh / disk_detection_lib.sh
+│       └── manifests/{addons,storage}/  # 仅 legacy 用的 YAML
+├── examples/                            # workload 测试样例与验证脚本
 └── docs/
-    ├── DEPLOYMENT_SOP.md                # 完整部署 SOP
+    ├── DEPLOYMENT_SOP.md                # legacy bash 部署 SOP
+    ├── MIGRATION_FROM_BASH.md           # bash↔terraform 映射
     ├── DESIGN.md                        # 架构决策
     └── P2_TOPOLOGY_RETRY_PLAN.md        # GPU 拓扑重试方案
 ```
 
-> **Note**: 本仓库不包含 VPC 创建代码，请自行准备 VPC 后再运行脚本。
+> **Note**: VPC 资源未托管在主仓库内；可使用 `terraform/bootstrap-vpc/` 生成测试 VPC，或自行准备 VPC 后再运行 terraform/legacy。
 
 ---
 
@@ -290,7 +292,7 @@ git log --oneline -10
 git show 提交SHA
 
 # 查看某个文件的修改历史
-git log -p scripts/4_install_eks_cluster.sh
+git log -p scripts/legacy/4_install_eks_cluster.sh
 ```
 
 ---

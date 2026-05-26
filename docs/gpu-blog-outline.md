@@ -173,10 +173,10 @@ Launch Template 把 GPU SG 与 EKS cluster security group 一起赋给所有 ENI
 ```bash
 # 同型号 p5 在不同 AZ 各部署一组,通过 SUFFIX 区分
 GPU_TARGET_AZ=c GPU_NG_SUFFIX="-az3-p5" \
-  ./scripts/option_install_gpu_nodegroups.sh
+  ./scripts/legacy/option_install_gpu_nodegroups.sh
 
 GPU_TARGET_AZ=d GPU_NG_SUFFIX="-az4-p5" \
-  ./scripts/option_install_gpu_nodegroups.sh
+  ./scripts/legacy/option_install_gpu_nodegroups.sh
 ```
 
 ODCR 和 Capacity Block 路径会根据预留 ID 自动加后缀,无需手动设置。
@@ -422,10 +422,10 @@ GPU 节点本身只是基础设施(driver + nvidia-container-toolkit + EFA + LVM
 
 ```bash
 # 默认模式
-GPU_STACK_MODE=standard ./scripts/option_install_gpu_stack.sh
+GPU_STACK_MODE=standard ./scripts/legacy/option_install_gpu_stack.sh
 
 # 或切换到 NVIDIA GPU Operator 模式
-GPU_STACK_MODE=operator ./scripts/option_install_gpu_stack.sh
+GPU_STACK_MODE=operator ./scripts/legacy/option_install_gpu_stack.sh
 ```
 
 #### Standard 模式(默认)
@@ -452,7 +452,7 @@ GPU_STACK_MODE=operator ./scripts/option_install_gpu_stack.sh
 ```bash
 GPU_STACK_MODE=operator \
 GPU_OPERATOR_VERSION=v25.3.4 \
-  ./scripts/option_install_gpu_stack.sh
+  ./scripts/legacy/option_install_gpu_stack.sh
 ```
 
 针对 EKS NVIDIA AMI 的关键 chart values(脚本默认值):
@@ -669,7 +669,7 @@ kubectl logs fsx-test-1   # 期望:在 /data 写入 100MB 测试文件
 kubectl logs fsx-test-2   # 期望:从同一 PVC 读到 Pod 1 写的文件
 
 # Standard S3 + S3 Express One Zone 挂载
-source scripts/0_setup_env.sh
+source scripts/0_setup_env.sh   # 仍位于 scripts/ 顶层
 export S3_BUCKET_NAME=your-standard-bucket
 export S3_EXPRESS_BUCKET_NAME=your-bucket--use1-az1--x-s3
 export AWS_REGION=us-east-1
@@ -713,7 +713,7 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 **下一步行动：**
 
 * 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，先按照第一篇完成基础集群部署。
-* 在 VPC 内的堡垒机上执行 `./scripts/option_install_gpu_nodegroups.sh` 创建 GPU 节点组，按需选择 On-Demand / Spot / ODCR / Capacity Block 四种定价模式。
+* 在 VPC 内的堡垒机上执行 `./scripts/legacy/option_install_gpu_nodegroups.sh` 创建 GPU 节点组，按需选择 On-Demand / Spot / ODCR / Capacity Block 四种定价模式。
 * 通过 `./scripts/option_show_nodegroup_topology.sh` 打印每个 GPU 节点组的 AWS 原生拓扑清单(按 bottom-layer network node 分组),用于拓扑感知调度的决策。
 * 高聚合吞吐顺序读场景挂载 FSx for Lustre（PERSISTENT_2）；高 TPS 小对象 random read、低延迟写或 scale-out 模型分发等访问模式挂载 S3 Express One Zone + Mountpoint CSI Driver。
 

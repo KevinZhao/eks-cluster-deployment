@@ -61,7 +61,7 @@ VPC_ENDPOINT_SG=$(aws ec2 describe-security-groups \
 
 if [ -z "${VPC_ENDPOINT_SG}" ] || [ "${VPC_ENDPOINT_SG}" = "None" ]; then
     echo -e "${RED}Error: VPC endpoint security group not found!${NC}"
-    echo -e "${YELLOW}Please run ./scripts/3_create_vpc_endpoints.sh first${NC}"
+    echo -e "${YELLOW}Please run ./scripts/legacy/3_create_vpc_endpoints.sh first${NC}"
     exit 1
 fi
 

@@ -22,7 +22,7 @@ INFO="ℹ"
 
 # Load environment variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════════╗${NC}"

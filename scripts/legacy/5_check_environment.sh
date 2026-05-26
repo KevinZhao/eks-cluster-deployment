@@ -142,12 +142,12 @@ fi
 print_header "3. Environment Configuration"
 
 # Check if .env file exists
-if [[ -f "${SCRIPT_DIR}/../.env" ]]; then
+if [[ -f "${SCRIPT_DIR}/../../.env" ]]; then
     check_pass ".env file exists"
 
     # Source .env to get variables
     set +e
-    source "${SCRIPT_DIR}/../.env" 2>/dev/null
+    source "${SCRIPT_DIR}/../../.env" 2>/dev/null
     set -e
 
     # Check required variables

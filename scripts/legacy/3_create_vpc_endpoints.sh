@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 
 # Load environment variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Creating VPC Endpoints for EKS Cluster${NC}"

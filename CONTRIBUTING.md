@@ -152,10 +152,10 @@ git checkout -b fix/fix-bug-description
 
 ```bash
 # 修改文件
-vim scripts/4_install_eks_cluster.sh
+vim scripts/legacy/4_install_eks_cluster.sh
 
 # 测试你的修改
-./scripts/4_install_eks_cluster.sh
+./scripts/legacy/4_install_eks_cluster.sh
 ```
 
 #### 修改文档
@@ -188,7 +188,7 @@ git status
 git diff
 
 # 添加文件
-git add scripts/4_install_eks_cluster.sh
+git add scripts/legacy/4_install_eks_cluster.sh
 
 # 提交（参见提交规范）
 git commit -m "feat: add support for custom node labels"
@@ -384,7 +384,7 @@ cp .env.example .env
 # 编辑 .env 文件
 
 # 2. 运行脚本
-./scripts/4_install_eks_cluster.sh
+./scripts/legacy/4_install_eks_cluster.sh
 
 # 3. 验证集群
 kubectl get nodes

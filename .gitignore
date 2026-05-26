@@ -31,7 +31,7 @@ credentials.json
 eksctl_cluster_final.yaml
 eksctl_cluster_base_final.yaml
 eksctl_nodegroup_*.yaml
-manifests/iam/alb-controller-iam-policy.json
+terraform/assets/iam/alb-controller-iam-policy.json
 
 # Terraform
 *.tfstate

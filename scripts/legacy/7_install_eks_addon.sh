@@ -6,12 +6,12 @@ export AWS_PAGER=""
 
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "=== EKS Addons Installation (Cluster Autoscaler, Load Balancer Controller) ==="
 
 # 1. Load environment variables
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # 1.1 Set KUBECONFIG environment variable
 export KUBECONFIG="${HOME:-/root}/.kube/config"
@@ -140,7 +140,7 @@ setup_cluster_autoscaler_pod_identity
 
 # 4.1 Deploy Cluster Autoscaler RBAC
 echo "Deploying Cluster Autoscaler RBAC..."
-kubectl apply -f "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler-rbac.yaml"
+kubectl apply -f "${SCRIPT_DIR}/manifests/addons/cluster-autoscaler-rbac.yaml"
 
 # 4.2 Deploy Cluster Autoscaler Deployment
 echo "Deploying Cluster Autoscaler..."
@@ -149,7 +149,7 @@ sed -e "s|\${CLUSTER_NAME}|$CLUSTER_NAME|g" \
     -e "s|\${CLUSTER_AUTOSCALER_VERSION}|$CLUSTER_AUTOSCALER_VERSION|g" \
     -e "s|\${SYSTEM_NODE_LABEL_KEY}|$SYSTEM_NODE_LABEL_KEY|g" \
     -e "s|\${SYSTEM_NODE_LABEL_VALUE}|$SYSTEM_NODE_LABEL_VALUE|g" \
-    "${PROJECT_ROOT}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
+    "${SCRIPT_DIR}/manifests/addons/cluster-autoscaler.yaml" | kubectl apply -f -
 
 # 4.3 Verify Cluster Autoscaler
 echo "Checking Cluster Autoscaler status..."
@@ -223,6 +223,6 @@ echo "  1. Check nodes: kubectl get nodes --show-labels"
 echo "  2. Check all pods: kubectl get pods -A"
 echo "  3. Verify metrics: kubectl top nodes"
 echo "  4. Deploy test app: kubectl apply -f examples/autoscaler.yaml"
-echo "  5. Install CSI drivers: ./scripts/option_install_csi_drivers.sh (EBS, EFS, FSx, S3)"
-echo "  6. Optional: Install Karpenter with ./scripts/option_install_karpenter.sh"
+echo "  5. Install CSI drivers: ./scripts/legacy/option_install_csi_drivers.sh (EBS, EFS, FSx, S3)"
+echo "  6. Optional: Install Karpenter with ./scripts/legacy/option_install_karpenter.sh"
 echo ""

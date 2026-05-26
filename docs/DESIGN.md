@@ -94,7 +94,7 @@ featureGates:
 
 ### 4.3 交付成果
 
-- `manifests/addons/quota-manager.yaml`
+- `terraform/modules/eks-quota-manager/`（新建模块；亦可临时落地为 `scripts/legacy/manifests/addons/quota-manager.yaml`）
 - Admission Webhook
 - 监控 metrics
 

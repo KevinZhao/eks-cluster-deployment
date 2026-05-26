@@ -242,7 +242,7 @@ Switching modes:
 
 ```bash
 # bash
-GPU_STACK_MODE=operator GPU_STACK_FORCE_SWITCH=true bash scripts/option_install_gpu_stack.sh
+GPU_STACK_MODE=operator GPU_STACK_FORCE_SWITCH=true bash scripts/legacy/option_install_gpu_stack.sh
 
 # terraform — flip the variable, plan/apply will retire stale resources of the old mode
 gpu_stack_mode = "operator"

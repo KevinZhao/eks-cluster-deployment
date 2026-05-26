@@ -1,14 +1,15 @@
 # Migration: bash scripts → Terraform
 
+> **Status (2026-05)**: bash deployment pipeline has been moved to `scripts/legacy/` and entered maintenance-only. Terraform is the canonical path for new deployments. This page maps each legacy bash script to its Terraform replacement so existing users can plan a transition.
+
 The `terraform/` directory implements the same end state as the
-`scripts/` bash pipeline. This page maps each bash script to its
-Terraform replacement so you can reason about the transition.
+old `scripts/legacy/` bash pipeline.
 
 ## Module map
 
-| Bash script | Terraform | Notes |
+| Bash script (now in `scripts/legacy/`) | Terraform | Notes |
 |---|---|---|
-| `0_setup_env.sh` | `terraform.tfvars` + provider AWS auto-detect | Variables replace env-var sourcing |
+| `0_setup_env.sh` (kept at `scripts/0_setup_env.sh`, shared with ops tools) | `terraform.tfvars` + provider AWS auto-detect | Variables replace env-var sourcing |
 | `1_enable_vpc_dns.sh` | `modules/vpc-endpoints` precondition | TF asserts DNS is on; flip via AWS CLI once if it isn't |
 | `2_validate_network_environment.sh` | `data` blocks at plan time | TF fails plan if subnets/VPC don't exist |
 | `3_create_vpc_endpoints.sh` | `modules/vpc-endpoints` | full/minimal mode preserved |
@@ -19,12 +20,14 @@ Terraform replacement so you can reason about the transition.
 | `option_install_csi_drivers.sh` | `modules/eks-csi-drivers` | EBS always; EFS/FSx/S3 toggled via vars |
 | `option_install_karpenter.sh` | `modules/eks-karpenter` | helm + SQS interruption queue + EventBridge rules + sample NodePool/EC2NodeClass |
 | `option_install_gpu_nodegroups.sh` | `modules/eks-gpu-nodegroup` | Multi-NIC EFA via `dynamic network_interfaces`; OD/Spot/ODCR/CB declared per nodegroup |
-| `option_create_bastion.sh` | (kept as bash) | Bastion lifecycle is operator-driven |
-| `option_verify_gpu_efa.sh` | (kept as bash) | NCCL benchmark; runs against an existing cluster |
-| `option_show_nodegroup_topology.sh` | (kept as bash) | Reads `topology.k8s.aws/network-node-layer-N` labels at runtime |
-| `topology_inventory_lib.sh` | (kept) | Used only by the bash verifier |
+| `option_install_gpu_stack.sh` | `modules/eks-gpu-stack` | standard / operator mode dispatch |
+| `option_create_bastion.sh` (kept at `scripts/`) | also: `terraform/bootstrap-bastion/` | Both maintained — pick one |
+| `option_verify_gpu_efa.sh` (kept at `scripts/`) | (no TF equivalent) | NCCL benchmark; runs against an existing cluster |
+| `option_show_nodegroup_topology.sh` (kept at `scripts/`) | (no TF equivalent) | Reads `topology.k8s.aws/network-node-layer-N` labels at runtime |
+| `option_inspect_eks.sh` (kept at `scripts/`) | (no TF equivalent) | 9-check post-apply health audit |
+| `topology_inventory_lib.sh` (kept at `scripts/`) | (kept) | Used by ops tools |
 | `instance_arch_lib.sh` | replaced by `data "aws_ec2_instance_type"` | Native TF lookup |
-| `disk_detection_lib.sh` | `templates/detect-ebs-disk.sh` | Embedded into userdata via `templatefile()` |
+| `disk_detection_lib.sh` | `terraform/modules/eks-{system,gpu}-nodegroup/templates/detect-ebs-disk.sh` | Embedded into userdata via `templatefile()` |
 | `pod_identity_helpers.sh` | `aws_eks_pod_identity_association` resources | Native TF resource |
 
 ## Variable mapping (.env → terraform.tfvars)

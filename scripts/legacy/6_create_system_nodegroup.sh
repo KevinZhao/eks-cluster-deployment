@@ -8,7 +8,7 @@ export AWS_PAGER=""
 
 # 获取脚本所在目录的父目录（项目根目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "=== Create System Nodegroup with LVM Configuration ==="
 echo ""
@@ -27,7 +27,7 @@ echo "⏱  Expected duration: 8-12 minutes"
 echo ""
 
 # 1. 设置环境变量
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # Load instance architecture detection helpers (detect_instance_arch,
 # instance_arch_to_go_arch). Queries the EC2 API so we never miss new
@@ -991,5 +991,5 @@ echo ""
 kubectl get nodes -o wide
 echo ""
 echo "Next step: Continue with script 7 to install cluster addons"
-echo "  ./scripts/7_install_eks_addon.sh"
+echo "  ./scripts/legacy/7_install_eks_addon.sh"
 echo ""

@@ -25,7 +25,7 @@ INFO="ℹ"
 
 # Load environment variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # Validation results
 ERRORS=0
@@ -373,7 +373,7 @@ done
 if [ ${MISSING_REQUIRED} -gt 0 ]; then
     echo ""
     print_error "${MISSING_REQUIRED} required VPC endpoints are missing"
-    print_info "Run './scripts/3_create_vpc_endpoints.sh' to create missing endpoints"
+    print_info "Run './scripts/legacy/3_create_vpc_endpoints.sh' to create missing endpoints"
 fi
 
 if [ ${MISSING_RECOMMENDED} -gt 0 ]; then
@@ -441,7 +441,7 @@ print_section "8. Recommendations"
 
 if [ ${MISSING_REQUIRED} -gt 0 ]; then
     echo -e "${RED}[CRITICAL]${NC} Create required VPC endpoints:"
-    echo "  ./scripts/3_create_vpc_endpoints.sh"
+    echo "  ./scripts/legacy/3_create_vpc_endpoints.sh"
     echo ""
 fi
 

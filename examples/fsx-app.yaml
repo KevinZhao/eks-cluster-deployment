@@ -4,7 +4,7 @@
 #
 # Prerequisites:
 #   1. Install FSx CSI Driver:
-#      INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
+#      INSTALL_DRIVERS=fsx ./scripts/legacy/option_install_csi_drivers.sh
 #   2. Create FSx Lustre filesystem with PERSISTENT_2 deployment type
 #   3. Install lustre-client on GPU nodes (required for AL2023)
 #   4. GPU node group deployed with EFA enabled

@@ -77,7 +77,7 @@ resource "aws_iam_role" "karpenter_controller" {
 }
 
 # Least-privilege Karpenter controller policy, ported from
-# scripts/option_install_karpenter.sh. Each write action is constrained to
+# scripts/legacy/option_install_karpenter.sh. Each write action is constrained to
 # resources tagged as owned by this cluster (kubernetes.io/cluster/<name>=
 # owned plus the per-nodepool / per-ec2nodeclass tags Karpenter attaches).
 # Structure follows the upstream Karpenter v1 CloudFormation reference.
@@ -305,7 +305,7 @@ resource "aws_iam_role_policy" "karpenter_controller" {
 # below), so we need to create the SA explicitly. Without it the karpenter
 # Deployment fails with: pods "karpenter-..." is forbidden: error looking
 # up service account kube-system/karpenter: serviceaccount "karpenter" not
-# found. Mirrors scripts/option_install_karpenter.sh step 7.
+# found. Mirrors scripts/legacy/option_install_karpenter.sh step 7.
 resource "kubernetes_service_account_v1" "karpenter" {
   metadata {
     name      = "karpenter"
@@ -473,10 +473,10 @@ locals {
   }
 
   karpenter_pools_manifests = [
-    templatefile("${path.module}/../../../manifests/karpenter/ec2nodeclass-graviton.yaml", local.ec2nodeclass_template_vars),
-    templatefile("${path.module}/../../../manifests/karpenter/ec2nodeclass-x86.yaml", local.ec2nodeclass_template_vars),
-    file("${path.module}/../../../manifests/karpenter/nodepool-graviton.yaml"),
-    file("${path.module}/../../../manifests/karpenter/nodepool-x86.yaml"),
+    templatefile("${path.module}/../../assets/karpenter/ec2nodeclass-graviton.yaml", local.ec2nodeclass_template_vars),
+    templatefile("${path.module}/../../assets/karpenter/ec2nodeclass-x86.yaml", local.ec2nodeclass_template_vars),
+    file("${path.module}/../../assets/karpenter/nodepool-graviton.yaml"),
+    file("${path.module}/../../assets/karpenter/nodepool-x86.yaml"),
   ]
 }
 

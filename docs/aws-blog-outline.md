@@ -153,7 +153,7 @@ Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的�
 此外，VPC CNI 自身原生支持 Kubernetes NetworkPolicy，本方案直接沿用，无需额外安装 Calico 等第三方组件，简化了集群的网络策略管理。
 
 ```
-VPC CNI 默认配置（scripts/4_install_eks_cluster.sh）
+VPC CNI 默认配置（scripts/legacy/4_install_eks_cluster.sh）
 ├── AWS_VPC_K8S_CNI_EXTERNALSNAT=false    # 由 NAT Gateway 做 SNAT
 ├── WARM_ENI_TARGET=0                     # 不预热 ENI
 ├── WARM_IP_TARGET=5                      # 预热 5 个 IP
@@ -325,16 +325,16 @@ aws ssm start-session --target <bastion-instance-id>
 # —— 以下步骤均在堡垒机上执行 ——
 
 # 2. 核心部署（脚本编号 1–7，按顺序）
-./scripts/1_enable_vpc_dns.sh
-./scripts/3_create_vpc_endpoints.sh
-./scripts/4_install_eks_cluster.sh
-./scripts/6_create_system_nodegroup.sh
-./scripts/7_install_eks_addon.sh
+./scripts/legacy/1_enable_vpc_dns.sh
+./scripts/legacy/3_create_vpc_endpoints.sh
+./scripts/legacy/4_install_eks_cluster.sh
+./scripts/legacy/6_create_system_nodegroup.sh
+./scripts/legacy/7_install_eks_addon.sh
 
 # 3. 按需安装可选组件
-INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh   # EFS 共享存储
-./scripts/option_install_karpenter.sh                          # Karpenter 自动扩缩容
-./scripts/option_install_gpu_nodegroups.sh                     # GPU 节点组
+INSTALL_DRIVERS=efs ./scripts/legacy/option_install_csi_drivers.sh   # EFS 共享存储
+./scripts/legacy/option_install_karpenter.sh                          # Karpenter 自动扩缩容
+./scripts/legacy/option_install_gpu_nodegroups.sh                     # GPU 节点组
 ```
 
 对于 CI/CD 场景，可以通过环境变量一次性拉起完整集群，无需任何人工确认：
@@ -345,12 +345,12 @@ export CLUSTER_NAME=prod-eks
 export INSTALL_DRIVERS=efs,s3
 export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
-./scripts/1_enable_vpc_dns.sh
-./scripts/3_create_vpc_endpoints.sh
-./scripts/4_install_eks_cluster.sh
-./scripts/6_create_system_nodegroup.sh
-./scripts/7_install_eks_addon.sh
-./scripts/option_install_csi_drivers.sh
+./scripts/legacy/1_enable_vpc_dns.sh
+./scripts/legacy/3_create_vpc_endpoints.sh
+./scripts/legacy/4_install_eks_cluster.sh
+./scripts/legacy/6_create_system_nodegroup.sh
+./scripts/legacy/7_install_eks_addon.sh
+./scripts/legacy/option_install_csi_drivers.sh
 ```
 
 ---
@@ -359,9 +359,9 @@ export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
 
 本方案的核心脚本(1–7)完成后即得到一套通用的生产级 EKS 集群。在此之上，可按需叠加两类上层能力：
 
-**Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。通过 `./scripts/option_install_karpenter.sh` 一键部署。
+**Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。通过 `./scripts/legacy/option_install_karpenter.sh` 一键部署。
 
-**GPU 节点组**：通过 `./scripts/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（p5/p5e 32 张 EFA，p5en 16 张 EFA，p6-b200 8 张 EFA，p6-b300 16 张 EFA + 1 张 ENA-only 共 17 张 NIC，g7e 4 张 EFA），并通过 `option_install_gpu_stack.sh` 安装 K8s GPU 栈。**K8s GPU 栈提供两种互斥的部署模式**：`GPU_STACK_MODE=standard`（默认，逐组件 Helm 部署 NVIDIA Device Plugin + AWS EFA Device Plugin + DCGM Exporter + Node Problem Detector + GPU Health Check）或 `GPU_STACK_MODE=operator`（NVIDIA GPU Operator 一站式部署），两种模式都内置 DCGM Exporter 提供 Pod 级 GPU 指标（利用率 / 显存 / 温度 / 功耗 / ECC / XID）以 Prometheus `:9400/metrics` 暴露，便于 GPU 集群的统一监控与告警。两种模式的取舍详见**本系列第二篇**。
+**GPU 节点组**：通过 `./scripts/legacy/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（p5/p5e 32 张 EFA，p5en 16 张 EFA，p6-b200 8 张 EFA，p6-b300 16 张 EFA + 1 张 ENA-only 共 17 张 NIC，g7e 4 张 EFA），并通过 `option_install_gpu_stack.sh` 安装 K8s GPU 栈。**K8s GPU 栈提供两种互斥的部署模式**：`GPU_STACK_MODE=standard`（默认，逐组件 Helm 部署 NVIDIA Device Plugin + AWS EFA Device Plugin + DCGM Exporter + Node Problem Detector + GPU Health Check）或 `GPU_STACK_MODE=operator`（NVIDIA GPU Operator 一站式部署），两种模式都内置 DCGM Exporter 提供 Pod 级 GPU 指标（利用率 / 显存 / 温度 / 功耗 / ECC / XID）以 Prometheus `:9400/metrics` 暴露，便于 GPU 集群的统一监控与告警。两种模式的取舍详见**本系列第二篇**。
 
 > GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（基于 AWS 原生 `topology.k8s.aws/network-node-layer-N` 的邻近性调度）**、**存储（FSx for Lustre 提供高聚合吞吐；S3 Express One Zone 作为低延迟、高 TPS 的对象存储选项按访问模式选用）** 三层架构，任何一层的配置不当都会显著影响 GPU 工作负载性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
 

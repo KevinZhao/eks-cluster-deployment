@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Direction (read first)
+
+**Terraform is the canonical path** for everything under "infrastructure": VPC endpoints, EKS control plane, system/GPU nodegroups, core addons, CSI drivers, Karpenter, GPU stack. All net-new features land in `terraform/` modules.
+
+**Bash deployment scripts are maintenance-only.** They will be archived to `scripts/legacy/` once the structural reshuffle lands. Do **not** add new capabilities to the bash deployment pipeline. When fixing a bug that exists in both, fix it in terraform; only patch bash if a downstream user explicitly cannot migrate yet.
+
+**Bash kept permanently** for runtime / ops tools that don't fit a declarative model:
+- `option_inspect_eks.sh` (post-apply 9-check health audit)
+- `option_verify_gpu_efa.sh` (NCCL benchmark)
+- `option_show_nodegroup_topology.sh` (reads `topology.k8s.aws/...` labels at runtime)
+- `option_create_bastion.sh` (operator-driven bastion lifecycle)
+
 ## Project Overview
 
 Automated deployment system for production-grade AWS EKS clusters with advanced features including LVM-configured system nodes, Pod Identity authentication, and optional components (Karpenter, CSI drivers for EBS/EFS/FSx/S3, GPU nodes).
@@ -9,77 +21,60 @@ Automated deployment system for production-grade AWS EKS clusters with advanced 
 **Key Characteristics:**
 - **Deployment Environment**: Must run from bastion host inside VPC (private API endpoint)
 - **Authentication**: Pod Identity (not IRSA/OIDC) for all AWS service integrations
-- **Configuration**: `.env` file-based with auto-detection of AWS credentials and region
-- **Architecture**: Sequential numbered scripts for core setup, `option_*` scripts for optional features
+- **Configuration**: terraform via `terraform.tfvars`; legacy bash via `.env` (sourced from `0_setup_env.sh`)
+- **Architecture**: terraform modules under `terraform/modules/`; legacy bash scripts use sequential numbered files for core setup and `option_*` for optional features
 
 ## Common Commands
 
-### Core Deployment Sequence
+### Core Deployment (Terraform — recommended)
 
 ```bash
-# 1. Setup environment (sources .env, validates config)
-source scripts/0_setup_env.sh
+cd terraform
 
-# 2. Enable VPC DNS support
-./scripts/1_enable_vpc_dns.sh
+# One-time per account/region: bootstrap state backend
+terraform -chdir=bootstrap apply -var="bucket_name=my-eks-tfstate" -var="region=us-west-2"
 
-# 3. Validate network environment (optional check)
-./scripts/2_validate_network_environment.sh
+# Configure variables
+cp terraform.tfvars.example terraform.tfvars
+$EDITOR terraform.tfvars
 
-# 4. Create VPC endpoints
-./scripts/3_create_vpc_endpoints.sh
-
-# 5. Install EKS cluster control plane (~8-10 min)
-./scripts/4_install_eks_cluster.sh
-
-# 6. Check local environment (optional)
-./scripts/5_check_environment.sh
-
-# 7. Create system nodegroup with LVM (~8-12 min)
-./scripts/6_create_system_nodegroup.sh
-
-# 8. Install core addons (Cluster Autoscaler, LB Controller, EBS CSI, Metrics Server)
-./scripts/7_install_eks_addon.sh
+# Apply (must run from inside the cluster's VPC for private mode)
+terraform init \
+  -backend-config="bucket=my-eks-tfstate" \
+  -backend-config="key=eks-cluster-deployment/dev/terraform.tfstate" \
+  -backend-config="region=us-west-2" \
+  -backend-config="dynamodb_table=my-eks-tfstate-lock"
+terraform plan
+terraform apply
 ```
 
-### Optional Components
+Module-level toggles (`install_karpenter`, `install_efs_csi`, `install_fsx_csi`, `install_s3_csi`, `install_gpu_nodegroups`, `install_gpu_stack`, `gpu_stack_mode`, etc.) live in `terraform.tfvars`. See `terraform/README.md` for the full layout, three-stack split for private deploys, and `safe-destroy.sh` teardown procedure.
+
+### Post-deploy ops tools (kept as bash)
 
 ```bash
-# Create bastion host (if needed for VPC internal access)
+# 9-check cluster health audit
+./scripts/option_inspect_eks.sh
+
+# Cross-node NCCL benchmark (validates EFA + GPUDirect)
+./scripts/option_verify_gpu_efa.sh
+
+# Print AWS-native topology labels per nodegroup
+./scripts/option_show_nodegroup_topology.sh
+
+# Create SSM-only bastion (alternative to terraform/bootstrap-bastion/)
 ./scripts/option_create_bastion.sh
 
-# Install Karpenter for advanced auto-scaling (CPU nodes only)
-./scripts/option_install_karpenter.sh
-
-# Install GPU node groups with EFA support (uses Managed Node Groups, not Karpenter)
-# By default, this also auto-invokes option_install_gpu_stack.sh at the end
-# (GPU_STACK_MODE=standard|operator). Set SKIP_GPU_STACK_AUTO_INSTALL=true to
-# install the K8s stack separately.
-./scripts/option_install_gpu_nodegroups.sh
-
-# Install ONLY the K8s GPU stack (device-plugin / EFA / monitoring or Operator).
-# Idempotent; safe to re-run after switching GPU_STACK_MODE.
-GPU_STACK_MODE=standard ./scripts/option_install_gpu_stack.sh
-# or
-GPU_STACK_MODE=operator ./scripts/option_install_gpu_stack.sh
-
-# Install CSI drivers (EFS, FSx, S3)
-# Method 1: Positional arguments
-./scripts/option_install_csi_drivers.sh efs      # EFS CSI Driver
-./scripts/option_install_csi_drivers.sh fsx      # FSx CSI Driver
-./scripts/option_install_csi_drivers.sh s3 <bucket-arns>  # S3 CSI Driver
-
-# Method 2: Environment variables (non-interactive)
-INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
-INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
-INSTALL_DRIVERS=s3 S3_BUCKET_ARNS="arn:aws:s3:::bucket1,arn:aws:s3express:region:account:bucket/express-bucket" ./scripts/option_install_csi_drivers.sh
-
-# Test Karpenter node provisioning (example)
+# Test Karpenter node provisioning (workload sample)
 ./examples/option_test_karpenter_pools.sh
 
-# Test pod scheduling on system nodes (example)
+# Test pod scheduling on system nodes (workload sample)
 ./examples/option_test_pod_scheduling.sh
 ```
+
+### Legacy bash deployment (deprecated)
+
+The old `1_*` ~ `7_*` and `option_install_*` scripts have moved to `scripts/legacy/` and are maintenance-only. See `scripts/legacy/README.md` and `docs/MIGRATION_FROM_BASH.md`.
 
 ### Cluster Verification
 
@@ -142,52 +137,53 @@ create_pod_identity_association <namespace> <sa> <role_arn>   # Associate role w
 ### Directory Structure
 
 ```
-scripts/                    # Bash scripts for deployment
-├── 0_setup_env.sh         # Environment setup (always source first)
-├── 1-7_*.sh               # Numbered core scripts
-├── option_*.sh            # Optional feature scripts
-└── pod_identity_helpers.sh # Pod Identity helper functions
+terraform/                  # Canonical infra-as-code (use this)
+├── main.tf / variables.tf / outputs.tf / providers.tf / versions.tf
+├── terraform.tfvars.example
+├── bootstrap/              # state backend (S3 + DynamoDB)
+├── bootstrap-vpc/          # standalone 3-AZ VPC for testing
+├── bootstrap-bastion/      # SSM-only bastion for private deploys
+├── modules/                # vpc-endpoints / eks-cluster / eks-system-nodegroup /
+│                           # eks-addons / eks-csi-drivers / eks-karpenter /
+│                           # eks-gpu-nodegroup / eks-gpu-stack
+├── assets/                 # static files referenced by modules
+│   ├── iam/                # alb-controller / fsx-csi IAM policy JSON
+│   └── karpenter/          # EC2NodeClass + NodePool YAML templates
+└── scripts/safe-destroy.sh # helm uninstall → terraform destroy wrapper
 
-examples/                   # Example/test scripts and manifests
-├── option_test_pod_scheduling.sh   # Test pod scheduling
-├── option_test_karpenter_pools.sh  # Test Karpenter node pools
-└── *.yaml                 # Example workload manifests
+scripts/                    # Operational tools (kept as bash)
+├── 0_setup_env.sh                    # shared by ops tools and legacy
+├── topology_inventory_lib.sh         # lib for topology / GPU verify
+├── option_inspect_eks.sh             # 9-check post-apply health audit
+├── option_verify_gpu_efa.sh          # cross-node NCCL benchmark
+├── option_show_nodegroup_topology.sh # print AWS-native topology labels
+├── option_create_bastion.sh          # operator-driven bastion lifecycle
+└── legacy/                           # deprecated bash deployment pipeline
+    ├── 1_*.sh ... 7_*.sh             # old numbered sequence
+    ├── option_install_*.sh           # csi / karpenter / gpu-nodegroups / gpu-stack
+    ├── pod_identity_helpers.sh
+    ├── disk_detection_lib.sh
+    ├── instance_arch_lib.sh
+    └── manifests/                    # bash-only YAMLs (autoscaler, storageclass)
 
-manifests/                  # Kubernetes manifests
-├── addons/                # Core addons (autoscaler, LB controller, CSI drivers)
-├── storage/               # StorageClass definitions
-├── karpenter/             # Karpenter EC2NodeClass and NodePool configs (CPU only)
-└── iam/                   # IAM policy templates
+examples/                   # Workload samples + sanity test scripts
+├── option_test_pod_scheduling.sh
+├── option_test_karpenter_pools.sh
+└── *.yaml                  # ebs / efs / fsx / s3 / nlb test apps
 
-docs/                      # Additional documentation
-
-# Note: VPC creation uses external terraform-aws-modules/vpc module
-# See docs/DEPLOYMENT_SOP.md for recommended configuration
+docs/                       # See MIGRATION_FROM_BASH.md and DEPLOYMENT_SOP.md
 ```
 
 ### Configuration Files
 
-**`.env`**: Primary configuration file (copy from `.env.example`)
-- Required: `CLUSTER_NAME`, `VPC_ID`, subnet IDs
-- Auto-detected: `ACCOUNT_ID`, `AWS_REGION`
-- Optional: Node sizes, component versions, feature flags
+**Terraform (canonical)**: `terraform/terraform.tfvars` (copy from `terraform.tfvars.example`)
+- Required: `cluster_name`, `vpc_id`, `private_subnet_ids`, `public_subnet_ids`
+- Auto-detected via provider: account ID, region (from AWS CLI / env)
+- Toggles: `install_karpenter`, `install_efs_csi`, `install_fsx_csi`, `install_s3_csi`, `install_gpu_nodegroups`, `install_gpu_stack`, `gpu_stack_mode`
+- Multi-AZ: `private_subnet_ids` / `public_subnet_ids` are lists, supporting 2-4 AZs
+- See `terraform/variables.tf` for the full list and defaults
 
-**Environment Variables:**
-- `CLUSTER_NAME`: EKS cluster name
-- `VPC_ID`: Target VPC
-- `PRIVATE_SUBNET_A/B`: Private subnets (required, minimum 2 AZs)
-- `PRIVATE_SUBNET_C/D`: Private subnets (optional, for 3-4 AZs)
-- `PUBLIC_SUBNET_A/B`: Public subnets (required)
-- `PUBLIC_SUBNET_C/D`: Public subnets (optional)
-- `INSTALL_KARPENTER`: Enable Karpenter (true/false)
-- `INSTALL_EFS_CSI`: Enable EFS CSI driver (true/false)
-- `INSTALL_FSX_CSI`: Enable FSx CSI driver (true/false)
-- `INSTALL_DRIVERS`: CSI driver type for option_install_csi_drivers.sh (efs/fsx/s3)
-- `S3_BUCKET_ARNS`: Comma-separated S3 bucket ARNs for S3 CSI driver
-- `SYSTEM_NODE_INSTANCE_TYPE`: System node EC2 instance type
-- `K8S_VERSION`: Kubernetes version (default: 1.35)
-- `EC2_KEY_NAME`: EC2 Key Pair name for SSH access to system/GPU nodegroups (case-sensitive)
-- `SSH_PUBLIC_KEY`: SSH public key content for Karpenter nodes (injected via userData)
+**Legacy `.env`**: kept for `scripts/legacy/*` callers; full variable list in `.env.example`. Variable mapping to `terraform.tfvars` is documented in `docs/MIGRATION_FROM_BASH.md`.
 
 ### System Nodegroup
 
@@ -211,50 +207,29 @@ All CSI drivers are optional (via `option_install_csi_drivers.sh`):
 
 ### Adding New Optional Components
 
-1. Create `scripts/option_install_<component>.sh`
-2. Source environment and helpers:
-   ```bash
-   source "${SCRIPT_DIR}/0_setup_env.sh"
-   source "${SCRIPT_DIR}/pod_identity_helpers.sh"
-   ```
-3. Follow Pod Identity pattern for AWS permissions
-4. Add manifests to `manifests/addons/` or `manifests/<component>/`
-5. Use `sed` to template environment variables into manifests
-6. Add system node selectors if component should run on system nodes
+New components land in **terraform** as a module under `terraform/modules/<component>/`. Follow the existing modules for the shape:
 
-### Validation Functions
+1. `main.tf` — IAM role + `aws_eks_pod_identity_association` for AWS permissions; `helm_release` or `aws_eks_addon` for the workload
+2. `variables.tf` / `outputs.tf` / `versions.tf`
+3. Wire into `terraform/main.tf` with a `count = var.install_<component> ? 1 : 0` toggle
+4. Static assets (YAML templates, IAM JSON) live under `terraform/assets/<component>/`
+5. Add the toggle and any tunables to `terraform/variables.tf` and `terraform.tfvars.example`
+6. Use `node_selector = { "${var.system_node_label_key}" = var.system_node_label_value }` if the component should run on system nodes
 
-Available from `0_setup_env.sh` after sourcing:
-```bash
-verify_kubectl_context                              # Verify kubectl connected to correct cluster
-validate_vpc_exists <vpc_id> <region>              # Check VPC exists
-validate_subnet_exists <subnet_id> <vpc_id>        # Check subnet exists
-validate_ami_exists <ami_id>                       # Check AMI available
-validate_security_group_exists <sg_id>             # Check security group
-validate_iam_role_exists <role_name>               # Check IAM role
-validate_eks_cluster_exists <cluster_name>         # Check EKS cluster
-```
+Do **not** add new bash scripts under `scripts/legacy/` for this purpose.
 
-### Idempotency
+### Validation in terraform
 
-All scripts are designed to be idempotent:
-- Check resource existence before creation
-- Skip if already exists with appropriate log message
-- Safe to re-run after failures
+- Resource existence: TF `data` blocks fail at plan time
+- IAM propagation retries: AWS provider handles internally
+- Pre-deploy CLI tooling check: not done by TF; operator concern (use `option_inspect_eks.sh` after apply)
 
-### Error Handling
-
-Scripts use `set -e` and common error handling:
-```bash
-log "message"           # Info logging with timestamp
-error "message"         # Error logging and exit 1
-warn "message"          # Warning logging (no exit)
-```
+The legacy bash helpers (`verify_kubectl_context`, `validate_vpc_exists`, etc.) still exist in `scripts/0_setup_env.sh` and are used by the kept ops tools and `examples/option_test_*.sh`.
 
 ## Karpenter Node Support (CPU Only)
 
-**CPU Nodes (Graviton/x86):** `option_install_karpenter.sh`
-- EC2NodeClass: `manifests/karpenter/ec2nodeclass-graviton.yaml`, `ec2nodeclass-x86.yaml`
+**CPU Nodes (Graviton/x86):** terraform module `terraform/modules/eks-karpenter/` (legacy: `scripts/legacy/option_install_karpenter.sh`)
+- EC2NodeClass: `terraform/assets/karpenter/ec2nodeclass-graviton.yaml`, `ec2nodeclass-x86.yaml`
 - Graviton (arm64): r/c/m Graviton3+Graviton4 family, 4-16 vCPU, on-demand (example defaults — see manifest header)
 - x86 (amd64):      r/c/m Intel 6th+7th gen family, 4-16 vCPU, on-demand
 - LVM configuration for containerd data volume
@@ -264,7 +239,7 @@ warn "message"          # Warning logging (no exit)
 GPU support is split across two scripts (and two terraform modules) by
 responsibility:
 
-**Layer 1 — `option_install_gpu_nodegroups.sh` (AWS infra)**
+**Layer 1 — `terraform/modules/eks-gpu-nodegroup/` (AWS infra; legacy: `scripts/legacy/option_install_gpu_nodegroups.sh`)**
 - Uses AWS Managed Node Groups (not Karpenter) for EFA multi-NIC support
 - IAM role + GPU SG (with EFA self-egress) + Launch Template + NodeGroup
 - EFA interface counts:
@@ -278,12 +253,12 @@ responsibility:
 - Node labels: `workload-type=gpu`, `gpu-instance-type=<type>`, `purchase-option=<od|spot|odcr|cb>`
 - Taints: `nvidia.com/gpu:NoSchedule`
 
-**Layer 2 — `option_install_gpu_stack.sh` (K8s workloads)**
-- Two mutually-exclusive modes via `GPU_STACK_MODE`:
+**Layer 2 — `terraform/modules/eks-gpu-stack/` (K8s workloads; legacy: `scripts/legacy/option_install_gpu_stack.sh`)**
+- Two mutually-exclusive modes via `gpu_stack_mode` (terraform) / `GPU_STACK_MODE` (legacy):
   - `standard` (default): nvidia-device-plugin + EFA plugin + dcgm-exporter + node-problem-detector + gpu-health-check DS
   - `operator`: NVIDIA GPU Operator (driver/toolkit/mofed disabled) + EFA plugin
-- Mode-switch protected by `GPU_STACK_FORCE_SWITCH=true` to auto-uninstall conflicting releases
-- Auto-invoked from layer 1 by default; skip with `SKIP_GPU_STACK_AUTO_INSTALL=true`
+- Terraform: switching mode triggers `terraform apply` to retire stale resources from the previous mode
+- Legacy: mode-switch protected by `GPU_STACK_FORCE_SWITCH=true` to auto-uninstall conflicting releases; auto-invoked from layer 1 by default; skip with `SKIP_GPU_STACK_AUTO_INSTALL=true`
 
 ## Testing and Validation
 
@@ -295,9 +270,10 @@ Test manifests in `examples/`:
 ## Important Notes
 
 - **Always run from bastion**: Cluster uses private API endpoint, requires VPC internal access
-- **Source 0_setup_env.sh first**: Provides environment variables and helper functions
-- **Check kubectl context**: Use `verify_kubectl_context` before kubectl operations
 - **System node labels**: `app=eks-utils` label critical for addon scheduling
 - **Multi-AZ support**: Supports 2-4 availability zones (minimum: A/B, optional: C, D)
-- **Terraform modules**: Used for VPC endpoints and launch templates, but most deployment is bash-driven
-- **Documentation**: See `docs/DEPLOYMENT_SOP.md` for detailed step-by-step procedures, `docs/DESIGN.md` for future features
+- **Terraform is canonical**: full deployment lives in `terraform/`; legacy bash under `scripts/legacy/` is maintenance-only
+- **Documentation**: See `terraform/README.md` for the terraform path, `docs/MIGRATION_FROM_BASH.md` for bash↔terraform mapping, `docs/DEPLOYMENT_SOP.md` for the legacy step-by-step (still applicable to bash-deployed clusters), `docs/DESIGN.md` for future features
+- **Bash quirks (when working in `scripts/legacy/`)**:
+  - Source `scripts/0_setup_env.sh` first; legacy scripts reference it via `${SCRIPT_DIR}/../0_setup_env.sh`
+  - Use `verify_kubectl_context` before kubectl operations

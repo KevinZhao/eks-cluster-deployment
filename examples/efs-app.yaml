@@ -4,7 +4,7 @@
 #
 # Prerequisites:
 #   1. Install EFS CSI Driver:
-#      INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
+#      INSTALL_DRIVERS=efs ./scripts/legacy/option_install_csi_drivers.sh
 #   2. Create EFS filesystem with mount targets in each subnet
 #   3. Replace ${EFS_ID} with your EFS filesystem ID (e.g., fs-091a3f95533e513a9)
 #

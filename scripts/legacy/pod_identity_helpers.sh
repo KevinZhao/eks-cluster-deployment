@@ -363,10 +363,10 @@ setup_alb_controller_pod_identity() {
     local service_account="aws-load-balancer-controller"
 
     # 1. 下载 IAM policy（如果不存在）
-    local policy_file="${PROJECT_ROOT}/manifests/iam/alb-controller-iam-policy.json"
+    local policy_file="${PROJECT_ROOT}/terraform/assets/iam/alb-controller-iam-policy.json"
     if [ ! -f "${policy_file}" ]; then
         log "Downloading AWS Load Balancer Controller IAM policy (${ALB_CONTROLLER_VERSION})..."
-        mkdir -p "${PROJECT_ROOT}/manifests/iam"
+        mkdir -p "$(dirname "${policy_file}")"
         curl -sS -o "${policy_file}" "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/${ALB_CONTROLLER_VERSION}/docs/install/iam_policy.json"
         log "✓ Policy downloaded to ${policy_file}"
     else
@@ -429,7 +429,7 @@ setup_fsx_csi_pod_identity() {
     create_pod_identity_role "${role_name}"
 
     # 2. 创建和附加自定义策略
-    local policy_file="${PROJECT_ROOT}/manifests/iam/fsx-csi-policy.json"
+    local policy_file="${PROJECT_ROOT}/terraform/assets/iam/fsx-csi-policy.json"
     if [ ! -f "${policy_file}" ]; then
         error "FSx CSI policy file not found: ${policy_file}"
     fi
@@ -765,7 +765,7 @@ Functions:
 
 Example:
   source scripts/0_setup_env.sh
-  source scripts/pod_identity_helpers.sh
+  source scripts/legacy/pod_identity_helpers.sh
   setup_cluster_autoscaler_pod_identity
 
 Requirements:

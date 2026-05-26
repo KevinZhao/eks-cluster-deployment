@@ -6,7 +6,7 @@ set -o pipefail
 export AWS_PAGER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "=== Create GPU Managed Node Groups with EFA Support ==="
 echo ""
@@ -45,12 +45,12 @@ echo "  Override: GPU_PG_STRATEGY={cluster|none}, GPU_TOPOLOGY_MODE={inventory|g
 echo ""
 
 # 1. Load environment
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # Load topology inventory library (source so print_topology_inventory is
 # available after NG creation).
 # shellcheck source=topology_inventory_lib.sh
-source "${SCRIPT_DIR}/topology_inventory_lib.sh"
+source "${SCRIPT_DIR}/../topology_inventory_lib.sh"
 
 # Load instance architecture detection helpers. Used to pick the correct
 # GPU AMI variant (x86_64 vs arm64) instead of hard-coding x86_64.
@@ -128,6 +128,11 @@ DEPLOY_GPU_CB="${DEPLOY_GPU_CB:-false}"
 # Discovered 2026-05-03 on p5 usw2-az1 that the AMI alone gives no
 # /opt/amazon/efa/ — same as the long-noted Ohio p5en gap.
 GPU_INSTALL_EFA_USERSPACE="${GPU_INSTALL_EFA_USERSPACE:-true}"
+
+# Pin a specific aws-efa-installer tarball so node bringup is reproducible
+# across time. Bump after smoke-testing on a fresh node. Empty = "latest"
+# (rolls forward — breaks reproducibility, do not use in production).
+GPU_EFA_INSTALLER_VERSION="${GPU_EFA_INSTALLER_VERSION:-1.48.0}"
 
 # ------------------------------------------------------------
 # Nodegroup suffix + AZ narrowing (for multi-run coexistence)
@@ -1113,15 +1118,18 @@ systemctl restart kubelet
 # on the host's libfabric, we need the full userspace install.
 #
 # Enable with GPU_INSTALL_EFA_USERSPACE=true (default: true).
+# Tarball version pinned via GPU_EFA_INSTALLER_VERSION (e.g. "1.48.0"); empty
+# = "latest" (rolls forward, breaks reproducibility).
 if [ "${GPU_INSTALL_EFA_USERSPACE}" = "true" ] && [ ! -x /opt/amazon/efa/bin/fi_info ]; then
-  echo "=== Installing EFA userspace (libfabric-aws + openmpi5-aws) ==="
+  EFA_INSTALLER_TARBALL="aws-efa-installer-${GPU_EFA_INSTALLER_VERSION:-latest}.tar.gz"
+  echo "=== Installing EFA userspace (libfabric-aws + openmpi5-aws) — \$EFA_INSTALLER_TARBALL ==="
   # --skip-kmod = don't rebuild kernel module (AMI already has it)
   # -y = non-interactive
   # NOTE: do NOT pass --minimal; it excludes libfabric-aws + openmpi5-aws
   # (the whole point — we want /opt/amazon/efa/bin/fi_info and friends)
   ( cd /tmp && \
-    curl -fsSLO https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz && \
-    tar -xf aws-efa-installer-latest.tar.gz && \
+    curl -fsSLO "https://efa-installer.amazonaws.com/\${EFA_INSTALLER_TARBALL}" && \
+    tar -xf "\${EFA_INSTALLER_TARBALL}" && \
     cd aws-efa-installer && \
     ./efa_installer.sh -y --skip-kmod 2>&1 | tail -30 ) || \
     echo "WARN: efa_installer failed; containers with their own libfabric will still work"

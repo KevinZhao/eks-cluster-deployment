@@ -6,12 +6,12 @@ export AWS_PAGER=""
 
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "=== EKS Cluster Installation with Cluster Autoscaler and EBS CSI Driver ==="
 
 # 1. Load environment variables
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 # 1.1 Set KUBECONFIG environment variable
 export KUBECONFIG="${HOME:-/root}/.kube/config"
@@ -270,8 +270,8 @@ echo "⚠️  IMPORTANT: System nodegroup NOT created yet"
 echo ""
 echo "Next steps:"
 echo "  1. Create system nodegroup with LVM (REQUIRED):"
-echo "     ./scripts/6_create_system_nodegroup.sh"
+echo "     ./scripts/legacy/6_create_system_nodegroup.sh"
 echo ""
 echo "  2. After nodegroup is ready, install addons:"
-echo "     ./scripts/7_install_eks_addon.sh"
+echo "     ./scripts/legacy/7_install_eks_addon.sh"
 echo ""

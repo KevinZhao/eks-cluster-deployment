@@ -49,7 +49,7 @@ export AWS_PAGER=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load environment (cluster name, region, etc.)
-source "${SCRIPT_DIR}/0_setup_env.sh"
+source "${SCRIPT_DIR}/../0_setup_env.sh"
 
 export KUBECONFIG="${HOME:-/root}/.kube/config"
 
@@ -84,7 +84,7 @@ esac
 
 # --- Components shared by both modes ---
 INSTALL_EFA_DEVICE_PLUGIN="${INSTALL_EFA_DEVICE_PLUGIN:-true}"
-EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.18}"
+EFA_DEVICE_PLUGIN_VERSION="${EFA_DEVICE_PLUGIN_VERSION:-v0.5.19}"
 EFA_DEVICE_PLUGIN_IMAGE="${EFA_DEVICE_PLUGIN_IMAGE:-}"
 
 # --- Standard mode components ---

@@ -182,7 +182,7 @@ data "aws_eks_addon_version" "fsx_csi" {
 resource "aws_iam_policy" "fsx_csi" {
   count  = var.install_fsx ? 1 : 0
   name   = "${var.cluster_name}-fsx-csi-policy"
-  policy = file("${path.module}/../../../manifests/iam/fsx-csi-policy.json")
+  policy = file("${path.module}/../../assets/iam/fsx-csi-policy.json")
 }
 
 resource "aws_iam_role" "fsx_csi" {
@@ -269,7 +269,7 @@ locals {
 # S3 bucket-scoped policy. Splits actions per bucket family because:
 #   - s3express:CreateSession only applies to s3express ARNs
 #   - s3:ListBucket/GetObject/etc apply to standard s3 ARNs
-# Mirrors scripts/pod_identity_helpers.sh setup_s3_csi_pod_identity.
+# Mirrors scripts/legacy/pod_identity_helpers.sh setup_s3_csi_pod_identity.
 resource "aws_iam_role_policy" "s3_csi" {
   count = var.install_s3 && length(var.s3_bucket_arns) > 0 ? 1 : 0
   name  = "S3MountpointAccess"

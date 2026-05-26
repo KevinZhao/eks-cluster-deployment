@@ -7,6 +7,10 @@
 
 ---
 
+> **方向说明（2026-05）**：本文档描述的是 **bash 部署路径**，目前已进入 maintenance-only。新部署请优先使用 [`terraform/`](../terraform/) 下的等价实现，参考 [`terraform/README.md`](../terraform/README.md) 与 [`docs/MIGRATION_FROM_BASH.md`](MIGRATION_FROM_BASH.md)。本文档保留作为已有 bash 部署集群的参考。
+
+---
+
 ## 概述
 
 部署生产级 EKS 集群，包括：私有 API 访问、多 AZ 高可用、LVM 存储隔离、Pod Identity 认证。
@@ -218,9 +222,9 @@ PUBLIC_ACCESS_CIDRS=203.0.113.0/24,198.51.100.0/24
 **执行位置**：堡垒机（private 模式）或任意网络（public 模式）
 
 ```bash
-./scripts/1_enable_vpc_dns.sh        # 启用 DNS（10秒）
-./scripts/2_validate_network_environment.sh  # 可选：验证网络
-./scripts/3_create_vpc_endpoints.sh  # 创建 VPC Endpoints（2-3分钟）
+./scripts/legacy/1_enable_vpc_dns.sh        # 启用 DNS（10秒）
+./scripts/legacy/2_validate_network_environment.sh  # 可选：验证网络
+./scripts/legacy/3_create_vpc_endpoints.sh  # 创建 VPC Endpoints（2-3分钟）
                                      # private 模式：创建 13+1 个
                                      # public 模式：创建 4+1 个
 ```
@@ -228,7 +232,7 @@ PUBLIC_ACCESS_CIDRS=203.0.113.0/24,198.51.100.0/24
 ### 第四阶段：创建 EKS 集群
 
 ```bash
-./scripts/4_install_eks_cluster.sh   # 创建控制平面（8-10分钟）
+./scripts/legacy/4_install_eks_cluster.sh   # 创建控制平面（8-10分钟）
 ```
 
 验证：
@@ -242,7 +246,7 @@ aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --query '
 > **注意**: 脚本会先通过 `curl /healthz` 检测集群 API 可达性。Private 模式集群必须从 VPC 内部（堡垒机）执行。
 
 ```bash
-AUTO_DELETE_NODEGROUP=yes ./scripts/6_create_system_nodegroup.sh  # 8-12分钟
+AUTO_DELETE_NODEGROUP=yes ./scripts/legacy/6_create_system_nodegroup.sh  # 8-12分钟
 ```
 
 验证：
@@ -253,7 +257,7 @@ kubectl get nodes -o wide  # 应显示 3 个 Ready 节点
 ### 第六阶段：安装集群组件
 
 ```bash
-./scripts/7_install_eks_addon.sh     # 5-8分钟
+./scripts/legacy/7_install_eks_addon.sh     # 5-8分钟
 ```
 
 验证：
@@ -309,14 +313,14 @@ kubectl delete -f examples/ebs-app.yaml
 
 **EFS**（需先安装驱动）：
 ```bash
-INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
+INSTALL_DRIVERS=efs ./scripts/legacy/option_install_csi_drivers.sh
 export EFS_ID=fs-xxx
 # 参考 examples/ 目录下的测试文件
 ```
 
 **FSx Lustre**（GPU 场景）：
 ```bash
-INSTALL_DRIVERS=fsx ./scripts/option_install_csi_drivers.sh
+INSTALL_DRIVERS=fsx ./scripts/legacy/option_install_csi_drivers.sh
 export FSX_ID=fs-xxx
 export FSX_DNS=$(aws fsx describe-file-systems --file-system-ids ${FSX_ID} --region ${AWS_REGION} --query 'FileSystems[0].DNSName' --output text)
 export FSX_MOUNT_NAME=$(aws fsx describe-file-systems --file-system-ids ${FSX_ID} --region ${AWS_REGION} --query 'FileSystems[0].LustreConfiguration.MountName' --output text)
@@ -325,7 +329,7 @@ envsubst < examples/fsx-app.yaml | kubectl apply -f -
 
 **S3**：
 ```bash
-INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_install_csi_drivers.sh
+INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/legacy/option_install_csi_drivers.sh
 # 参考 examples/ 目录下的测试文件
 ```
 
@@ -335,10 +339,10 @@ INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_inst
 
 ```bash
 # Karpenter（更灵活的自动扩缩容）
-./scripts/option_install_karpenter.sh
+./scripts/legacy/option_install_karpenter.sh
 
 # GPU 节点组
-./scripts/option_install_gpu_nodegroups.sh
+./scripts/legacy/option_install_gpu_nodegroups.sh
 
 # 测试脚本
 ./examples/option_test_pod_scheduling.sh
@@ -362,7 +366,7 @@ INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_inst
 
 ```bash
 INSTALL_EFA_DEVICE_PLUGIN=true        # 默认 true，关闭可设为 false
-EFA_DEVICE_PLUGIN_VERSION=v0.5.17     # 镜像 tag
+EFA_DEVICE_PLUGIN_VERSION=v0.5.19     # 镜像 tag
 EFA_DEVICE_PLUGIN_IMAGE=              # 覆盖完整镜像地址（CN 区域或私有 ECR mirror 使用）
 ```
 
@@ -407,7 +411,7 @@ aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
 # 症状: dial tcp 10.0.x.x:443: i/o timeout
 # 原因: 安全组或 VPC Endpoints 问题
 aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=${VPC_ID}" --region ${AWS_REGION}
-./scripts/6_create_system_nodegroup.sh  # 会自动配置安全组
+./scripts/legacy/6_create_system_nodegroup.sh  # 会自动配置安全组
 ```
 
 ### 节点 NotReady

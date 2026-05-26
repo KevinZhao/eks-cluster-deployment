@@ -7,41 +7,60 @@
 
 ---
 
+## 方向声明
+
+**Terraform 是默认推荐路径。** 全部基础设施（VPC endpoints、控制平面、系统/GPU 节点组、addons、CSI、Karpenter、GPU stack）都在 `terraform/` 下有对应模块。新功能仅在 terraform 中实现，bash 部署脚本进入 **maintenance-only**——只接收安全/正确性修复，不再增加新能力。
+
+| 用途 | 走哪条路 |
+|---|---|
+| 新建集群 / 日常基础设施变更 | **`terraform/`** |
+| 已有 bash 部署的集群 | 维持现状；新集群迁 terraform，老集群随业务退役 |
+| 运行时校验、benchmark、堡垒机生命周期 | `scripts/` 下保留的 ops 工具（`option_inspect_eks.sh`、`option_verify_gpu_efa.sh`、`option_show_nodegroup_topology.sh`、`option_create_bastion.sh`） |
+
+详见 [`terraform/README.md`](terraform/README.md) 与 [`docs/MIGRATION_FROM_BASH.md`](docs/MIGRATION_FROM_BASH.md)。下文 bash 部署流程保留作为参考，后续会归档到 `scripts/legacy/`。
+
+---
+
 ## 🚀 快速开始
 
 ### 前置要求
 
-- ✅ 已有 VPC（包含公有/私有子网、NAT Gateway）
-- ✅ 堡垒机（VPC 内部，用于执行部署脚本）
-- ✅ 安装工具：kubectl, eksctl, helm, aws-cli, jq
+- ✅ 已有 VPC（包含公有/私有子网、NAT Gateway），或使用 `terraform/bootstrap-vpc/` 生成
+- ✅ 堡垒机（私有集群必需），或使用 `terraform/bootstrap-bastion/` 创建
+- ✅ 安装工具：terraform ≥ 1.6, kubectl, helm, aws-cli, jq
 
-> ⚠️ **重要**：集群使用私有 API 访问模式，必须从 VPC 内部执行部署。详见 [docs/DEPLOYMENT_SOP.md](docs/DEPLOYMENT_SOP.md)
+> ⚠️ **重要**：私有 API 模式下 terraform apply 必须从 VPC 内部执行。详见 [terraform/README.md](terraform/README.md)
 
-### 5 分钟快速部署
+### Terraform 部署（推荐）
 
 ```bash
-# 1. 配置环境变量
-cp .env.example .env
-nano .env  # 填写 VPC_ID、子网 ID 等
+cd terraform
 
-# 2. 执行部署（在堡垒机上）
-chmod +x scripts/*.sh
+# 1. 一次性 bootstrap state backend
+terraform -chdir=bootstrap apply \
+  -var="bucket_name=my-eks-tfstate" -var="region=us-west-2"
 
-# 配置 VPC 网络
-./scripts/1_enable_vpc_dns.sh           # 启用 DNS
-./scripts/3_create_vpc_endpoints.sh     # 创建 VPC Endpoints
+# 2. 配置变量
+cp terraform.tfvars.example terraform.tfvars
+$EDITOR terraform.tfvars   # 填写 vpc_id / subnet_ids / cluster_name 等
 
-# 部署 EKS 集群
-./scripts/4_install_eks_cluster.sh      # 创建控制平面（8-10分钟）
-./scripts/6_create_system_nodegroup.sh  # 创建系统节点组（8-12分钟）
-./scripts/7_install_eks_addon.sh        # 安装核心组件（5-8分钟）
+# 3. apply（私有集群需在堡垒机上执行）
+terraform init \
+  -backend-config="bucket=my-eks-tfstate" \
+  -backend-config="key=eks-cluster-deployment/dev/terraform.tfstate" \
+  -backend-config="region=us-west-2" \
+  -backend-config="dynamodb_table=my-eks-tfstate-lock"
+terraform plan
+terraform apply
 
-# 3. 验证
+# 4. 验证（需要 kubectl 已配好）
+./scripts/option_inspect_eks.sh
 kubectl get nodes
-kubectl get pods -A
 ```
 
-**总耗时**：约 25-35 分钟
+**总耗时**：约 25-35 分钟（控制平面 8-10m + 系统 NG 8-12m + addons 5-8m）。
+
+> 老的 bash 部署流程仍可在 [docs/DEPLOYMENT_SOP.md](docs/DEPLOYMENT_SOP.md) 找到，对应脚本现在位于 `scripts/legacy/`。
 
 ---
 
@@ -96,58 +115,51 @@ EKS Cluster (Kubernetes 1.35)
 
 ## 📋 部署流程
 
-完整部署流程请参考 **[docs/DEPLOYMENT_SOP.md](docs/DEPLOYMENT_SOP.md)**，包括：
+完整 terraform 流程请参考 **[terraform/README.md](terraform/README.md)**。bash 部署流程（已废弃，保留供已有用户参考）见 [docs/DEPLOYMENT_SOP.md](docs/DEPLOYMENT_SOP.md)。
 
-1. **准备堡垒机** - 创建和配置 VPC 内部跳板机
-2. **配置 VPC 网络** - 启用 DNS、创建 VPC Endpoints
-3. **创建 EKS 集群** - 部署控制平面
-4. **创建系统节点组** - 配置 LVM 存储
-5. **安装集群组件** - 部署 Autoscaler、LB Controller、CSI Drivers
-6. **验证和测试** - 功能验证
+### 模块/脚本说明
 
-### 脚本说明
+**Terraform 模块（推荐）**：
 
-**核心部署脚本（按顺序执行）**：
+| 模块 | 用途 | 启用方式 |
+|------|------|---------|
+| `terraform/modules/vpc-endpoints` | 13 个接口端点 + S3 网关 | 默认 |
+| `terraform/modules/eks-cluster` | 控制平面 + 基础 addon | 默认 |
+| `terraform/modules/eks-system-nodegroup` | 系统节点组（LVM） | 默认 |
+| `terraform/modules/eks-addons` | CoreDNS / Metrics / CA / ALB | 默认 |
+| `terraform/modules/eks-csi-drivers` | EBS（默认）/ EFS / FSx / S3 | `install_*_csi=true` |
+| `terraform/modules/eks-karpenter` | Karpenter + SQS 中断队列 | `install_karpenter=true` |
+| `terraform/modules/eks-gpu-nodegroup` | GPU MNG + EFA 多网卡 | `install_gpu_nodegroups=true` |
+| `terraform/modules/eks-gpu-stack` | nvidia 设备插件 / GPU Operator | `install_gpu_stack=true` |
 
-| 脚本 | 用途 | 执行位置 | 耗时 |
-|------|------|---------|------|
-| `0_setup_env.sh` | 加载环境变量 | 任意 | <1分钟 |
-| `1_enable_vpc_dns.sh` | 启用 VPC DNS | 任意 | <1分钟 |
-| `2_validate_network_environment.sh` | 验证网络配置（可选） | 任意 | <1分钟 |
-| `3_create_vpc_endpoints.sh` | 创建 VPC Endpoints | 任意 | 2-3分钟 |
-| `5_check_environment.sh` | 检查本地环境（可选） | 任意 | <1分钟 |
-| `4_install_eks_cluster.sh` | 创建集群控制平面 | VPC 内 | 8-10分钟 |
-| `6_create_system_nodegroup.sh` | 创建系统节点组（LVM） | VPC 内 | 8-12分钟 |
-| `7_install_eks_addon.sh` | 安装核心组件 | VPC 内 | 5-8分钟 |
-
-**可选功能脚本**：
+**保留的运维脚本**：
 
 | 脚本 | 用途 | 执行位置 |
 |------|------|---------|
-| `option_create_bastion.sh` | 创建堡垒机 | VPC 外 |
-| `option_install_csi_drivers.sh` | 安装 EFS/FSx/S3 CSI Driver | VPC 内 |
-| `option_install_karpenter.sh` | 安装 Karpenter 自动扩缩容 | VPC 内 |
-| `option_install_gpu_nodegroups.sh` | 创建 GPU 托管节点组（EFA + 拓扑感知）| VPC 内 |
-| `option_show_nodegroup_topology.sh` | 打印节点组的 AWS 原生拓扑清单(`topology.k8s.aws/network-node-layer-N`) | VPC 内 |
+| `scripts/option_inspect_eks.sh` | 集群健康 9 项检查 | VPC 内 |
+| `scripts/option_verify_gpu_efa.sh` | 跨节点 NCCL benchmark | VPC 内 |
+| `scripts/option_show_nodegroup_topology.sh` | 打印 `topology.k8s.aws/...` 标签 | VPC 内 |
+| `scripts/option_create_bastion.sh` | 创建 SSM-only 堡垒机 | VPC 外 |
 | `examples/option_test_pod_scheduling.sh` | 测试 Pod 调度到系统节点 | VPC 内 |
 | `examples/option_test_karpenter_pools.sh` | 测试 Karpenter 节点池 | VPC 内 |
+
+> 旧 bash 部署脚本已迁至 `scripts/legacy/`，详见 [scripts/legacy/README.md](scripts/legacy/README.md)。
 
 ---
 
 ## 🎯 非交互模式（自动化）
 
-所有脚本支持非交互模式，通过环境变量控制：
+Terraform 路径天然支持非交互（`terraform apply -auto-approve`）。
+
+legacy bash 脚本通过环境变量控制（位于 `scripts/legacy/`）：
 
 ```bash
-# 创建堡垒机
+# 创建堡垒机（仍在 scripts/）
 REUSE_BASTION=no ./scripts/option_create_bastion.sh
 
-# 创建节点组（自动删除旧节点组）
-AUTO_DELETE_NODEGROUP=yes ./scripts/6_create_system_nodegroup.sh
-
-# 安装 CSI 驱动
-INSTALL_DRIVERS=efs ./scripts/option_install_csi_drivers.sh
-INSTALL_DRIVERS=s3 S3_BUCKET_ARNS='arn:aws:s3:::my-bucket' ./scripts/option_install_csi_drivers.sh
+# legacy 部署（不推荐用于新集群）
+AUTO_DELETE_NODEGROUP=yes ./scripts/legacy/6_create_system_nodegroup.sh
+INSTALL_DRIVERS=efs ./scripts/legacy/option_install_csi_drivers.sh
 
 # 测试脚本
 AUTO_RESTART_KARPENTER=yes ./examples/option_test_pod_scheduling.sh
@@ -202,7 +214,7 @@ kubectl delete namespace game-2048
 
 **原因**: VPC 缺少 SSM 相关的 VPC Endpoints
 
-**解决**: 先运行 `./scripts/3_create_vpc_endpoints.sh` 创建端点
+**解决**: 用 terraform 路径时由 `terraform/modules/vpc-endpoints` 自动创建；legacy 路径运行 `./scripts/legacy/3_create_vpc_endpoints.sh`。
 
 ### 问题 3: 节点无法加入集群
 
@@ -226,17 +238,22 @@ sudo journalctl -u kubelet -f
 
 ## 🗑️ 清理资源
 
+**Terraform 路径**：使用 `terraform/scripts/safe-destroy.sh`（先 `helm uninstall` 所有 release，再 `terraform destroy`）：
+
 ```bash
-# 1. 删除测试资源
-kubectl delete deployment,ingress,pvc --all -A
+cd terraform
+./scripts/safe-destroy.sh --var-file terraform.tfvars
+# 如需也销毁 VPC：terraform -chdir=bootstrap-vpc destroy
+```
 
-# 2. 等待 Load Balancer 删除
-sleep 60
+详见 [terraform/README.md - Tearing down](terraform/README.md#tearing-down--use-scriptssafe-destroysh)。
 
-# 3. 删除集群
+**Legacy 集群**：
+
+```bash
+kubectl delete deployment,ingress,pvc --all -A   # 1. 清测试资源
+sleep 60                                          # 2. 等 LB 释放
 eksctl delete cluster --name=${CLUSTER_NAME} --region=${AWS_REGION} --wait
-
-# 4. 删除堡垒机（如果不再需要）
 aws ec2 terminate-instances --instance-ids $(cat /tmp/eks-bastion-instance-id.txt)
 ```
 
@@ -264,45 +281,49 @@ aws ec2 terminate-instances --instance-ids $(cat /tmp/eks-bastion-instance-id.tx
 eks-cluster-deployment/
 ├── README.md                          # 本文档（快速入门）
 ├── CONTRIBUTING.md                    # 贡献指南
-├── .env.example                       # 环境变量模板
+├── .env.example                       # legacy bash 环境变量模板
 │
-├── scripts/
-│   ├── 0_setup_env.sh                      # 环境变量加载
-│   ├── 1_enable_vpc_dns.sh                 # 启用 VPC DNS
-│   ├── 2_validate_network_environment.sh   # 验证网络配置
-│   ├── 3_create_vpc_endpoints.sh           # 创建 VPC Endpoints
-│   ├── 4_install_eks_cluster.sh            # 创建集群控制平面
-│   ├── 5_check_environment.sh              # 检查本地环境
-│   ├── 6_create_system_nodegroup.sh        # 创建系统节点组（LVM）
-│   ├── 7_install_eks_addon.sh              # 安装核心组件
-│   ├── option_create_bastion.sh            # 创建堡垒机（可选）
-│   ├── option_install_csi_drivers.sh       # 安装 EFS/FSx/S3 CSI（可选）
-│   ├── option_install_karpenter.sh         # 安装 Karpenter（可选）
-│   ├── option_install_gpu_nodegroups.sh    # 创建 GPU 节点组 + EFA（可选）
-│   ├── option_show_nodegroup_topology.sh   # 打印节点组的 AWS 原生拓扑清单（可选）
-│   ├── instance_arch_lib.sh                # 共享库：实例架构检测
-│   ├── disk_detection_lib.sh               # 共享库：NVMe 数据盘识别
-│   ├── pod_identity_helpers.sh             # 共享库：Pod Identity
-│   └── topology_inventory_lib.sh           # 共享库：读 AWS 原生拓扑标签
+├── terraform/                              # ★ 推荐路径
+│   ├── README.md / main.tf / variables.tf / outputs.tf
+│   ├── terraform.tfvars.example
+│   ├── bootstrap/                          # state backend (S3+DynamoDB)
+│   ├── bootstrap-vpc/                      # 测试 VPC（可选）
+│   ├── bootstrap-bastion/                  # 私有集群堡垒机
+│   ├── modules/                            # vpc-endpoints / eks-cluster /
+│   │                                       # eks-system-nodegroup / eks-addons /
+│   │                                       # eks-csi-drivers / eks-karpenter /
+│   │                                       # eks-gpu-nodegroup / eks-gpu-stack
+│   ├── assets/                             # 模块引用的静态文件
+│   │   ├── iam/                            # ALB / FSx IAM 策略 JSON
+│   │   └── karpenter/                      # NodePool / EC2NodeClass YAML
+│   └── scripts/safe-destroy.sh
 │
-├── examples/                               # 参考 manifest 与测试脚本
-│   ├── README.md                           # 测试流程说明
-│   ├── option_test_pod_scheduling.sh       # 测试 Pod 调度
-│   ├── option_test_karpenter_pools.sh      # 测试 Karpenter 节点池
-│   ├── {ebs,efs,fsx,s3,nlb}-app.yaml       # 各类存储/LB 示例应用
-│   ├── test-{graviton,x86}-pod.yaml        # 架构调度示例（单 Pod）
-│   ├── test-deployment-{graviton,x86}.yaml # 架构调度示例（Deployment）
-│   └── autoscaler.yaml                     # 扩缩容测试示例
+├── scripts/                                # 运维/校验工具（保留为 bash）
+│   ├── 0_setup_env.sh                      # 共享环境变量加载（ops + legacy 都用）
+│   ├── topology_inventory_lib.sh           # 共享库：读 AWS 原生拓扑标签
+│   ├── option_inspect_eks.sh               # 9 项集群健康检查
+│   ├── option_verify_gpu_efa.sh            # 跨节点 NCCL benchmark
+│   ├── option_show_nodegroup_topology.sh   # 打印节点组拓扑标签
+│   ├── option_create_bastion.sh            # 创建堡垒机
+│   └── legacy/                             # ★ 已废弃的 bash 部署管线
+│       ├── README.md
+│       ├── 1_*.sh ... 7_*.sh               # 旧的核心部署序列
+│       ├── option_install_*.sh             # csi / karpenter / gpu / gpu-stack
+│       ├── pod_identity_helpers.sh
+│       ├── disk_detection_lib.sh
+│       ├── instance_arch_lib.sh
+│       └── manifests/                      # 仅 legacy 用的 YAML
 │
-├── manifests/
-│   ├── addons/                             # Cluster Autoscaler
-│   ├── iam/                                # IAM 策略 JSON（ALB、FSx）
-│   ├── karpenter/                          # Karpenter NodePool / EC2NodeClass
-│   └── storage/                            # StorageClass
+├── examples/                               # 工作负载样例与测试脚本
+│   ├── README.md
+│   ├── option_test_pod_scheduling.sh
+│   ├── option_test_karpenter_pools.sh
+│   └── {ebs,efs,fsx,s3,nlb}-app.yaml ...
 │
 └── docs/                                   # 详细文档
     ├── README.md                           # CSI Driver 文档索引
-    ├── DEPLOYMENT_SOP.md                   # 完整部署流程
+    ├── DEPLOYMENT_SOP.md                   # legacy bash 部署流程
+    ├── MIGRATION_FROM_BASH.md              # bash↔terraform 映射
     ├── DESIGN.md                           # 架构设计
     ├── COLLABORATION.md                    # 协作指南
     ├── P2_TOPOLOGY_RETRY_PLAN.md           # GPU 拓扑重试方案
@@ -310,7 +331,7 @@ eks-cluster-deployment/
     └── history/                            # 历史评审归档（本地保留，不纳入 git）
 ```
 
-> **Note**: 本仓库不包含 VPC 创建代码，请自行准备 VPC 后再运行脚本。推荐使用 [terraform-aws-modules/vpc](https://github.com/terraform-aws-modules/terraform-aws-vpc)。
+> **Note**: 仓库未托管 VPC 资源；可使用 `terraform/bootstrap-vpc/` 生成测试 VPC，或自行准备 VPC 后再运行 terraform/legacy。
 
 ---
 
