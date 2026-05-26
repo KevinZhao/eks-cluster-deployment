@@ -21,6 +21,31 @@ resource "null_resource" "verify_vpc_dns" {
   }
 }
 
+# Validate that each private subnet sits in a distinct AZ. VPC Interface
+# Endpoints reject duplicate AZs with `DuplicateSubnetsInSameZone`, but
+# they only surface this error during create — and they do it once per
+# endpoint, so a single misconfigured tfvars produces 13 near-identical
+# errors that obscure the root cause. Failing fast at plan time with the
+# subnet → AZ mapping makes the fix obvious.
+data "aws_subnet" "private" {
+  for_each = toset(var.private_subnet_ids)
+  id       = each.key
+}
+
+resource "null_resource" "verify_subnet_az_uniqueness" {
+  triggers = {
+    subnets = join(",", var.private_subnet_ids)
+  }
+  lifecycle {
+    precondition {
+      condition = length(distinct([
+        for s in data.aws_subnet.private : s.availability_zone
+      ])) == length(var.private_subnet_ids)
+      error_message = "private_subnet_ids must each be in a DIFFERENT availability zone — VPC Interface Endpoints reject duplicate AZs (DuplicateSubnetsInSameZone). For environments with extra subnets in the same AZ (e.g. a dedicated GPU subnet), pass them via gpu_nodegroups[].subnet_ids instead. Subnet → AZ mapping: ${jsonencode({ for s in data.aws_subnet.private : s.id => s.availability_zone })}"
+    }
+  }
+}
+
 # Security group for Interface endpoints — allows 443 from inside the VPC.
 resource "aws_security_group" "endpoints" {
   name        = "${var.cluster_name}-vpc-endpoints-sg"
