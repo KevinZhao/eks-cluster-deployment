@@ -51,6 +51,59 @@ done
 
 cd "${TF_DIR}"
 
+# Auto-discover tfvars file when --var-file not passed explicitly.
+#
+# Terraform auto-loads terraform.tfvars / terraform.tfvars.json / *.auto.tfvars
+# but project convention uses terraform.tfvars.<env> (smoke/test/...) which
+# Terraform does NOT auto-load — they must be passed via -var-file. Without
+# this guard, the helm uninstall stage below runs to completion (cluster
+# loses its addons), then `terraform destroy` fails on "No value for required
+# variable" and leaves the cluster mid-teardown.
+if [ -z "${VAR_FILE}" ]; then
+  if [ -f terraform.tfvars ] || [ -f terraform.tfvars.json ] \
+      || compgen -G '*.auto.tfvars' >/dev/null \
+      || compgen -G '*.auto.tfvars.json' >/dev/null; then
+    : # already auto-loaded by terraform
+  else
+    mapfile -t TFVARS_CANDIDATES < <(ls terraform.tfvars.* 2>/dev/null \
+      | grep -vE '\.(example|bak|backup|json)$' \
+      | grep -v 'auto\.tfvars$')
+    if [ "${#TFVARS_CANDIDATES[@]}" -eq 1 ]; then
+      VAR_FILE="-var-file=${TFVARS_CANDIDATES[0]}"
+      echo "==> auto-discovered tfvars: ${TFVARS_CANDIDATES[0]}"
+      echo "    (pass --var-file explicitly to override)"
+    elif [ "${#TFVARS_CANDIDATES[@]}" -gt 1 ]; then
+      echo "ERROR: multiple terraform.tfvars.* files present; pass --var-file <path> explicitly." >&2
+      printf '   - %s\n' "${TFVARS_CANDIDATES[@]}" >&2
+      exit 1
+    fi
+    # Zero candidates: fall through. If the root module has required vars,
+    # the plan-destroy probe below will catch it before any helm uninstall.
+  fi
+fi
+
+# Fail-fast: confirm `terraform destroy` would have all required variables
+# BEFORE we start uninstalling helm releases. plan-destroy exits non-zero
+# immediately on missing vars (~5s) without making any AWS-side change.
+echo "==> Validating terraform variables (plan -destroy probe)..."
+if ! terraform plan -destroy ${VAR_FILE} -input=false -detailed-exitcode \
+       -out=/dev/null > /tmp/safe-destroy-plan.log 2>&1; then
+  RC=$?
+  # detailed-exitcode: 0=no-changes, 1=error, 2=changes-pending. 2 is fine.
+  if [ "$RC" != "2" ]; then
+    if grep -q "No value for required variable" /tmp/safe-destroy-plan.log; then
+      echo "ERROR: terraform requires variables that are not set." >&2
+      echo "       Pass --var-file <path> or create terraform.tfvars." >&2
+      grep -E "Error:|variable \"" /tmp/safe-destroy-plan.log | head -20 >&2
+      rm -f /tmp/safe-destroy-plan.log
+      exit 1
+    fi
+    echo "WARN: terraform plan -destroy returned $RC; continuing anyway." >&2
+    tail -20 /tmp/safe-destroy-plan.log >&2
+  fi
+fi
+rm -f /tmp/safe-destroy-plan.log
+
 # Resolve cluster name.
 CLUSTER_NAME="${CLUSTER_NAME:-$(terraform output -raw cluster_name 2>/dev/null || true)}"
 if [ -z "${CLUSTER_NAME}" ]; then

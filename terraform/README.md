@@ -280,6 +280,8 @@ cd terraform
 ./scripts/safe-destroy.sh --var-file terraform.tfvars.test --auto-approve
 ```
 
+If only one `terraform.tfvars.*` file exists in the directory and you don't pass `--var-file`, the script auto-discovers it. Multiple tfvars without an explicit `--var-file` is rejected (ambiguous). Before any helm uninstall the script runs `terraform plan -destroy` as a probe — required-variable failures abort cleanly, leaving the cluster intact.
+
 The script:
 
 1. `helm uninstall` every managed release in reverse install order
