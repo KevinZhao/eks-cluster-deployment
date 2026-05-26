@@ -115,7 +115,7 @@ ENI 1..16: NetworkCardIndex=1..16, DeviceIndex=0, InterfaceType=efa-only (EFA)
 ### 2.5 EFA Userspace 的完整性
 EKS GPU AMI 默认仅包含 kernel-side EFA 模块(驱动和 ibverbs 支持),不包含 `/opt/amazon/efa/` 下的 userspace 工具链(libfabric、openmpi、`fi_info` 诊断工具等)。对于依赖 host libfabric 的工作负载以及需要在节点级别做 EFA 诊断的场景,userspace 是必须的。
 
-脚本通过 `GPU_INSTALL_EFA_USERSPACE=true` 在节点 userdata 中调用 `efa_installer.sh`(不带 `--minimal`,以确保包含 libfabric),在实例启动阶段自动补齐完整 userspace。
+Terraform 模块通过 `gpu_install_efa_userspace = true`(默认开启)在节点 userdata 中调用 `efa_installer.sh`(不带 `--minimal`,以确保包含 libfabric),在实例启动阶段自动补齐完整 userspace。版本由 `gpu_efa_installer_version` 固定(默认 `1.48.0`),让节点 bringup 可重现。
 
 ### 2.6 EFA 与 Pod ENI 的关系澄清
 第一篇介绍过 VPC CNI 的 Pod ENI(branch ENI)机制,用于 Pod 级别安全组。EFA 多网卡使用的是 primary / secondary ENI(trunk ENI),与 Pod ENI 属于**不同的 ENI 子系统**,两者的额度独立计算、互不占用。GPU 节点即使启用了 `ENABLE_POD_ENI=true`,EFA 网卡数量也不会受影响。
@@ -143,13 +143,16 @@ Launch Template 把 GPU SG 与 EKS cluster security group 一起赋给所有 ENI
 ## 三、四种定价模式的 Launch Template 架构
 
 ### 3.1 四模式设计
-为覆盖生产环境中多样的成本与可用性需求,脚本提供 4 个互斥开关:
-- `DEPLOY_GPU_OD` — On-Demand
-- `DEPLOY_GPU_SPOT` — Spot Instance
-- `DEPLOY_GPU_ODCR` — On-Demand Capacity Reservation
-- `DEPLOY_GPU_CB` — Capacity Block for ML
+为覆盖生产环境中多样的成本与可用性需求,GPU 节点组支持 4 种**逐条声明**的定价模式,每个 `gpu_nodegroups` 条目通过 `purchase_option` 字段选一种:
 
-脚本在启动时校验互斥性(只允许一个开关启用),避免定价模式冲突。
+| `purchase_option` 值 | 含义 |
+|---|---|
+| `od` | On-Demand |
+| `spot` | Spot Instance |
+| `odcr` | On-Demand Capacity Reservation |
+| `cb` | Capacity Block for ML |
+
+模块在 plan 阶段对每条目独立校验:`odcr` / `cb` 必须给出 `capacity_reservation_id`;`placement_group = "cluster"` 要求只用一个 AZ。**与早期 Bash 脚本的"4 个互斥开关"不同,Terraform 列表允许同一集群内并存任意数量、任意定价模式组合的 GPU 节点组**,这是声明式入口的直接收益(详见 §3.3)。
 
 ### 3.2 LT 与 EKS 节点组层的协同
 
@@ -165,21 +168,37 @@ Launch Template 把 GPU SG 与 EKS cluster security group 一起赋给所有 ENI
 **关键点**：Spot 模式下 LT 不写入 `InstanceMarketOptions`，由 EKS 托管层的 `capacity-type=SPOT` 控制；Capacity Block 必须在 LT 中显式设置 `MarketType=capacity-block` 并嵌入 `InstanceType`，与 ODCR 的 LT 配置不同。
 
 ### 3.3 多 NG 共存
-生产中常常需要同一账户、同一集群内并存多个 GPU 节点组(例如不同 ODCR、不同 AZ、不同型号)。脚本提供两个机制:
-- `GPU_NG_SUFFIX`:手工指定后缀,避免 (gpu_type, purchase_option) 元组的命名冲突
-- `GPU_TARGET_AZ`:收敛到单 AZ,用于 ODCR(ODCR 本身是 AZ 级别的资源)或精细化调度
+生产中常常需要同一账户、同一集群内并存多个 GPU 节点组(例如不同 ODCR、不同 AZ、不同型号)。Terraform 模块 `eks-gpu-nodegroup` 把节点组定义为一个**显式列表** `gpu_nodegroups`,每个条目对应一个独立的 EKS Managed Node Group + Launch Template:
+
+| 字段 | 用途 |
+|---|---|
+| `gpu_type` | 实例类型,如 `p5.48xlarge` |
+| `purchase_option` | `od` / `spot` / `odcr` / `cb` 之一 |
+| `subnet_ids` | 收敛到指定 AZ(ODCR 本身是 AZ 级资源,Capacity Block 也建议单 AZ);省略默认全部私有子网 |
+| `suffix` | 区分相同 (gpu_type, purchase_option) 元组的多组节点(避免命名冲突) |
+| `capacity_reservation_id` | ODCR / Capacity Block 必填 |
+| `placement_group` | `none` / `cluster`(`cluster` 需配合单 AZ) |
 
 用法示例:
-```bash
-# 同型号 p5 在不同 AZ 各部署一组,通过 SUFFIX 区分
-GPU_TARGET_AZ=c GPU_NG_SUFFIX="-az3-p5" \
-  ./scripts/legacy/option_install_gpu_nodegroups.sh
 
-GPU_TARGET_AZ=d GPU_NG_SUFFIX="-az4-p5" \
-  ./scripts/legacy/option_install_gpu_nodegroups.sh
+```hcl
+gpu_nodegroups = [
+  # 同型号 p5 在不同 AZ 各部署一组,通过 subnet_ids 收敛 AZ + suffix 区分
+  { gpu_type = "p5.48xlarge", purchase_option = "od",
+    subnet_ids = ["subnet-az3-private"], suffix = "-az3" },
+
+  { gpu_type = "p5.48xlarge", purchase_option = "od",
+    subnet_ids = ["subnet-az4-private"], suffix = "-az4" },
+
+  # ODCR / Capacity Block 直接给 capacity_reservation_id
+  { gpu_type = "p6-b200.48xlarge", purchase_option = "odcr",
+    subnet_ids = ["subnet-az3-private"], suffix = "-1",
+    capacity_reservation_id = "cr-xxxxxxxx",
+    placement_group = "cluster" },
+]
 ```
 
-ODCR 和 Capacity Block 路径会根据预留 ID 自动加后缀,无需手动设置。
+声明式带来的好处:**新增一个节点组 = 列表多一个条目;下次 `terraform apply` 自动创建,不需要给脚本翻新一组环境变量**。ODCR 和 Capacity Block 路径会根据预留 ID 自动嵌入 Launch Template 与 EKS NG 的 `--capacity-type`,无需手动管理这层耦合。
 
 ---
 
@@ -195,10 +214,10 @@ ODCR 和 Capacity Block 路径会根据预留 ID 自动加后缀,无需手动设
 ### 4.2 两种方案对比:Placement Group vs 直接读 AWS 拓扑标签
 AWS 提供 `cluster` 策略的 Placement Group,目标是把实例放到"低延迟的网络分组"。但实测表明,在 p5 类型实例上,cluster PG 与"实例之间是否共享 bottom-layer network node"之间存在差异 —— **同一 PG 内的多个实例可能落在不同的 bottom-layer network node,只保证共享上一层**。对训练工作负载而言,这一保证并不足以带来显著的 allreduce 性能提升,而 PG 约束反而可能加剧 `InsufficientInstanceCapacity` 的发生概率。
 
-基于此,脚本默认采用**直接读 AWS 原生拓扑标签**的方案,不写任何自定义标签:
-1. 不使用 Placement Group(`GPU_PG_STRATEGY=none` 为默认)
+基于此,默认采用**直接读 AWS 原生拓扑标签**的方案,不写任何自定义标签:
+1. 不使用 Placement Group(`gpu_nodegroups` 条目的 `placement_group` 默认 `"none"`,只在确实需要 cluster PG 的场景显式开启)
 2. 节点 Ready 后,直接读取 cloud-controller-manager 注入的 `topology.k8s.aws/network-node-layer-N` 与 `topology.k8s.aws/zone-id`
-3. 按 NG 打印 topology inventory,按 bottom-layer network node 分组
+3. 用 `option_show_nodegroup_topology.sh` 按 NG 打印 topology inventory,按 bottom-layer network node 分组
 4. 由工作负载通过 `nodeAffinity` 直接绑定到 AWS 原生标签
 
 ### 4.3 拓扑数据来源：K8s 节点标签
@@ -250,12 +269,15 @@ affinity:
 
 如果 NG 跑的是 p5 / p5en(NetworkNodes 长度=3),把 `network-node-layer-4` 改为 `network-node-layer-3`。
 
-脚本提供 `option_show_nodegroup_topology.sh` 命令,按 NG 打印每个节点的 `layer-1..N` 链路并按 bottom-layer network node 分组,便于挑出含 N 个以上节点的同 bottom-layer 子集。
+运维工具 `./scripts/option_show_nodegroup_topology.sh` 按 NG 打印每个节点的 `layer-1..N` 链路并按 bottom-layer network node 分组,便于挑出含 N 个以上节点的同 bottom-layer 子集供工作负载 `nodeAffinity` 使用。这是一个**保留为 Bash 的运维工具**:它读取的是运行中节点的 K8s 标签,不属于基础设施声明,因此不进入 Terraform 模块。
 
-### 4.6 Gate 模式(可选)
-脚本通过 `GPU_TOPOLOGY_MODE` 控制 4 种行为：`inventory`（默认,只打印拓扑清单）、`gate`（校验后再决定）、`both`（校验 + 打印清单）、`off`（跳过）。
+### 4.6 拓扑严格性如何在 Terraform 路径下保证
+对于要求所有节点严格共享同一 bottom-layer network node 的严苛场景,Terraform 路径**不再像 Bash 那样在节点创建后做"校验失败则缩到 0"的命令式 gate**——这种 post-create assertion + 回滚动作天然不属于声明式模型。推荐做法是 apply 完成后用运维工具显式验证:
 
-对于要求所有节点严格共享同一 bottom-layer network node 的严苛场景,设置 `GPU_TOPOLOGY_MODE=gate` + `GPU_TOPOLOGY_GATE=strict` + `GPU_TOPOLOGY_GATE_LAYER=auto`(默认值,等于该 NG 实例类型的 bottom layer);节点创建后校验拓扑,不满足则将 NG 缩到 `minSize=0,maxSize=1,desiredSize=0`(EKS API 不接受 `maxSize=0`,因此保留 1 作为容量上限),实际节点数缩为 0,作为"软暂停"状态。如果需要在更高一层做校验,可以把 `GPU_TOPOLOGY_GATE_LAYER` 设为具体的层编号(如 `=2`,对应 AWS 自上而下的第 2 层)。
+1. `./scripts/option_show_nodegroup_topology.sh <ng_name>` —— 打印拓扑清单,人工或 CI 判断 bottom-layer 是否收敛
+2. `./scripts/option_verify_gpu_efa.sh <ng_name> --multi N` —— 真实跑一次跨节点 NCCL all-reduce,直接以带宽是否达标作为验收标准(详见 §8.7)
+
+如果当前 NG 节点未落在同一 bottom-layer,把它 scale 到 0、修改 `gpu_nodegroups` 列表中的 `subnet_ids` / `placement_group` 后重新 apply 即可。
 
 ---
 
@@ -271,9 +293,9 @@ affinity:
 - **无需付费**:容量包含在实例价格中
 - **不同 GPU 实例系列的配置差异较大**:p5 / p5en / p5e 全系标配多块 NVMe SSD;g6 系列通过 `d` 后缀变体(如 `g6d.48xlarge`)提供 Instance Store;部分 GPU 型号(如 g7e 某些规格)则不带 Instance Store。脚本通过 `disk_detection_lib.sh` 动态检测磁盘 model 字段,而非依赖实例名约定。
 
-### 5.3 脚本实现
-- `GPU_ENABLE_LOCAL_LVM=true` 时（默认开启），在 userdata 中扫描所有 Instance Store NVMe
-- 通过 LVM 把多块盘 stripe 成 `vg_local/lv_scratch`,挂载到 `/data`(挂载点、卷组名、逻辑卷名均可通过 `GPU_LOCAL_LVM_VG_NAME` / `GPU_LOCAL_LVM_LV_NAME` / `GPU_LOCAL_LVM_MOUNT` 覆盖)
+### 5.3 模块实现
+- `gpu_enable_local_lvm = true` 时（默认开启），在 userdata 中扫描所有 Instance Store NVMe
+- 通过 LVM 把多块盘 stripe 成 `vg_local/lv_scratch`,挂载到 `/data`(挂载点可通过 `gpu_local_lvm_mount` 覆盖,文件系统类型由 `gpu_local_lvm_fs` 控制,默认 `xfs`)
 - 使用 **systemd oneshot** 单元而非 `/etc/fstab`:每次启动都重新扫描、初始化、挂载,避免磁盘 UUID 变化导致 fstab 失效
 
 ### 5.4 与容器运行时 LVM 的严格隔离
@@ -418,14 +440,11 @@ Mountpoint for S3 基于对象存储,不提供完整 POSIX 文件系统语义。
 
 ### 8.1 两种 K8s GPU 栈部署模式:Standard vs Operator
 
-GPU 节点本身只是基础设施(driver + nvidia-container-toolkit + EFA + LVM),要让 K8s 真正"看到 GPU 并能调度",还需要在集群里装一套 K8s GPU stack(device plugin、Feature Discovery、监控、健康检查等)。脚本通过 `option_install_gpu_stack.sh` 提供**两种互斥模式**,使用者按需选择:
+GPU 节点本身只是基础设施(driver + nvidia-container-toolkit + EFA + LVM),要让 K8s 真正"看到 GPU 并能调度",还需要在集群里装一套 K8s GPU stack(device plugin、Feature Discovery、监控、健康检查等)。Terraform 模块 `eks-gpu-stack` 提供**两种互斥模式**,通过 `terraform.tfvars` 的两个变量声明:
 
-```bash
-# 默认模式
-GPU_STACK_MODE=standard ./scripts/legacy/option_install_gpu_stack.sh
-
-# 或切换到 NVIDIA GPU Operator 模式
-GPU_STACK_MODE=operator ./scripts/legacy/option_install_gpu_stack.sh
+```hcl
+install_gpu_stack = true
+gpu_stack_mode    = "standard"   # 或 "operator"
 ```
 
 #### Standard 模式(默认)
@@ -447,15 +466,15 @@ GPU_STACK_MODE=operator ./scripts/legacy/option_install_gpu_stack.sh
 
 #### Operator 模式(NVIDIA GPU Operator)
 
-由 NVIDIA 官方维护的 [GPU Operator](https://github.com/NVIDIA/gpu-operator) 一个 helm chart 全包,内部以 CRD + controller 方式拉起 device-plugin / GFD / NFD / dcgm-exporter / validator 等子组件。脚本里启用方式:
+由 NVIDIA 官方维护的 [GPU Operator](https://github.com/NVIDIA/gpu-operator) 一个 helm chart 全包,内部以 CRD + controller 方式拉起 device-plugin / GFD / NFD / dcgm-exporter / validator 等子组件。Terraform 中启用方式:
 
-```bash
-GPU_STACK_MODE=operator \
-GPU_OPERATOR_VERSION=v25.3.4 \
-  ./scripts/legacy/option_install_gpu_stack.sh
+```hcl
+install_gpu_stack    = true
+gpu_stack_mode       = "operator"
+gpu_operator_version = "v25.3.4"
 ```
 
-针对 EKS NVIDIA AMI 的关键 chart values(脚本默认值):
+针对 EKS NVIDIA AMI 的关键 chart values(模块默认值,可通过 `gpu_operator_driver_enabled` / `gpu_operator_toolkit_enabled` / `gpu_operator_mofed_enabled` / `gpu_operator_mig_strategy` 覆盖):
 ```
 driver.enabled = false      # AMI 已预装,不让 Operator 再装一遍 driver
 toolkit.enabled = false     # AMI 已预装 nvidia-container-toolkit
@@ -488,14 +507,16 @@ mig.strategy = none         # MIG 仅 A100/H100/B200 启用,默认关
 
 Standard 模式额外提供 node-problem-detector,把 GPU XID / 内核错误转成 K8s `NodeCondition` 与 `Event`,可被 K8s 原生告警链路(Alertmanager / EventRouter)直接消费。Operator 模式下,XID 监控由其自带的 nvidia-validator + dcgm-exporter 完成,event 化需要再叠加 NPD 或自定义 webhook。
 
-#### 两种模式互斥(脚本会 fail-fast)
+#### 两种模式互斥(模块会 fail-fast)
 
-下列资源在两种模式下会冲突,脚本检测到对侧的 helm release 或 DaemonSet 会直接报错并要求清理:
+下列资源在两种模式下会冲突,Terraform 模块在 plan/apply 阶段就会因变量约束或资源 count 控制阻止两边同时存在:
 - `nvidia.com/gpu` 资源 advertise(两边都注册同名 device plugin)
 - DCGM `:9400` 端口(两边都跑 dcgm-exporter)
 - GFD 节点标签(两边都打 `nvidia.com/gpu.product` 等)
 
-切换模式前必须 `helm uninstall` 对侧组件;脚本支持 `GPU_STACK_FORCE_MODE_SWITCH=true` 自动清理对侧 release。
+**切换模式的方式**:在 `terraform.tfvars` 中翻转 `gpu_stack_mode`(例如从 `"standard"` 改为 `"operator"`),`terraform apply` 会自动 destroy 旧模式下的 helm_release 与配套资源,再创建新模式下的对应资源,无需人工 `helm uninstall`。
+
+> **存量 Bash 部署的兼容入口**:`scripts/legacy/option_install_gpu_stack.sh` 仍在仓库内供已有 Bash-deployed 集群维护使用,接受 `GPU_STACK_MODE=standard|operator` + `GPU_STACK_FORCE_SWITCH=true` 实现同样的切换语义,但所有新部署应直接走 Terraform 路径。
 
 #### 选择建议
 
@@ -528,7 +549,7 @@ resources:
 NVIDIA Device Plugin 部署方式与关键开关:
 
 - **EKS-optimized AL2023 NVIDIA AMI 已预装** NVIDIA driver + NVIDIA Container Toolkit,nodeadm 已把 `nvidia` 注册为 containerd 默认 runtime——因此 device plugin 容器启动时由 nvidia-container-toolkit 自动注入 NVML/CUDA 库与设备节点,**不需要 hostPath 挂载、库 symlink 或自定义 RuntimeClass**。
-- **采用上游 Helm chart 部署**(参考 [Manage NVIDIA GPU devices on EKS](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)),以 helm release 形式运行;脚本默认 `NVIDIA_DEVICE_PLUGIN_VERSION=v0.19.1`(2026-04-23 最新稳定版),在 nvcr.io 不可达的区域(如 cn-*)通过 `NVIDIA_DEVICE_PLUGIN_REPO` 指向私有 ECR 镜像。
+- **采用上游 Helm chart 部署**(参考 [Manage NVIDIA GPU devices on EKS](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)),以 helm release 形式运行;Terraform 模块默认 `nvidia_device_plugin_version = "v0.19.1"`(2026-04-23 最新稳定版),在 nvcr.io 不可达的区域(如 cn-*)通过 `nvidia_device_plugin_repo` 指向私有 ECR 镜像。
 - **关键 chart values**:
   - `mofedEnabled=false` —— **关键**:从 v0.19.0 起 NVIDIA Device Plugin 默认会挂载所有 `/dev/infiniband/uverbs*` 设备到申请 GPU 的 Pod 内,这与 AWS EFA Device Plugin 管理 uverbs 设备的职责冲突,导致 Pod 取不到全部 EFA 网卡或 EFA Device Plugin 无法暴露资源。两类 plugin 共存时**必须显式关闭**该开关,详见 [AWS EKS 文档](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html)。
   - `gfd.enabled=true` —— 启用 GPU Feature Discovery sidecar,自动给节点贴 `nvidia.com/gpu.product`、`nvidia.com/gpu.memory`、`nvidia.com/cuda.driver-version` 等属性标签,便于工作负载按 GPU 型号选择节点。
@@ -621,7 +642,7 @@ kubectl get pods -n kube-system -l name=aws-efa-k8s-device-plugin
 ```
 
 ### 8.5 EFA 链路验证
-EFA 用户态工具(`fi_info`、`fi_pingpong`)由 host 上的 `/opt/amazon/efa/` 提供,**前提是节点 user-data 启用了 `GPU_INSTALL_EFA_USERSPACE=true`**(脚本默认开启)。
+EFA 用户态工具(`fi_info`、`fi_pingpong`)由 host 上的 `/opt/amazon/efa/` 提供,**前提是节点 user-data 启用了 `gpu_install_efa_userspace = true`**(Terraform 默认开启)。
 ```bash
 # 在节点上(通过 kubectl debug)
 fi_info -p efa          # 期望看到每张 EFA 网卡
@@ -669,10 +690,9 @@ kubectl logs fsx-test-1   # 期望:在 /data 写入 100MB 测试文件
 kubectl logs fsx-test-2   # 期望:从同一 PVC 读到 Pod 1 写的文件
 
 # Standard S3 + S3 Express One Zone 挂载
-source scripts/0_setup_env.sh   # 仍位于 scripts/ 顶层
+export AWS_REGION=us-east-1
 export S3_BUCKET_NAME=your-standard-bucket
 export S3_EXPRESS_BUCKET_NAME=your-bucket--use1-az1--x-s3
-export AWS_REGION=us-east-1
 envsubst < examples/s3-app.yaml | kubectl apply -f -
 kubectl logs s3-test          # Standard 桶
 kubectl logs s3-express-test  # S3 Express directory bucket
@@ -680,7 +700,7 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 
 ### 8.9 生产就绪清单
 - [ ] GPU 节点的 EFA 网卡数量与实例类型匹配
-- [ ] `GPU_INSTALL_EFA_USERSPACE=true` 已启用(若工作负载依赖 host libfabric)
+- [ ] `gpu_install_efa_userspace = true` 已启用(若工作负载依赖 host libfabric;Terraform 默认即为 true)
 - [ ] Instance Store 已 stripe 至 `/data`,且不承载容器运行时
 - [ ] 拓扑 label 已贴,工作负载已配置 `nodeAffinity`
 - [ ] **GPU 安全组同时包含 inbound + outbound 自引用规则**(EFA 跨节点通信硬性要求,见 §2.7)
@@ -712,10 +732,11 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 
 **下一步行动：**
 
-* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，先按照第一篇完成基础集群部署。
-* 在 VPC 内的堡垒机上执行 `./scripts/legacy/option_install_gpu_nodegroups.sh` 创建 GPU 节点组，按需选择 On-Demand / Spot / ODCR / Capacity Block 四种定价模式。
-* 通过 `./scripts/option_show_nodegroup_topology.sh` 打印每个 GPU 节点组的 AWS 原生拓扑清单(按 bottom-layer network node 分组),用于拓扑感知调度的决策。
-* 高聚合吞吐顺序读场景挂载 FSx for Lustre（PERSISTENT_2）；高 TPS 小对象 random read、低延迟写或 scale-out 模型分发等访问模式挂载 S3 Express One Zone + Mountpoint CSI Driver。
+* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，先按照第一篇完成基础集群部署（同样走 Terraform 路径）。
+* 在 `terraform.tfvars` 中设置 `install_gpu_nodegroups = true` 与 `gpu_nodegroups = [...]` 列表,按需为每个条目选择 `purchase_option`(`od` / `spot` / `odcr` / `cb`)、`subnet_ids` 收敛 AZ、`capacity_reservation_id` 与 `placement_group`,然后 `terraform apply` 一次性拉起全部 GPU 节点组。
+* 在 `terraform.tfvars` 中设置 `install_gpu_stack = true` + `gpu_stack_mode = "standard"`(或 `"operator"`)启用 K8s 端 GPU 栈;切换模式只需翻转变量后再次 apply,无需手动卸载对侧 helm release。
+* 通过 `./scripts/option_show_nodegroup_topology.sh` 打印每个 GPU 节点组的 AWS 原生拓扑清单(按 bottom-layer network node 分组),用 `./scripts/option_verify_gpu_efa.sh <ng> --multi N` 真实验证跨节点 NCCL + EFA 链路。这两个工具长期保留为 Bash,因为它们是面向运行中集群的运维动作而非基础设施声明。
+* 高聚合吞吐顺序读场景挂载 FSx for Lustre（PERSISTENT_2）；高 TPS 小对象 random read、低延迟写或 scale-out 模型分发等访问模式挂载 S3 Express One Zone + Mountpoint CSI Driver(在 `terraform.tfvars` 中开启 `install_fsx_csi` / `install_s3_csi` 即可)。
 
 **相关产品：**
 

@@ -11,7 +11,7 @@
 05 [五、Pod Identity：简化 IAM 权限管理](#section5)
 06 [六、容器运行时存储隔离：提升节点稳定性](#section6)
 07 [七、全场景存储支持：四种 CSI Driver](#section7)
-08 [八、自动化部署脚本：幂等、非交互、CI/CD 友好](#section8)
+08 [八、自动化部署：以 Terraform 为中心的声明式实现](#section8)
 09 [九、可选组件：GPU 节点组与 Karpenter](#section9)
 10 [十、运维与故障排查：部署后的快速验证](#section10)
 11 [十一、生产环境部署检查清单：上线前自检](#section11)
@@ -153,7 +153,7 @@ Amazon VPC CNI 是 EKS 的默认网络插件，为每个 Pod 分配 VPC 内的�
 此外，VPC CNI 自身原生支持 Kubernetes NetworkPolicy，本方案直接沿用，无需额外安装 Calico 等第三方组件，简化了集群的网络策略管理。
 
 ```
-VPC CNI 默认配置（scripts/legacy/4_install_eks_cluster.sh）
+VPC CNI 默认配置（terraform/modules/eks-cluster/main.tf）
 ├── AWS_VPC_K8S_CNI_EXTERNALSNAT=false    # 由 NAT Gateway 做 SNAT
 ├── WARM_ENI_TARGET=0                     # 不预热 ENI
 ├── WARM_IP_TARGET=5                      # 预热 5 个 IP
@@ -253,6 +253,8 @@ cloud-boothook 脚本会在 EKS bootstrap 之前执行，完成以下操作：�
 
 **Mountpoint for Amazon S3 CSI Driver** 允许 Pod 直接挂载 S3 存储桶；可选配合 **S3 Express One Zone** 这一低延迟、高 TPS 的 directory bucket 存储类(同 AZ 共置时首字节延迟约 4 ms,单桶默认 200K reads/s,可申请到 2M reads/s),适合**高 TPS 小对象 random read、低延迟写、跨 Pod 并发拉同一对象**(scale-out 模型分发)等访问模式;**常驻推理服务的模型加载、大文件顺序读、跨 AZ 共享、长期保留**仍以 Standard S3 桶为主。需要注意的是 Mountpoint for S3 并非完整 POSIX 文件系统，写入语义有限（不支持随机写、不支持重命名等），生产使用前请参考官方限制说明。
 
+四种 CSI Driver 的启用是 `terraform.tfvars` 中的独立 toggle：EBS 默认安装（无需配置），EFS / FSx / S3 通过 `install_efs_csi`、`install_fsx_csi`、`install_s3_csi` 三个布尔变量按需启用；S3 CSI 还需要在 `s3_csi_bucket_arns` 列出 Pod Identity 角色被允许访问的桶 ARN（同时支持 Standard S3 与 S3 Express directory bucket 的 ARN 格式）。
+
 FSx for Lustre 与 S3 Express One Zone 在 GPU 工作负载链路上的选型策略、性能优化与已知限制，将在**本系列第二篇**中展开。
 
 | CSI Driver | 存储类型 | 访问模式 | 典型场景 |
@@ -264,104 +266,175 @@ FSx for Lustre 与 S3 Express One Zone 在 GPU 工作负载链路上的选型策
 
 ---
 
-## 八、自动化部署脚本：幂等、非交互、CI/CD 友好
+## 八、自动化部署：以 Terraform 为中心的声明式实现
 
-将上述所有解决方案整合为一套**幂等、非交互、CI/CD 友好**的部署脚本。
+将上述所有解决方案整合为一套**声明式、幂等、CI/CD 友好**的部署方案。
 
-### 设计原则
+### 8.1 为什么是 Terraform 而非 Bash
 
-**幂等性**：所有脚本都可以安全地重复执行。如果资源已存在，脚本会自动跳过并输出相应日志，不会产生重复资源或错误。
+本方案早期完全由 Bash 脚本实现（`1_*` ~ `7_*` 顺序脚本 + `option_*` 可选模块）。在 GPU 节点组、Karpenter、CSI Driver 持续叠加之后，Bash 路径累计接近 **10000 行**，单是 `option_install_gpu_nodegroups.sh` 就有约 1900 行。同时我们发现：
 
-**非交互**：通过环境变量控制所有配置，无需人工确认。这使得脚本可以直接集成到 CI/CD 流水线中。
+- AWS API（EKS Access Entries、Pod Identity、capacity-block）每次演进都要在 Bash 里重新实现一遍 `aws ... describe → 判存在 → 创建/更新` 的状态机；
+- NVIDIA 栈（Device Plugin chart values、GPU Operator）的版本升级，需要分别在 Bash 与生产模板里同步；
+- "幂等"在 Bash 里只能靠 `set +e` + `if-exists` 模式逐资源手写，重复劳动且难以测试。
 
-**模块化**：核心脚本按顺序执行 1 → 3 → 4 → 6 → 7（其中 `2_validate_network_environment.sh` 和 `5_check_environment.sh` 为可选验证步骤）；可选脚本（`option_*` 前缀）可以根据需求独立运行。
+将同样的能力用 Terraform 重写之后，仅约 **3000 行**模块代码即可覆盖 90% 的功能面（VPC Endpoints、EKS 控制平面、系统节点组、核心 Addons、四种 CSI Driver、Karpenter、GPU 节点组、GPU K8s 栈）。声明式模型让"资源已存在则收敛、不存在则创建"成为 provider 的内建语义，不再是脚本的负担；版本升级只需修改一个 `*_version` 变量。
 
-**可追溯**：详细的日志输出，便于故障排查和合规审计。
+基于这两点，**Terraform 是当前主路径**。Bash 路径已迁入 `scripts/legacy/`，仅作存量集群的运维兜底。运维类工具（`option_inspect_eks.sh` 集群健康检查、`option_verify_gpu_efa.sh` NCCL 跨节点带宽测试、`option_show_nodegroup_topology.sh` 拓扑标签读取、`option_create_bastion.sh` 堡垒机生命周期）由于不是基础设施声明、而是**面向运行中集群的命令式动作**，仍以 Bash 长期保留在 `scripts/` 顶层。
 
-### 脚本结构
+### 8.2 模块结构
 
 ```
-scripts/
-├── 0_setup_env.sh                      # 环境变量加载（被其他脚本 source）
-├── 1_enable_vpc_dns.sh                 # VPC DNS 配置
-├── 2_validate_network_environment.sh   # 网络验证（可选）
-├── 3_create_vpc_endpoints.sh           # VPC Endpoints
-├── 4_install_eks_cluster.sh            # EKS 控制平面
-├── 5_check_environment.sh              # 本地环境检查（可选）
-├── 6_create_system_nodegroup.sh        # 系统节点组 (LVM)
-├── 7_install_eks_addon.sh              # 核心 Addons
-├── option_create_bastion.sh            # 堡垒机（可选）
-├── option_install_csi_drivers.sh       # CSI Drivers（可选）
-├── option_install_karpenter.sh         # Karpenter（可选）
-├── option_install_gpu_nodegroups.sh    # GPU 节点组（可选）
-├── option_show_nodegroup_topology.sh   # 打印节点组的 AWS 原生拓扑清单（可选）
-└── *_lib.sh / pod_identity_helpers.sh  # 共享函数库（磁盘检测、架构识别、拓扑读取、Pod Identity）
+terraform/
+├── main.tf / variables.tf / outputs.tf / providers.tf / versions.tf
+├── terraform.tfvars.example                # 复制为 terraform.tfvars 后修改
+├── bootstrap/                              # S3 + DynamoDB 远端 state（每账号一次）
+├── bootstrap-vpc/                          # 独立 3-AZ VPC（用于演练或全新环境）
+├── bootstrap-bastion/                      # SSM-only 堡垒机（私有集群专用）
+├── modules/
+│   ├── vpc-endpoints/                      # 14 个 VPC Endpoints
+│   ├── eks-cluster/                        # 控制平面 + 基础 Addons + Access Entries
+│   ├── eks-system-nodegroup/               # LVM 双卷系统节点组
+│   ├── eks-addons/                         # CoreDNS / Metrics / CA / ALB Controller
+│   ├── eks-csi-drivers/                    # EBS / EFS / FSx / S3 四种 CSI（按 toggle 启用）
+│   ├── eks-karpenter/                      # Karpenter + EC2NodeClass / NodePool
+│   ├── eks-gpu-nodegroup/                  # GPU 节点组（多张 EFA NIC 拓扑见第二篇）
+│   └── eks-gpu-stack/                      # K8s 端 GPU 栈（standard / operator 两种模式）
+└── scripts/safe-destroy.sh                 # helm uninstall → terraform destroy 的兜底脚本
 ```
 
-### 部署流程
+每个模块对外只暴露**业务级开关**：`install_efs_csi`、`install_fsx_csi`、`install_s3_csi`、`install_karpenter`、`install_gpu_nodegroups`、`install_gpu_stack` / `gpu_stack_mode` 等。打开开关即声明该能力存在；关闭后 `terraform apply` 会自动回收对应资源。
 
-整个部署过程分为四个阶段，总耗时约 25-35 分钟：
+### 8.3 部署流程
 
-**网络准备阶段**（约 5 分钟）：启用 VPC DNS 支持，创建 14 个 VPC Endpoints（13 个 Interface + 1 个 S3 Gateway），为私有集群建立与 AWS 服务的连通性。
+整个部署过程对 Terraform 来说是一次 `apply`，内部按模块依赖图自动顺序化执行，总耗时约 **25–35 分钟**：
 
-**控制平面阶段**（约 8-10 分钟）：创建 EKS 集群，配置私有 API Endpoint，这是整个部署中耗时最长的步骤，因为需要等待 AWS 完成控制平面的配置。
+| 阶段 | 内容 | 耗时 |
+|---|---|---|
+| 网络 | VPC DNS 校验 + 14 个 VPC Endpoints（13 Interface + 1 S3 Gateway） | ~2 分钟 |
+| 控制平面 | 私有 API Endpoint + 基础 Addons（vpc-cni / kube-proxy / pod-identity-agent） | 8-10 分钟 |
+| 系统节点组 | 3 节点 LVM 双卷管理节点组 | 8-12 分钟 |
+| 核心组件 | CoreDNS / Metrics Server / Cluster Autoscaler / ALB Controller | 5-8 分钟 |
+| 可选 | EBS（默认）/ EFS / FSx / S3 CSI、Karpenter、GPU 节点组 | 按需 |
 
-**系统节点阶段**（约 8-12 分钟）：创建系统节点组，包含 3 个节点，每个节点都配置了 LVM 存储架构。系统节点用于运行集群基础设施组件。
+### 8.4 快速开始
 
-**核心组件阶段**（约 5-8 分钟）：部署 CoreDNS、Metrics Server、Cluster Autoscaler、AWS Load Balancer Controller 等核心组件（EBS/EFS/FSx/S3 等 CSI Driver 通过独立的 `option_install_csi_drivers.sh` 按需安装）。
-
-### 快速开始
-
-由于集群采用私有 API Endpoint，所有 `kubectl` 与脚本执行均需在 VPC 内部完成。典型流程如下：
+私有集群下 API Endpoint 仅 VPC 内可达，因此 `terraform apply` 必须在 VPC 内部主机（堡垒机或 DX 接入的运维主机）上执行。完整流程是三个独立 stack 串行：
 
 ```bash
-# 0. 在本地（或跳板环境）准备环境变量与堡垒机
-cp .env.example .env && vim .env
-./scripts/option_create_bastion.sh
+# —— 在本地或运维主机上执行 ——
 
-# 1. 通过 AWS Systems Manager 登录堡垒机（无需 SSH/公网）
+# 0. 一次性：bootstrap state 后端（S3 + DynamoDB）
+terraform -chdir=terraform/bootstrap apply \
+  -var="bucket_name=my-eks-tfstate" -var="region=us-west-2"
+
+# 1. 独立 VPC（如果使用现成 VPC 可跳过此步）
+terraform -chdir=terraform/bootstrap-vpc apply
+
+# 2. 创建 SSM-only 堡垒机
+terraform -chdir=terraform/bootstrap-bastion apply \
+  -var="vpc_id=<step1 输出>" \
+  -var="subnet_id=<某个 private subnet>"
+
+# 3. 通过 AWS Systems Manager 登录堡垒机（无需 SSH 端口、无公网暴露）
 aws ssm start-session --target <bastion-instance-id>
 
-# —— 以下步骤均在堡垒机上执行 ——
+# —— 以下步骤在堡垒机上执行 ——
 
-# 2. 核心部署（脚本编号 1–7，按顺序）
-./scripts/legacy/1_enable_vpc_dns.sh
-./scripts/legacy/3_create_vpc_endpoints.sh
-./scripts/legacy/4_install_eks_cluster.sh
-./scripts/legacy/6_create_system_nodegroup.sh
-./scripts/legacy/7_install_eks_addon.sh
+# 4. 配置变量
+git clone <repo> && cd terraform
+cp terraform.tfvars.example terraform.tfvars && vim terraform.tfvars
 
-# 3. 按需安装可选组件
-INSTALL_DRIVERS=efs ./scripts/legacy/option_install_csi_drivers.sh   # EFS 共享存储
-./scripts/legacy/option_install_karpenter.sh                          # Karpenter 自动扩缩容
-./scripts/legacy/option_install_gpu_nodegroups.sh                     # GPU 节点组
+# 5. Init + Apply（含集群 + 系统节点组 + 核心 Addons + 可选模块）
+terraform init \
+  -backend-config="bucket=my-eks-tfstate" \
+  -backend-config="key=eks-cluster-deployment/prod/terraform.tfstate" \
+  -backend-config="region=us-west-2" \
+  -backend-config="dynamodb_table=my-eks-tfstate-lock"
+
+terraform apply
+
+# 6. Apply 完成后跑健康检查
+./scripts/option_inspect_eks.sh
 ```
 
-对于 CI/CD 场景，可以通过环境变量一次性拉起完整集群，无需任何人工确认：
+`terraform.tfvars` 的核心字段示例：
+
+```hcl
+cluster_name       = "prod-eks"
+aws_region         = "us-west-2"
+vpc_id             = "vpc-xxxxxxxx"
+private_subnet_ids = ["subnet-aaa", "subnet-bbb", "subnet-ccc"]
+public_subnet_ids  = ["subnet-ppp", "subnet-qqq", "subnet-rrr"]
+
+cluster_mode       = "private"
+vpc_endpoints_mode = "full"
+
+# 跨 VPC / 同 VPC 的 API 入口放行
+extra_api_ingress_security_group_ids = ["sg-bastion"]   # 同 VPC 的堡垒机
+# extra_api_ingress_cidrs            = ["10.100.0.0/16"]  # DX / VPN
+
+# CSI / Karpenter / GPU 按需启用
+install_efs_csi    = true
+install_fsx_csi    = false
+install_s3_csi     = false
+install_karpenter  = true
+```
+
+### 8.5 CI/CD 集成
+
+由于 Terraform 已经是声明式与非交互的，CI/CD 接入即"在具备 VPC 访问能力的 runner 上跑一遍 `apply`"，不再需要环境变量魔法：
 
 ```bash
-# 在堡垒机（或具备 VPC 访问权限的 CI runner）上运行
-export CLUSTER_NAME=prod-eks
-export INSTALL_DRIVERS=efs,s3
-export S3_BUCKET_ARNS='arn:aws:s3:::my-bucket'
-
-./scripts/legacy/1_enable_vpc_dns.sh
-./scripts/legacy/3_create_vpc_endpoints.sh
-./scripts/legacy/4_install_eks_cluster.sh
-./scripts/legacy/6_create_system_nodegroup.sh
-./scripts/legacy/7_install_eks_addon.sh
-./scripts/legacy/option_install_csi_drivers.sh
+# 适用于堡垒机、DX 接入的 CI runner，或 VPC 内的 self-hosted GitHub Action
+terraform -chdir=terraform init -backend-config=... -input=false
+terraform -chdir=terraform plan  -out=tfplan -input=false
+terraform -chdir=terraform apply -input=false -auto-approve tfplan
+./scripts/option_inspect_eks.sh
 ```
+
+公有集群（仅适用于开发/演示）可以省掉堡垒机：在 `terraform.tfvars` 设置 `cluster_mode = "public"` + `public_access_cidrs = ["<你的出口 IP>/32"]`，直接从开发机 apply。
+
+> **存量 Bash 部署如何过渡**：已经用 `scripts/legacy/1_*` ~ `7_*` 部署起来的集群无法干净地 `terraform import`（`helm_release` 不支持 import；aws-auth ConfigMap 与 Access Entries 的差异需要手动协调）。生产环境推荐**双轨迁移**：用 Terraform 起新集群、把工作负载从老集群 drain 过来、再回收老集群。详见 `docs/MIGRATION_FROM_BASH.md`。
 
 ---
 
 ## 九、可选组件：GPU 节点组与 Karpenter
 
-本方案的核心脚本(1–7)完成后即得到一套通用的生产级 EKS 集群。在此之上，可按需叠加两类上层能力：
+完成核心 `terraform apply` 后即得到一套通用的生产级 EKS 集群。在此之上，可按需叠加两类上层能力，全部以同一份 `terraform.tfvars` 中的开关声明：
 
-**Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。通过 `./scripts/legacy/option_install_karpenter.sh` 一键部署。
+**Karpenter 自动扩缩容**：相较传统 Cluster Autoscaler，Karpenter 直接与 EC2 Fleet API 交互，分钟级完成节点扩容，并原生支持 Spot 中断处理与混合实例池。适用于工作负载弹性大、希望精细控制成本的场景。在 `terraform.tfvars` 中设置：
 
-**GPU 节点组**：通过 `./scripts/legacy/option_install_gpu_nodegroups.sh` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式（由 `DEPLOY_GPU_OD / DEPLOY_GPU_SPOT / DEPLOY_GPU_ODCR / DEPLOY_GPU_CB` 独立开关控制）。脚本根据实例类型自动配置 EFA 多网卡（p5/p5e 32 张 EFA，p5en 16 张 EFA，p6-b200 8 张 EFA，p6-b300 16 张 EFA + 1 张 ENA-only 共 17 张 NIC，g7e 4 张 EFA），并通过 `option_install_gpu_stack.sh` 安装 K8s GPU 栈。**K8s GPU 栈提供两种互斥的部署模式**：`GPU_STACK_MODE=standard`（默认，逐组件 Helm 部署 NVIDIA Device Plugin + AWS EFA Device Plugin + DCGM Exporter + Node Problem Detector + GPU Health Check）或 `GPU_STACK_MODE=operator`（NVIDIA GPU Operator 一站式部署），两种模式都内置 DCGM Exporter 提供 Pod 级 GPU 指标（利用率 / 显存 / 温度 / 功耗 / ECC / XID）以 Prometheus `:9400/metrics` 暴露，便于 GPU 集群的统一监控与告警。两种模式的取舍详见**本系列第二篇**。
+```hcl
+install_karpenter        = true
+karpenter_ssh_public_key = "ssh-rsa AAAA..."   # 可选，用于注入 Karpenter 节点
+```
+
+`terraform apply` 后 Karpenter Controller、关联的 Pod Identity 角色、`EC2NodeClass`、Graviton/x86 两套 `NodePool` 模板（位于 `terraform/assets/karpenter/`）会一并部署。
+
+**GPU 节点组**：通过 Terraform 模块 `eks-gpu-nodegroup` 与 `eks-gpu-stack` 部署，支持 P5 / P5en / P6 / G7e 四个系列，提供 On-Demand / Spot / ODCR / Capacity Block 四种定价模式。GPU 节点组以**列表声明**的方式定义，每个条目对应一个独立的 EKS Managed Node Group + Launch Template：
+
+```hcl
+install_gpu_nodegroups = true
+
+gpu_nodegroups = [
+  { gpu_type = "p5.48xlarge",      purchase_option = "od" },
+
+  { gpu_type = "p5en.48xlarge",    purchase_option = "spot",
+    subnet_ids = ["subnet-cccccccc"] },
+
+  { gpu_type = "p6-b200.48xlarge", purchase_option = "odcr",
+    suffix = "-1", subnet_ids = ["subnet-cccccccc"],
+    capacity_reservation_id = "cr-xxxxxxxx",
+    placement_group = "cluster" },
+
+  { gpu_type = "p5.48xlarge",      purchase_option = "cb",
+    subnet_ids = ["subnet-cccccccc"],
+    capacity_reservation_id = "cr-yyyyyyyy" },
+]
+```
+
+模块根据实例类型自动确定 EFA 多网卡数量（p5 32 张 EFA，p5en 16 张 EFA，p6-b200 8 张 EFA，p6-b300 16 张 EFA + 1 张 ENA-only 共 17 张 NIC，g7e 最多 4 张 EFA），并写入 Launch Template。K8s 端 GPU 栈通过 `install_gpu_stack = true` + `gpu_stack_mode = "standard" | "operator"` 启用，两种模式互斥，切换 mode 后 `terraform apply` 会自动清理对侧 helm release。两种模式都内置 DCGM Exporter 在 Prometheus `:9400/metrics` 暴露 Pod 级 GPU 指标（利用率 / 显存 / 温度 / 功耗 / ECC / XID），具体取舍详见**本系列第二篇**。
 
 > GPU 工作负载涉及**计算（EFA 多网卡拓扑、驱动与 Device Plugin）**、**网络（基于 AWS 原生 `topology.k8s.aws/network-node-layer-N` 的邻近性调度）**、**存储（FSx for Lustre 提供高聚合吞吐；S3 Express One Zone 作为低延迟、高 TPS 的对象存储选项按访问模式选用）** 三层架构，任何一层的配置不当都会显著影响 GPU 工作负载性能。**本系列第二篇**将专门展开这三层的设计决策与最佳实践。
 
@@ -438,17 +511,18 @@ kubectl get storageclass
 
 针对 **GPU 工作负载**，通过 Managed Node Groups 提供 P5、P5en、P6、G7e 等最新 GPU 实例的支持，并集成 EFA 多网卡网络与四种定价模式。更深入的 GPU 架构实践（多网卡拓扑、邻近性调度、按访问模式选型的高性能存储）将在本系列第二篇中展开。
 
-所有这些方案都已沉淀为标准化、自动化的部署脚本，实现约 30 分钟完成生产级集群部署，幂等设计支持重复执行，非交互模式便于 CI/CD 集成。
+所有这些方案都沉淀为 Terraform 模块（`terraform/modules/`，约 3000 行），声明式入口让"可重复执行"成为 provider 的内建语义；约 30 分钟完成生产级集群部署，apply 完成后再用 `option_inspect_eks.sh` 跑一次 9 项健康检查即可放心交付。
 
-希望这套方案能够帮助更多企业客户快速、安全地部署生产级 EKS 集群。完整的部署脚本和文档已在 GitHub 开源，欢迎试用和反馈。
+希望这套方案能够帮助更多企业客户快速、安全地部署生产级 EKS 集群。完整的 Terraform 模块与运维脚本已在 GitHub 开源，欢迎试用和反馈。
 
 ---
 
 **下一步行动：**
 
-* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，按照 README 配置 `.env`。
-* 在 VPC 内的堡垒机上依次执行编号脚本 1 → 3 → 4 → 6 → 7，约 30 分钟即可获得一套生产级 EKS 集群。
-* 按需叠加 `option_install_csi_drivers.sh`、`option_install_karpenter.sh`、`option_install_gpu_nodegroups.sh` 等可选模块。
+* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，复制 `terraform/terraform.tfvars.example` 为 `terraform.tfvars` 并填入 `cluster_name` / `vpc_id` / `private_subnet_ids` 等核心字段。
+* 一次性 bootstrap 远端 state 后端（`terraform/bootstrap`）；如需独立 VPC 与堡垒机，分别 apply `bootstrap-vpc/` 与 `bootstrap-bastion/`。
+* 在 VPC 内主机上 `terraform -chdir=terraform apply`，约 30 分钟即可获得一套生产级 EKS 集群；apply 完成后跑 `./scripts/option_inspect_eks.sh` 做 9 项健康检查。
+* 按需在 `terraform.tfvars` 中开启 `install_efs_csi` / `install_fsx_csi` / `install_s3_csi` / `install_karpenter` / `install_gpu_nodegroups` 等开关，重新 apply 即可叠加能力。
 * 关注本系列第二篇《EKS 上的 GPU 工作负载：节点、网络与高性能存储的架构实践》，深入计算 / 网络 / 存储三层架构。
 
 **相关产品：**
