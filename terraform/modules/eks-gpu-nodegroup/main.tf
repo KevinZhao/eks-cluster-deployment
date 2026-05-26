@@ -237,6 +237,7 @@ locals {
     local_lvm_fs                 = var.local_lvm_fs
     local_lvm_stripe_kb          = var.local_lvm_stripe_kb
     install_efa_userspace        = var.install_efa_userspace
+    efa_installer_version        = var.efa_installer_version
     ebs_data_disk_detect_snippet = file("${path.module}/templates/detect-ebs-disk.sh")
   })
 }

@@ -250,10 +250,14 @@ systemctl restart kubelet
 # ============================================================
 %{ if install_efa_userspace }
 if [ ! -x /opt/amazon/efa/bin/fi_info ]; then
-  echo "=== Installing EFA userspace ==="
+  # Pin a specific installer version (e.g. "1.48.0") so node bringup is
+  # reproducible. Empty efa_installer_version falls back to "latest" —
+  # convenient for tracking but breaks reproducibility across reboots.
+  EFA_INSTALLER_TARBALL="aws-efa-installer-${ efa_installer_version != "" ? efa_installer_version : "latest" }.tar.gz"
+  echo "=== Installing EFA userspace ($EFA_INSTALLER_TARBALL) ==="
   ( cd /tmp && \
-    curl -fsSLO https://efa-installer.amazonaws.com/aws-efa-installer-latest.tar.gz && \
-    tar -xf aws-efa-installer-latest.tar.gz && \
+    curl -fsSLO "https://efa-installer.amazonaws.com/$EFA_INSTALLER_TARBALL" && \
+    tar -xf "$EFA_INSTALLER_TARBALL" && \
     cd aws-efa-installer && \
     ./efa_installer.sh -y --skip-kmod 2>&1 | tail -30 ) || \
     echo "WARN: efa_installer failed; containers with their own libfabric will still work"

@@ -42,7 +42,7 @@ variable "install_efa_device_plugin" {
 
 variable "efa_device_plugin_version" {
   type    = string
-  default = "v0.5.18"
+  default = "v0.5.19"
 }
 
 variable "efa_device_plugin_image" {

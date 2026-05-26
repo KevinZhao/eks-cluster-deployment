@@ -156,6 +156,7 @@ module "eks_gpu_nodegroup" {
   root_volume_size      = var.gpu_node_root_volume_size
   data_volume_size      = var.gpu_node_data_volume_size
   install_efa_userspace = var.gpu_install_efa_userspace
+  efa_installer_version = var.gpu_efa_installer_version
   enable_local_lvm      = var.gpu_enable_local_lvm
   local_lvm_mount       = var.gpu_local_lvm_mount
   local_lvm_fs          = var.gpu_local_lvm_fs

@@ -95,3 +95,22 @@ aws ssm get-parameter \
    `nvidia-smi -L`, expect a list of GPUs
 5. Update this file with the new row
 6. Roll forward production
+
+## EFA component versions
+
+Three independent EFA artifacts. Two are pinned in this repo; one rides
+with the AMI. Bumping any of them is independent of the AMI matrix above.
+
+| Component | Source | Pin location | Default |
+|---|---|---|---|
+| EFA kernel module + rdma-core | EKS GPU AMI (preinstalled) | `gpu_ami_release_version` | follows AMI |
+| EFA userspace (libfabric-aws + openmpi5-aws + `fi_info`) | `https://efa-installer.amazonaws.com/aws-efa-installer-<v>.tar.gz` fetched in node userdata | `gpu_efa_installer_version` (Terraform) / `GPU_EFA_INSTALLER_VERSION` (bash) | `1.48.0` |
+| `aws-efa-k8s-device-plugin` DaemonSet | `602401143452.dkr.ecr.<region>.amazonaws.com/eks/aws-efa-k8s-device-plugin` | `efa_device_plugin_version` (Terraform) / `EFA_DEVICE_PLUGIN_VERSION` (bash) | `v0.5.19` |
+
+Userspace bump: bump the version, `terraform apply` rolls launch
+templates, replace nodes (or wait for next scaling event). Verify with
+`/opt/amazon/efa/bin/fi_info --version` on the node.
+
+Plugin bump: bump the version, `terraform apply` (or rerun
+`option_install_gpu_stack.sh`) rolls the DaemonSet. Verify with
+`kubectl -n kube-system get ds aws-efa-k8s-device-plugin-daemonset -o jsonpath='{.spec.template.spec.containers[0].image}'`.

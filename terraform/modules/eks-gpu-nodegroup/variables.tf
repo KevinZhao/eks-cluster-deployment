@@ -87,6 +87,12 @@ variable "install_efa_userspace" {
   default = true
 }
 
+variable "efa_installer_version" {
+  type        = string
+  description = "aws-efa-installer tarball version pinned in node userdata, e.g. \"1.48.0\". The EKS GPU AMI ships only kernel-side EFA; userspace (libfabric-aws + openmpi5-aws) is fetched from https://efa-installer.amazonaws.com at first boot. Pinning a version makes node bringup reproducible across time. Empty = use \"latest\" (not recommended for production)."
+  default     = "1.48.0"
+}
+
 variable "enable_local_lvm" {
   type    = bool
   default = true

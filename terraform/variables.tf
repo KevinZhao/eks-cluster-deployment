@@ -307,6 +307,12 @@ variable "gpu_install_efa_userspace" {
   default     = true
 }
 
+variable "gpu_efa_installer_version" {
+  type        = string
+  description = "aws-efa-installer tarball version pinned in node userdata, e.g. \"1.48.0\". Pinning makes node bringup reproducible. Empty = follow \"latest\" (rolls forward, breaks reproducibility)."
+  default     = "1.48.0"
+}
+
 variable "gpu_enable_local_lvm" {
   type        = bool
   description = "Stripe Instance Store NVMe disks into a local LVM volume mounted at gpu_local_lvm_mount."
@@ -356,7 +362,7 @@ variable "install_efa_device_plugin" {
 
 variable "efa_device_plugin_version" {
   type    = string
-  default = "v0.5.18"
+  default = "v0.5.19"
 }
 
 variable "efa_device_plugin_image" {
