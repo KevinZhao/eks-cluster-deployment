@@ -47,8 +47,9 @@ variable "region" {
 }
 
 variable "name" {
-  type    = string
-  default = "eks-test"
+  type        = string
+  description = "Resource name prefix used in tags (Name=<prefix>-vpc, <prefix>-private-<az>, etc.). Should match the cluster_name in the main stack's terraform.tfvars and the var.name passed to bootstrap-bastion — the stacks are wired by output IDs not tags, so a mismatch is only cosmetic, but aligning them keeps the AWS console readable. Default 'eks-test' is a placeholder; pass -var name=<your-cluster-name> to align."
+  default     = "eks-test"
 }
 
 variable "vpc_cidr" {
