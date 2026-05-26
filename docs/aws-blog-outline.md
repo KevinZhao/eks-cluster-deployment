@@ -1,22 +1,22 @@
 # 企业级 EKS 集群生产环境配置最佳实践
 
-**摘要：** 本文分享 AWS 解决方案架构师团队在帮助企业客户将工作负载迁移到 Amazon EKS 过程中总结的一套生产环境部署最佳实践。文章从企业客户面临的五类共性挑战出发，介绍如何在约 30 分钟内部署一个满足企业级安全合规要求的生产就绪 EKS 集群，覆盖私有 API Endpoint、VPC Endpoints 全连通、Pod Identity 简化 IAM、容器运行时存储隔离、四类 CSI Driver 全场景存储等关键设计决策，并提供完整的幂等、非交互、CI/CD 友好的自动化部署脚本。
+**摘要：** 本文分享 AWS 解决方案架构师团队在帮助企业客户将工作负载迁移到 Amazon EKS 过程中总结的一套生产环境部署最佳实践。文章从企业客户面临的五类共性挑战出发，介绍如何在约 30 分钟内部署一个满足企业级安全合规要求的生产就绪 EKS 集群，覆盖私有 API Endpoint、VPC Endpoints 全连通、Pod Identity 简化 IAM、容器运行时存储隔离、四类 CSI Driver 全场景存储等关键设计决策，并提供完整的声明式、CI/CD 友好的 Terraform 模块实现。
 
 **目录**
 
-01 [一、企业客户面临的挑战：五类共性问题](#section1)
-02 [二、整体架构概览：私有集群的全景视图](#section2)
-03 [三、私有 API Endpoint：纵深防御的网络架构](#section3)
-04 [四、VPC CNI 网络优化：精细化 IP 预热](#section4)
-05 [五、Pod Identity：简化 IAM 权限管理](#section5)
-06 [六、容器运行时存储隔离：提升节点稳定性](#section6)
-07 [七、全场景存储支持：四种 CSI Driver](#section7)
-08 [八、自动化部署：以 Terraform 为中心的声明式实现](#section8)
-09 [九、可选组件：GPU 节点组与 Karpenter](#section9)
-10 [十、运维与故障排查：部署后的快速验证](#section10)
-11 [十一、生产环境部署检查清单：上线前自检](#section11)
-12 [十二、成本优化建议：在安全与预算之间取得平衡](#section12)
-13 [十三、总结：一套可复制的企业级 EKS 部署方案](#section13)
+- [一、企业客户面临的挑战：五类共性问题](#section1)
+- [二、整体架构概览：私有集群的全景视图](#section2)
+- [三、私有 API Endpoint：纵深防御的网络架构](#section3)
+- [四、VPC CNI 网络优化：精细化 IP 预热](#section4)
+- [五、Pod Identity：简化 IAM 权限管理](#section5)
+- [六、容器运行时存储隔离：提升节点稳定性](#section6)
+- [七、全场景存储支持：四种 CSI Driver](#section7)
+- [八、自动化部署：以 Terraform 为中心的声明式实现](#section8)
+- [九、可选组件：GPU 节点组与 Karpenter](#section9)
+- [十、运维与故障排查：部署后的快速验证](#section10)
+- [十一、生产环境部署检查清单：上线前自检](#section11)
+- [十二、成本优化建议：在安全与预算之间取得平衡](#section12)
+- [十三、总结：一套可复制的企业级 EKS 部署方案](#section13)
 
 ---
 
@@ -34,7 +34,7 @@
 
 **部署效率方面**，手动部署一个生产级集群往往需要数小时甚至数天，且容易出现配置漂移的问题，难以在多个环境间复现。
 
-本文将逐一介绍这些问题的解决方案，并最终将所有方案沉淀为标准化的自动化部署脚本。
+本文将逐一介绍这些问题的解决方案，并最终将所有方案沉淀为一套声明式的 Terraform 模块。
 
 ## 二、整体架构概览：私有集群的全景视图
 
@@ -125,7 +125,7 @@ EKS 集群的 API Server 访问控制有两种主流方案：
 
 采用私有 API Endpoint 需要配合以下组件：
 
-**VPC Endpoints**：由于集群位于私有网络，节点和 Pod 无法通过 NAT Gateway 访问 AWS 服务。本方案在 `VPC_ENDPOINTS_MODE=full`（私有集群默认）下共创建 **14 个 VPC Endpoints**：13 个 Interface Endpoint（EKS、EKS-Auth、STS、ECR.api、ECR.dkr、EC2、EFS、CloudWatch Logs、Autoscaling、ELB、SSM、SSMMessages、EC2Messages）+ 1 个 S3 Gateway Endpoint。其中 EBS CSI 复用 `ec2` endpoint，FSx 的连通性通过子网与安全组打通（无独立 PrivateLink Endpoint）。公有集群可切换为 `minimal` 模式，仅创建 4 个必需 Interface Endpoint（EKS、EKS-Auth、STS、EC2）+ S3 Gateway，其他流量走 NAT Gateway。这不仅解决了连通性问题，还能降低数据传输成本。
+**VPC Endpoints**：由于集群位于私有网络，节点和 Pod 无法通过 NAT Gateway 访问 AWS 服务。本方案在 `vpc_endpoints_mode = "full"`（私有集群默认）下共创建 **14 个 VPC Endpoints**：13 个 Interface Endpoint（EKS、EKS-Auth、STS、ECR.api、ECR.dkr、EC2、EFS、CloudWatch Logs、Autoscaling、ELB、SSM、SSMMessages、EC2Messages）+ 1 个 S3 Gateway Endpoint。其中 EBS CSI 复用 `ec2` endpoint，FSx 的连通性通过子网与安全组打通（无独立 PrivateLink Endpoint）。公有集群可切换为 `"minimal"` 模式，仅创建 4 个必需 Interface Endpoint（EKS、EKS-Auth、STS、EC2）+ S3 Gateway，其他流量走 NAT Gateway。这不仅解决了连通性问题，还能降低数据传输成本。
 
 **堡垒机访问模式**：运维人员通过 AWS Systems Manager Session Manager 连接到堡垒机，再从堡垒机访问 EKS API。这种方式无需开放 SSH 端口，所有操作都有完整的审计日志。
 
@@ -189,21 +189,38 @@ POD_SECURITY_GROUP_ENFORCING_MODE=standard
 | 管理复杂度 | 高（每集群一个 OIDC） | 低（AWS 托管） |
 | 跨账户支持 | 配置复杂 | 原生支持 |
 
-使用 Pod Identity 只需三步：
+在 Terraform 中,这三步对应三个 resource:
 
-```bash
-# 创建 Pod Identity 角色（信任策略由 AWS 托管）
-create_pod_identity_role "MyServiceRole"
+```hcl
+# 1. 创建 Pod Identity 角色（信任策略指向 EKS Pod Identity 服务）
+resource "aws_iam_role" "my_service" {
+  name               = "MyServiceRole"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+}
 
-# 附加所需的 IAM 策略
-attach_managed_policy "MyServiceRole" "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+# 2. 附加所需的 IAM 策略
+resource "aws_iam_role_policy_attachment" "my_service_s3" {
+  role       = aws_iam_role.my_service.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+}
 
-# 将角色关联到 Kubernetes ServiceAccount
-# 第三个参数是 IAM Role 名称，函数内部会自动拼接为完整 ARN
-create_pod_identity_association "my-namespace" "my-service-account" "MyServiceRole"
+# 3. 将角色关联到 Kubernetes ServiceAccount
+resource "aws_eks_pod_identity_association" "my_service" {
+  cluster_name    = var.cluster_name
+  namespace       = "my-namespace"
+  service_account = "my-service-account"
+  role_arn        = aws_iam_role.my_service.arn
+}
 ```
 
-本方案的部署脚本为所有组件（Cluster Autoscaler、AWS Load Balancer Controller、CSI Drivers 等）都采用了 Pod Identity，彻底告别 OIDC Provider 的管理负担。
+本方案的 Terraform 模块为所有组件（Cluster Autoscaler、AWS Load Balancer Controller、CSI Drivers 等）都采用了 Pod Identity，彻底告别 OIDC Provider 的管理负担。
 
 ---
 
@@ -465,11 +482,11 @@ kubectl get storageclass
 
 ## 十一、生产环境部署检查清单：上线前自检
 
-**脚本默认已启用的安全基线**（无需手动操作，核对一下即可）：
+**Terraform 模块默认已启用的安全基线**（无需手动操作，核对一下即可）：
 
 * 私有 API Endpoint（API Server 不暴露公网）
 * Pod Identity 替代 IRSA（简化 IAM 管理）
-* VPC Endpoints 完整配置（私有集群 / `VPC_ENDPOINTS_MODE=full` 下创建 13 个 Interface + 1 个 S3 Gateway；公有集群 / `minimal` 模式下仅创建 4 个必需 Interface + 1 个 S3 Gateway）
+* VPC Endpoints 完整配置（私有集群 / `vpc_endpoints_mode = "full"` 下创建 13 个 Interface + 1 个 S3 Gateway；公有集群 / `"minimal"` 模式下仅创建 4 个必需 Interface + 1 个 S3 Gateway）
 * EBS 卷加密（使用 `alias/aws/ebs` 管理的 KMS 密钥）
 * IMDSv2 强制使用（所有节点 Launch Template 设置 `HttpTokens=required`）
 * 容器运行时存储已从系统根卷剥离（LVM `/var/lib/containerd`）
@@ -485,7 +502,7 @@ kubectl get storageclass
 
 ## 十二、成本优化建议：在安全与预算之间取得平衡
 
-**使用 Graviton 实例**：Graviton 处理器相较同等 x86 实例最高可提升 40% 性价比，脚本原生支持 Graviton 节点组（系统节点默认即为 `m8g.xlarge`）。
+**使用 Graviton 实例**：Graviton 处理器相较同等 x86 实例最高可提升 40% 性价比，Terraform 模块原生支持 Graviton 节点组（`system_node_instance_type` 默认即为 `m8g.xlarge`，架构由模块按 EC2 API 自动检测）。
 
 **利用 VPC Endpoints**：VPC Endpoints 不仅提供安全性，还能避免数据通过 NAT Gateway 传输产生的费用。
 
@@ -545,4 +562,4 @@ kubectl get storageclass
 **本篇作者**
 
 **Kevin Zhao**
-AWS 解决方案架构师，基于多个企业客户的实际部署经验，专注于 Amazon EKS 与容器化工作负载的生产级落地实践。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
+AWS 解决方案架构师，基于多个企业客户的实际部署经验，专注于 Amazon EKS 与容器化工作负载的生产级落地实践。完整的 Terraform 模块与运维脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。

@@ -1,18 +1,18 @@
 # EKS 上的 GPU 工作负载:节点、网络与高性能存储的架构实践
 
-**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度,以及 FSx for Lustre(PERSISTENT_2)与 S3 Express One Zone + Mountpoint CSI Driver 这两类高性能存储按访问模式的选型,并提供完整的自动化部署脚本。
+**摘要：** 本文是《企业级 EKS 集群生产环境配置最佳实践》系列第二篇,承接第一篇搭建的生产级 EKS 基础,聚焦 GPU 工作负载链路的深度架构实践。文章围绕 GPU 工作负载的三层架构 —— **计算节点、网络邻近性、高性能存储** —— 展开,覆盖 P5 / P5en / P6 / G7e 四个 GPU 实例系列的 EFA 多网卡精确摆位(含 p6-b300 非对称拓扑)、四种定价模式的 Launch Template 设计、基于 `topology.k8s.aws/network-node-layer-N` 的 AWS 原生拓扑感知调度,以及 FSx for Lustre(PERSISTENT_2)与 S3 Express One Zone + Mountpoint CSI Driver 这两类高性能存储按访问模式的选型,并以一套声明式 Terraform 模块完整实现。
 
 **目录**
 
-01 [一、引言:GPU 工作负载的架构挑战](#section1)
-02 [二、GPU 节点组:EFA 多网卡设计](#section2)
-03 [三、四种定价模式的 Launch Template 架构](#section3)
-04 [四、网络邻近性:基于 AWS 原生拓扑标签的调度](#section4)
-05 [五、节点本地存储:Instance Store 与容器运行时的解耦](#section5)
-06 [六、训练场景存储:FSx for Lustre 架构](#section6)
-07 [七、S3 Express One Zone + Mountpoint:低延迟、高 TPS 的对象存储选项](#section7)
-08 [八、端到端验证与最佳实践清单](#section8)
-09 [九、总结:能力沉淀与取舍原则](#section9)
+- [一、引言:GPU 工作负载的架构挑战](#section1)
+- [二、GPU 节点组:EFA 多网卡设计](#section2)
+- [三、四种定价模式的 Launch Template 架构](#section3)
+- [四、网络邻近性:基于 AWS 原生拓扑标签的调度](#section4)
+- [五、节点本地存储:Instance Store 与容器运行时的解耦](#section5)
+- [六、训练场景存储:FSx for Lustre 架构](#section6)
+- [七、S3 Express One Zone + Mountpoint:低延迟、高 TPS 的对象存储选项](#section7)
+- [八、端到端验证与最佳实践清单](#section8)
+- [九、总结:能力沉淀与取舍原则](#section9)
 
 ---
 
@@ -36,7 +36,7 @@ GPU 节点组采用 Managed Node Groups 而非 Karpenter,以便在 Launch Templa
 - 按实例型号正确配置 EFA 多网卡,避免 `AttachmentLimitExceeded` 等常见启动错误
 - 为分布式训练场景选择合适的邻近性调度方案(Placement Group vs Topology Label)
 - 按访问模式为 GPU 工作负载选择合适的高性能存储并规避已知的版本兼容性问题
-- 使用本系列开源的自动化脚本一键部署 GPU 节点组
+- 使用本系列开源的 Terraform 模块以声明式方式部署 GPU 节点组
 
 ### 1.4 架构总览图
 ```
@@ -92,7 +92,7 @@ ENI 1..N: NetworkCardIndex=1..N, DeviceIndex=0, InterfaceType=efa-only
           (纯 EFA,专供 NCCL 使用;DeviceIndex 是每张 NIC 卡内的序号,
            次卡的 DI=0 与主卡 DI=0 不冲突)
 ```
-各型号 N 的取值(脚本 `gpu_efa_only_nic_count` 按实例类型返回;数字对应每张 Network Card 上挂一个 ENI 的部署模式):
+各型号 N 的取值(Terraform 模块在 `local.efa_layout` 里维护实例类型→NIC 布局的映射表;数字对应每张 Network Card 上挂一个 ENI 的部署模式):
 
 | 实例类型 | NIC 卡总数 | 主卡(NCI=0) | EFA-only NIC(NCI=1..N) |
 |---|---|---|---|
@@ -104,13 +104,13 @@ ENI 1..N: NetworkCardIndex=1..N, DeviceIndex=0, InterfaceType=efa-only
 ### 2.4 p6-b300.48xlarge 的特殊拓扑
 p6-b300 具有 `MaximumNetworkCards=17` 但 `MaximumEfaInterfaces=16` 的非对称结构,其 NIC 0 仅支持 ENA,不接受 EFA。直接套用上述通用模式会在实例启动时触发 `AttachmentLimitExceeded`。
 
-脚本针对此型号使用独立分支:
+Terraform 模块在 `local.efa_layout` 中为此型号声明独立条目(`primary_efa = false` + `efa_only_count = 16`),Launch Template 自动生成下列 NIC 配置:
 ```
 ENI 0:     NetworkCardIndex=0,  DeviceIndex=0, InterfaceType=interface  (纯 ENA)
 ENI 1..16: NetworkCardIndex=1..16, DeviceIndex=0, InterfaceType=efa-only (EFA)
 ```
 
-**架构启示**:LT 代码不能对所有 EFA-capable 实例一刀切,需要按实例型号维护一张拓扑表。
+**架构启示**:LT 代码不能对所有 EFA-capable 实例一刀切,需要按实例型号维护一张拓扑表 —— 模块用一个 `locals` map 把这张表代码化,新增机型只需多一行条目。
 
 ### 2.5 EFA Userspace 的完整性
 EKS GPU AMI 默认仅包含 kernel-side EFA 模块(驱动和 ibverbs 支持),不包含 `/opt/amazon/efa/` 下的 userspace 工具链(libfabric、openmpi、`fi_info` 诊断工具等)。对于依赖 host libfabric 的工作负载以及需要在节点级别做 EFA 诊断的场景,userspace 是必须的。
@@ -134,7 +134,7 @@ AWS 对 EFA 启用的安全组有一条**硬性要求**(参见 [Get started with
 
 为什么是"自引用"?跨节点的 EFA / NCCL 流量走的是 RDMA over EFA(基于 ibverbs),既不是标准 TCP/UDP 端口、也不在 VPC 内常规的"放行整个子网 CIDR"规则覆盖范围内。**只有显式让 SG 信任自己**,同 SG 内不同节点之间的 EFA 流量才能通过。这个失败模式的特点是**单节点测试完全正常**(`fi_pingpong` 单机能通、单卡 NCCL 单机 all-reduce 能跑),**只有跨节点 NCCL 会卡死或回退到 TCP fallback**,排查难度高。
 
-新创建的 SG 默认 outbound 是 `0.0.0.0/0`,EFA 通信表面上能跑通,但企业环境通常通过 SCP / 合规策略**收紧默认 outbound**;一旦默认规则被改动而没有显式 self-egress,EFA 就会断。脚本 `create_gpu_security_group` 函数因此**显式写入两条自引用规则**(inbound + outbound),作为防御性最佳实践,与 AWS 文档对齐。
+新创建的 SG 默认 outbound 是 `0.0.0.0/0`,EFA 通信表面上能跑通,但企业环境通常通过 SCP / 合规策略**收紧默认 outbound**;一旦默认规则被改动而没有显式 self-egress,EFA 就会断。Terraform 模块 `eks-gpu-nodegroup` 因此在 GPU SG 上**显式声明两条 `aws_security_group_rule`(inbound + outbound)、source/destination 都指向 SG 自身**,作为防御性最佳实践,与 AWS 文档对齐。
 
 Launch Template 把 GPU SG 与 EKS cluster security group 一起赋给所有 ENI(主 NIC + 全部 EFA-only NIC),保证 K8s control plane 通信与 EFA 数据面共存。
 
@@ -222,7 +222,7 @@ AWS 提供 `cluster` 策略的 Placement Group,目标是把实例放到"低延�
 
 ### 4.3 拓扑数据来源：K8s 节点标签
 
-AWS cloud-controller-manager 在节点 `Initialize` 阶段就把每个 GPU 实例的网络层级写入节点标签,脚本只需 `kubectl get nodes` 一次即可拿到全部数据,无需调用 `ec2:DescribeInstanceTopology`,也不依赖 `eks:DescribeNodegroup` / `autoscaling:DescribeAutoScalingGroups` 等额外 IAM 权限(在 SCP 受限环境中尤其重要)。
+AWS cloud-controller-manager 在节点 `Initialize` 阶段就把每个 GPU 实例的网络层级写入节点标签,运维工具 `option_show_nodegroup_topology.sh` 只需 `kubectl get nodes` 一次即可拿到全部数据,无需调用 `ec2:DescribeInstanceTopology`,也不依赖 `eks:DescribeNodegroup` / `autoscaling:DescribeAutoScalingGroups` 等额外 IAM 权限(在 SCP 受限环境中尤其重要)。
 
 每个 GPU 节点上由 cloud-controller-manager 写入的标签示意(自上而下,最后一项连到实例):
 
@@ -241,8 +241,8 @@ topology.k8s.aws/zone-id              = usw2-az1
 | 3 | p3dn / p4d / p4de / p5 / p5e / **p5en** / p6e-gb200 / g6e / g7e / hpc 系列 / trn1 / trn1n / trn2 / trn2u | `network-node-layer-3` |
 | 4 | **p6-b200.48xlarge** / **p6-b300.48xlarge** | `network-node-layer-4` |
 
-### 4.4 脚本不再叠加自定义标签
-脚本不写任何自己的 label,只读 AWS 原生标签后打印 inventory。
+### 4.4 不叠加自定义标签
+Terraform 模块不在 GPU 节点上写任何自己的 label,只让运维工具读取 AWS 原生标签后打印 inventory。
 
 为什么不再做反向编号或别名:
 - AWS 文档使用的术语就是 `network nodes` / `top layer` / `bottom layer`,自创 `leaf` / `spine` / `aggregator` / `depth` 概念会引入与 AWS 文档不一致的 terminology
@@ -291,7 +291,7 @@ affinity:
 ### 5.2 Instance Store 的特殊性
 - **临时存储**:实例 stop/start 时 Instance Store 数据完全丢失,每次启动都需要重新格式化,因此无法通过 `/etc/fstab` 使用稳定 UUID 挂载
 - **无需付费**:容量包含在实例价格中
-- **不同 GPU 实例系列的配置差异较大**:p5 / p5en / p5e 全系标配多块 NVMe SSD;g6 系列通过 `d` 后缀变体(如 `g6d.48xlarge`)提供 Instance Store;部分 GPU 型号(如 g7e 某些规格)则不带 Instance Store。脚本通过 `disk_detection_lib.sh` 动态检测磁盘 model 字段,而非依赖实例名约定。
+- **不同 GPU 实例系列的配置差异较大**:p5 / p5en / p5e 全系标配多块 NVMe SSD;g6 系列通过 `d` 后缀变体(如 `g6d.48xlarge`)提供 Instance Store;部分 GPU 型号(如 g7e 某些规格)则不带 Instance Store。节点 userdata 在启动阶段动态扫描 `/sys/block/*/device/model` 字段识别 Instance Store NVMe(model 字符串里包含 `Instance Storage`),而非依赖实例名约定。
 
 ### 5.3 模块实现
 - `gpu_enable_local_lvm = true` 时（默认开启），在 userdata 中扫描所有 Instance Store NVMe
@@ -301,7 +301,7 @@ affinity:
 ### 5.4 与容器运行时 LVM 的严格隔离
 第一篇介绍过系统节点用双 EBS + LVM 把 `/var/lib/containerd` 从根盘剥离。GPU 节点也继承这个设计,但面临新的风险:**绝不能把容器运行时放到 Instance Store 上**,否则节点重启后镜像和容器状态全丢。
 
-脚本通过 `disk_detection_lib.sh` 按设备 model 字段识别 EBS 数据盘(而非磁盘序号或大小),确保 `/var/lib/containerd` 永远挂在 EBS 上,`/data` 永远挂在 Instance Store 上,两者互不交叉。
+节点 userdata 同样按设备 model 字段(`Amazon Elastic Block Store` vs `Instance Storage`)识别 EBS 数据盘,而非依赖磁盘序号或大小,确保 `/var/lib/containerd` 永远挂在 EBS 上,`/data` 永远挂在 Instance Store 上,两者互不交叉。
 
 ---
 
@@ -423,8 +423,8 @@ Mountpoint for S3 基于对象存储,不提供完整 POSIX 文件系统语义。
 
 ### 7.5 CSI Driver 与 Pod Identity
 - EKS Managed Addon:`aws-mountpoint-s3-csi-driver`
-- 脚本通过 `setup_s3_csi_pod_identity` 动态生成 bucket policy,仅授权指定 bucket
-- 避免广泛权限(如 `AmazonS3ReadOnlyAccess`),符合最小权限原则
+- Terraform 模块 `eks-csi-drivers` 根据 `s3_csi_bucket_arns` 列表动态构建 bucket-scoped IAM policy(`aws_iam_role_policy`),并通过 `aws_eks_pod_identity_association` 绑定到 CSI Driver 的 ServiceAccount
+- 避免广泛权限(如 `AmazonS3ReadOnlyAccess`),符合最小权限原则;同一变量同时支持 Standard S3 与 S3 Express directory bucket 的 ARN 格式
 
 ### 7.6 何时不用 S3 Express One Zone
 不要把 S3 Express 当成"性能更好的 S3"无脑替换。以下场景不适合或不必要:
@@ -528,7 +528,7 @@ Standard 模式额外提供 node-problem-detector,把 GPU XID / 内核错误转�
 | 团队不熟悉 GPU Operator CRD,出问题需要短链路排查 | **Standard** |
 | 需要 MIG 自动配置(A100 / H100 / B200) | **Operator**(`mig.strategy=mixed/single`) |
 
-本系列文档与脚本的端到端验证以 **Standard 模式** 为主完成,因为它对 AMI 已有组件的耦合更轻、调试链路更短;Operator 模式作为可选路径完整提供且**所有 chart values 对齐 EKS NVIDIA AMI 的预装栈**,可在生产环境直接选用。
+本系列文档与 Terraform 模块的端到端验证以 **Standard 模式** 为主完成,因为它对 AMI 已有组件的耦合更轻、调试链路更短;Operator 模式作为可选路径完整提供且**所有 chart values 对齐 EKS NVIDIA AMI 的预装栈**,可在生产环境直接选用。
 
 ### 8.2 两个 Device Plugin 的协同
 GPU + EFA 工作负载依赖**两个独立的 Device Plugin**,职责边界清晰但容易漏配:
@@ -725,7 +725,7 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 - **FSx vs S3 Express One Zone**:按访问模式选——大文件聚合顺序读 + Lustre 并行语义选 FSx;小对象高 TPS random read、低延迟写、跨 Pod 并发拉同一对象选 S3E1;大文件一次性顺序读且能容忍 10–30 ms 延迟用 Standard S3 即可
 
 ### 9.3 系列回顾:两篇文章的定位
-- **第一篇**《企业级 EKS 集群生产环境配置最佳实践》—— 通用生产级集群的"**地基**":私有 API、Pod Identity、LVM 运行时隔离、四种 CSI Driver、自动化部署脚本
+- **第一篇**《企业级 EKS 集群生产环境配置最佳实践》—— 通用生产级集群的"**地基**":私有 API、Pod Identity、LVM 运行时隔离、四种 CSI Driver、声明式 Terraform 模块
 - **第二篇**(本文)—— GPU 工作负载的"**上层建筑**":EFA 多网卡、拓扑感知调度、按访问模式的高性能存储选型(FSx for Lustre + S3 Express One Zone)
 
 两篇构成一套可落地、可复制、从零到 GPU 生产的完整参考实现。
@@ -759,4 +759,4 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 **本篇作者**
 
 **Kevin Zhao**
-AWS 解决方案架构师，专注于 Amazon EKS 与 GPU 工作负载的生产级落地实践，包括 EFA 多网卡配置、拓扑感知调度、按访问模式选型的高性能存储等。完整的部署脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
+AWS 解决方案架构师，专注于 Amazon EKS 与 GPU 工作负载的生产级落地实践，包括 EFA 多网卡配置、拓扑感知调度、按访问模式选型的高性能存储等。完整的 Terraform 模块与运维脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
