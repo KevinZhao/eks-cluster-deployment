@@ -4,18 +4,25 @@
 # Run this stack with local state ONCE per AWS account / region pair,
 # then point the root stack's backend.tf at the resources it creates.
 #
+# S3 bucket names are global, so suffix with the account ID to avoid
+# collisions (the literal "my-eks-tfstate" is almost certainly taken).
+#
 # Usage:
 #   cd terraform/bootstrap
 #   terraform init
-#   terraform apply -var=bucket_name=my-eks-tfstate -var=region=us-west-2
+#   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+#   terraform apply \
+#     -var="bucket_name=eks-tfstate-${ACCOUNT_ID}-us-west-2" \
+#     -var="region=us-west-2"
 #
 # After apply, init the root stack:
 #   cd ../
+#   mv backend.tf.disabled backend.tf
 #   terraform init \
-#     -backend-config="bucket=my-eks-tfstate" \
+#     -backend-config="bucket=eks-tfstate-${ACCOUNT_ID}-us-west-2" \
 #     -backend-config="key=eks-cluster-deployment/<env>/terraform.tfstate" \
 #     -backend-config="region=us-west-2" \
-#     -backend-config="dynamodb_table=my-eks-tfstate-lock"
+#     -backend-config="dynamodb_table=eks-tfstate-${ACCOUNT_ID}-us-west-2-lock"
 # =====================================================================
 
 terraform {

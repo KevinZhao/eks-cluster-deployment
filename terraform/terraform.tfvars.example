@@ -5,10 +5,16 @@ cluster_name = "eks-demo-1"
 aws_region   = "us-west-2"
 vpc_id       = "vpc-xxxxxxxxxxxxxxxxx"
 
+# IMPORTANT: each subnet must be in a DIFFERENT availability zone.
+# VPC Interface Endpoints reject duplicate AZs (DuplicateSubnetsInSameZone)
+# — listing two subnets from the same AZ here makes all 13 endpoints fail
+# with one confusing error each. If you have a dedicated GPU subnet that
+# happens to share an AZ with a system subnet, don't list both here; pass
+# the GPU subnet via gpu_nodegroups[].subnet_ids instead.
 private_subnet_ids = [
-  "subnet-aaaaaaaaaaaaaaaaa",
-  "subnet-bbbbbbbbbbbbbbbbb",
-  "subnet-ccccccccccccccccc",
+  "subnet-aaaaaaaaaaaaaaaaa", # AZ-a (system / control plane / default workers)
+  "subnet-bbbbbbbbbbbbbbbbb", # AZ-b
+  "subnet-ccccccccccccccccc", # AZ-c
 ]
 
 public_subnet_ids = [
