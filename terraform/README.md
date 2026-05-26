@@ -12,7 +12,7 @@ terraform/
 ├── bootstrap/                     # S3 + DynamoDB for remote state backend (optional)
 ├── bootstrap-vpc/                 # Standalone 3-AZ VPC for testing the rest of the stack
 ├── bootstrap-bastion/             # SSM-only t4g.small bastion in a private subnet
-├── backend.tf                     # S3 backend (configured via -backend-config flags)
+├── backend.tf.disabled            # Rename to backend.tf to enable S3 backend (see Quick start)
 ├── providers.tf                   # aws / kubernetes / helm with EKS exec auth
 ├── versions.tf
 ├── variables.tf                   # Mirrors .env.example
@@ -130,24 +130,34 @@ spot vCPU quota. Read-only; safe to re-run. Exit 0 on all PASS,
 ## Quick start
 
 ```bash
+# S3 bucket names are globally unique across all AWS accounts — use an
+# account-id suffix to avoid collisions with other tenants.
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+BUCKET="eks-tfstate-${ACCOUNT_ID}-us-west-2"
+
 # 0. Bootstrap state backend (once per account/region)
 cd terraform/bootstrap
 terraform init
-terraform apply -var="bucket_name=my-eks-tfstate" -var="region=us-west-2"
+terraform apply -var="bucket_name=${BUCKET}" -var="region=us-west-2"
 
-# 1. Init root stack with backend config
+# 1. Enable the S3 backend file (it ships as backend.tf.disabled — rename
+#    to backend.tf so terraform picks it up; otherwise state writes locally
+#    and the next `terraform init` warns "Missing backend configuration").
 cd ..
+mv backend.tf.disabled backend.tf
+
+# 2. Init root stack with backend config
 terraform init \
-  -backend-config="bucket=my-eks-tfstate" \
+  -backend-config="bucket=${BUCKET}" \
   -backend-config="key=eks-cluster-deployment/dev/terraform.tfstate" \
   -backend-config="region=us-west-2" \
-  -backend-config="dynamodb_table=my-eks-tfstate-lock"
+  -backend-config="dynamodb_table=${BUCKET}-lock"
 
-# 2. Configure variables
+# 3. Configure variables
 cp terraform.tfvars.example terraform.tfvars
 $EDITOR terraform.tfvars
 
-# 3. Apply (must be run from inside the cluster's VPC for private mode)
+# 4. Apply (must be run from inside the cluster's VPC for private mode)
 terraform plan
 terraform apply
 ```
