@@ -271,8 +271,19 @@ variable "install_gpu_nodegroups" {
 
 variable "gpu_ami_release_version" {
   type        = string
-  description = "EKS NVIDIA AL2023 AMI release tag, e.g. 'v20260512'. Empty = follow SSM 'recommended' (rolls forward). Pin a specific release to keep the GPU runtime stack reproducible. See docs/AMI_VERSIONS.md for verified combinations."
+  description = "EKS NVIDIA AL2023 AMI release tag, e.g. 'v20260512'. Empty = follow SSM 'recommended' (rolls forward). Pin a specific release to keep the GPU runtime stack reproducible. See docs/AMI_VERSIONS.md for verified combinations. Ignored when gpu_custom_ami_id is set."
   default     = ""
+}
+
+variable "gpu_custom_ami_id" {
+  type        = string
+  description = "Override the SSM-resolved AWS EKS-NVIDIA AMI with a fully-specified AMI ID. Use for operator-baked AMIs derived from the EKS-NVIDIA base (corporate certs / monitoring agents / preloaded images / compliance). The custom AMI MUST derive from amazon-eks-node-al2023-*-nvidia-* and preserve the EKS bootstrap chain (nodeadm + kubelet + nvidia-driver + nvidia-container-toolkit jit-cdi). Building from plain AL2023 is unsupported. When set, gpu_ami_release_version is ignored."
+  default     = ""
+
+  validation {
+    condition     = var.gpu_custom_ami_id == "" || can(regex("^ami-[0-9a-f]+$", var.gpu_custom_ami_id))
+    error_message = "gpu_custom_ami_id must be empty or a valid AMI ID matching ^ami-[0-9a-f]+$."
+  }
 }
 
 variable "gpu_nodegroups" {

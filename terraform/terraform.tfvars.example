@@ -103,6 +103,16 @@ install_karpenter = false
 # capacity_reservation_id is required for odcr / cb
 # =====================================================================
 install_gpu_nodegroups = false
+
+# Pin a verified AWS EKS-NVIDIA AMI release (see docs/AMI_VERSIONS.md):
+# gpu_ami_release_version = "v20260512"
+#
+# Or override with a custom AMI baked from the EKS-NVIDIA base (corporate
+# certs / monitoring agents / preloaded images / compliance). Mutually
+# exclusive with gpu_ami_release_version. Custom AMI MUST derive from
+# amazon-eks-node-al2023-*-nvidia-*; building from plain AL2023 unsupported.
+# gpu_custom_ami_id = "ami-0123456789abcdef0"
+
 gpu_nodegroups = [
   # On-Demand p5 across all private subnets
   # {

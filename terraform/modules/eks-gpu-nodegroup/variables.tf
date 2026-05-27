@@ -18,8 +18,36 @@ combination produces silent regressions (workload pod driver-injection failure
 on v20260509-v20260512 with containerd 2.2.3 + toolkit 1.19; cgroupsPath
 crash on the same window before nodeadm #2705 landed). Verified working
 combinations should be recorded in docs/AMI_VERSIONS.md.
+
+Ignored when gpu_custom_ami_id is set.
 EOT
   default     = ""
+}
+
+variable "gpu_custom_ami_id" {
+  type        = string
+  description = <<EOT
+Override the SSM-resolved AWS EKS-NVIDIA AMI with a fully-specified AMI ID.
+Use this when the operator maintains a custom AMI baked from the EKS-NVIDIA
+base — typical reasons: pre-installed corporate CA certificates, internal
+monitoring agents, preloaded container images for faster cold start,
+compliance audit trails. Empty (default) falls back to the SSM-resolved
+AWS AMI selected by gpu_ami_release_version.
+
+The custom AMI MUST derive from amazon-eks-node-al2023-*-nvidia-* and
+preserve the EKS bootstrap chain (nodeadm + kubelet + nvidia-driver +
+nvidia-container-toolkit jit-cdi config in /etc/containerd/config.toml).
+Building from plain AL2023 is unsupported — see docs/AMI_VERSIONS.md for
+the tightly-coupled-stack rationale.
+
+When set, gpu_ami_release_version is ignored.
+EOT
+  default     = ""
+
+  validation {
+    condition     = var.gpu_custom_ami_id == "" || can(regex("^ami-[0-9a-f]+$", var.gpu_custom_ami_id))
+    error_message = "gpu_custom_ami_id must be empty or a valid AMI ID matching ^ami-[0-9a-f]+$."
+  }
 }
 
 variable "private_subnet_ids" {
