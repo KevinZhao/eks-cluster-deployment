@@ -149,6 +149,7 @@ module "eks_gpu_nodegroup" {
   region                    = var.aws_region
   k8s_version               = var.k8s_version
   gpu_ami_release_version   = var.gpu_ami_release_version
+  gpu_custom_ami_id         = var.gpu_custom_ami_id
 
   private_subnet_ids = var.private_subnet_ids
   gpu_nodegroups     = var.gpu_nodegroups

@@ -104,7 +104,12 @@ locals {
 }
 
 data "aws_ssm_parameter" "gpu_ami" {
-  name = local.gpu_ami_ssm_path
+  # Skip the SSM lookup entirely when the operator pins a custom AMI;
+  # otherwise we'd fail apply if the SSM path doesn't exist (e.g. running
+  # on a k8s_version that AWS hasn't published a recommended NVIDIA AMI
+  # for yet, but the operator has baked their own).
+  count = var.gpu_custom_ami_id != "" ? 0 : 1
+  name  = local.gpu_ami_ssm_path
 }
 
 # ===================================================================
@@ -254,7 +259,9 @@ resource "aws_launch_template" "gpu" {
   name        = "${var.cluster_name}-gpu-${each.key}-lt"
   description = "GPU LT (${each.value.gpu_type}, ${each.value.purchase_option})"
 
-  image_id  = data.aws_ssm_parameter.gpu_ami.value
+  # gpu_custom_ami_id (when set) bypasses SSM lookup entirely — for
+  # operator-baked AMIs derived from the EKS-NVIDIA base.
+  image_id  = var.gpu_custom_ami_id != "" ? var.gpu_custom_ami_id : data.aws_ssm_parameter.gpu_ami[0].value
   user_data = base64encode(local.userdata)
   key_name  = var.ec2_key_name != "" ? var.ec2_key_name : null
 
