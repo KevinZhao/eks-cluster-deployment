@@ -661,7 +661,7 @@ kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/netw
 ```bash
 ./scripts/option_verify_gpu_efa.sh <ng_name>
 ```
-检查项:① `nvidia-smi` 看到全部 GPU;② `/dev/nvidia[0-9]*` 设备节点数与 GPU 数一致;③ `fi_info -p efa` 列出全部 EFA 卡;④ `/dev/infiniband/uverbs*` 数与 EFA 数一致;⑤ AWS-OFI-NCCL plugin (`libnccl-net.so`) 存在;⑥ 单节点 NCCL `all_reduce_perf` 跑通。
+检查项:`nvidia-smi` 看到全部 GPU、`/dev/nvidia[0-9]*` 设备节点数与 GPU 数一致、`fi_info -p efa` 列出全部 EFA 卡、`/dev/infiniband/uverbs*` 数与 EFA 数一致、AWS-OFI-NCCL plugin (`libnccl-net.so`) 存在、单节点 NCCL `all_reduce_perf` 跑通。
 
 **跨节点模式**(`--multi N`,N≥2):
 ```bash
