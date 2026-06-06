@@ -252,7 +252,7 @@ CSI Driver 的生产部署不止 helm install:还要配 IAM 角色、关联 Pod 
 
 **Amazon EFS CSI Driver(共享文件系统,RWX)** —— `install_efs_csi = true` 启用。提供完全托管的 NFS,支持多 Pod 跨节点同时挂载同一目录读写。典型场景是**需要持久共享目录**的工作负载:CMS / 论坛上传目录、Jenkins workspace、机器学习数据集共享、需要跨 Pod 同步状态的应用等。开关打开后,模块创建 IAM 角色 + Pod Identity 关联 + 部署 CSI Controller,业务方按需自行创建 EFS file system 与 PVC。
 
-**Amazon FSx for Lustre CSI Driver(高性能并行文件系统,RWX)** —— `install_fsx_csi = true` 启用。单文件系统可达数百 GB/s 聚合吞吐,适合 HPC 与机器学习训练;能通过 **DRA(Data Repository Association)与 S3 联动 —— 冷数据存 S3、热数据 lazy-load 到 Lustre**,显著降低成本。**版本兼容性提示**:节点 user-data 用 `dnf install lustre-client` 装 AL2023 仓库的 2.15.x 客户端,因此创建 FSx 时**必须使用 `DeploymentType = PERSISTENT_2`**(Lustre 2.15);若误用 `SCRATCH_2` 或 `PERSISTENT_1`(Lustre 2.10),挂载会因服务端 / 客户端版本不兼容直接失败。
+**Amazon FSx for Lustre CSI Driver(高性能并行文件系统,RWX)** —— `install_fsx_csi = true` 启用。单文件系统可达数百 GB/s 聚合吞吐,适合 HPC 与机器学习训练;能通过 **DRA(Data Repository Association)与 S3 联动 —— 冷数据存 S3、热数据 lazy-load 到 Lustre**,显著降低成本。**版本兼容性提示**:节点 user-data 用 `dnf install lustre-client` 装 AL2023 仓库的 2.15.x 客户端,因此创建 FSx 时**必须使用 `DeploymentType = PERSISTENT_2`**(默认 Lustre 2.12,与 2.15.x 客户端兼容);若误用 `SCRATCH_2` 或 `PERSISTENT_1`(Lustre 2.10),挂载会因服务端 / 客户端版本不兼容直接失败。
 
 **Mountpoint for Amazon S3 CSI Driver(对象存储,只读 / 顺序写)** —— `install_s3_csi = true` + `s3_csi_bucket_arns = [...]` 启用。让 Pod 直接挂载 S3 桶,适合**模型权重 / 数据集 / 大文件**这类只读或顺序追加的访问模式;**不支持随机写、不支持 rename、不支持 hard link**,数据库类工作负载和需要原地更新的场景不能用。模块根据 `s3_csi_bucket_arns` 自动生成最小权限 IAM policy 并通过 Pod Identity 注入 CSI Controller,同时支持 Standard S3 与 S3 Express One Zone(低延迟、高 TPS directory bucket)的 ARN 格式。Standard 与 S3 Express 的访问模式选型(高 TPS 小对象 vs 大文件顺序读)在 **本系列第二篇** 展开。
 
@@ -330,7 +330,7 @@ cp terraform.tfvars.example terraform.tfvars && vim terraform.tfvars
 # 5. Init + Apply（含集群 + 系统节点组 + 核心 Addons + 可选模块）
 terraform init \
   -backend-config="bucket=my-eks-tfstate" \
-  -backend-config="key=eks-cluster-deployment/prod/terraform.tfstate" \
+  -backend-config="key=sample-eks-enterprise-quickstart/prod/terraform.tfstate" \
   -backend-config="region=us-west-2" \
   -backend-config="dynamodb_table=my-eks-tfstate-lock"
 
@@ -450,8 +450,8 @@ kubectl get storageclass
 立即开始:
 
 ```bash
-git clone https://github.com/KevinZhao/eks-cluster-deployment
-cd eks-cluster-deployment/terraform
+git clone https://github.com/aws-samples/sample-eks-enterprise-quickstart
+cd sample-eks-enterprise-quickstart/terraform
 cp terraform.tfvars.example terraform.tfvars && vim terraform.tfvars
 terraform init -backend-config=...
 terraform apply
@@ -463,7 +463,7 @@ GPU 工作负载相关的 EFA 多网卡、拓扑感知调度、高性能存储�
 
 **下一步行动：**
 
-* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，复制 `terraform/terraform.tfvars.example` 为 `terraform.tfvars` 并填入 `cluster_name` / `vpc_id` / `private_subnet_ids` 等核心字段。
+* 克隆开源仓库 [sample-eks-enterprise-quickstart](https://github.com/aws-samples/sample-eks-enterprise-quickstart)，复制 `terraform/terraform.tfvars.example` 为 `terraform.tfvars` 并填入 `cluster_name` / `vpc_id` / `private_subnet_ids` 等核心字段。
 * 一次性 bootstrap 远端 state 后端（`terraform/bootstrap`）；如需独立 VPC 与堡垒机，分别 apply `bootstrap-vpc/` 与 `bootstrap-bastion/`。
 * 在 VPC 内主机上 `terraform -chdir=terraform apply`，约 30 分钟即可获得一套生产级 EKS 集群；apply 完成后跑 `./scripts/option_inspect_eks.sh` 做 9 项健康检查。
 * 按需在 `terraform.tfvars` 中开启 `install_efs_csi` / `install_fsx_csi` / `install_s3_csi` / `install_karpenter` / `install_gpu_nodegroups` 等开关，重新 apply 即可叠加能力。
@@ -489,4 +489,4 @@ GPU 工作负载相关的 EFA 多网卡、拓扑感知调度、高性能存储�
 **本篇作者**
 
 **Kevin Zhao**
-AWS 解决方案架构师，基于多个企业客户的实际部署经验，专注于 Amazon EKS 与容器化工作负载的生产级落地实践。完整的 Terraform 模块与运维脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
+AWS 解决方案架构师，基于多个企业客户的实际部署经验，专注于 Amazon EKS 与容器化工作负载的生产级落地实践。完整的 Terraform 模块与运维脚本已在 [GitHub](https://github.com/aws-samples/sample-eks-enterprise-quickstart) 开源。

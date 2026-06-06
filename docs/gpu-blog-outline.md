@@ -678,7 +678,7 @@ kubectl get nodes -L topology.k8s.aws/network-node-layer-1,topology.k8s.aws/netw
 失败时脚本会打印典型排查方向:GPU SG 自引用规则缺失、`mofedEnabled=false` 是否设置、AWS-OFI-NCCL plugin 是否加载。
 
 ### 8.8 FSx / S3 挂载验证
-仓库内已带可直接使用的示例 manifest:[`examples/fsx-app.yaml`](https://github.com/KevinZhao/eks-cluster-deployment/blob/master/examples/fsx-app.yaml) 与 [`examples/s3-app.yaml`](https://github.com/KevinZhao/eks-cluster-deployment/blob/master/examples/s3-app.yaml),分别覆盖 FSx for Lustre PERSISTENT_2、Standard S3 桶与 S3 Express One Zone 三种挂载场景。两个 YAML 都使用 `envsubst` 占位符,用法见各文件头部注释。
+仓库内已带可直接使用的示例 manifest:[`examples/fsx-app.yaml`](https://github.com/aws-samples/sample-eks-enterprise-quickstart/blob/main/examples/fsx-app.yaml) 与 [`examples/s3-app.yaml`](https://github.com/aws-samples/sample-eks-enterprise-quickstart/blob/main/examples/s3-app.yaml),分别覆盖 FSx for Lustre PERSISTENT_2、Standard S3 桶与 S3 Express One Zone 三种挂载场景。两个 YAML 都使用 `envsubst` 占位符,用法见各文件头部注释。
 
 ```bash
 # FSx for Lustre 静态挂载(两个 Pod 共享读写,验证 RWX)
@@ -732,7 +732,7 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 
 **下一步行动：**
 
-* 克隆开源仓库 [eks-cluster-deployment](https://github.com/KevinZhao/eks-cluster-deployment)，先按照第一篇完成基础集群部署（同样走 Terraform 路径）。
+* 克隆开源仓库 [sample-eks-enterprise-quickstart](https://github.com/aws-samples/sample-eks-enterprise-quickstart)，先按照第一篇完成基础集群部署（同样走 Terraform 路径）。
 * 在 `terraform.tfvars` 中设置 `install_gpu_nodegroups = true` 与 `gpu_nodegroups = [...]` 列表,按需为每个条目选择 `purchase_option`(`od` / `spot` / `odcr` / `cb`)、`subnet_ids` 收敛 AZ、`capacity_reservation_id` 与 `placement_group`,然后 `terraform apply` 一次性拉起全部 GPU 节点组。
 * 在 `terraform.tfvars` 中设置 `install_gpu_stack = true` + `gpu_stack_mode = "standard"`(或 `"operator"`)启用 K8s 端 GPU 栈;切换模式只需翻转变量后再次 apply,无需手动卸载对侧 helm release。
 * 通过 `./scripts/option_show_nodegroup_topology.sh` 打印每个 GPU 节点组的 AWS 原生拓扑清单(按 bottom-layer network node 分组),用 `./scripts/option_verify_gpu_efa.sh <ng> --multi N` 真实验证跨节点 NCCL + EFA 链路。这两个工具长期保留为 Bash,因为它们是面向运行中集群的运维动作而非基础设施声明。
@@ -759,4 +759,4 @@ kubectl logs s3-express-test  # S3 Express directory bucket
 **本篇作者**
 
 **Kevin Zhao**
-AWS 解决方案架构师，专注于 Amazon EKS 与 GPU 工作负载的生产级落地实践，包括 EFA 多网卡配置、拓扑感知调度、按访问模式选型的高性能存储等。完整的 Terraform 模块与运维脚本已在 [GitHub](https://github.com/KevinZhao/eks-cluster-deployment) 开源。
+AWS 解决方案架构师，专注于 Amazon EKS 与 GPU 工作负载的生产级落地实践，包括 EFA 多网卡配置、拓扑感知调度、按访问模式选型的高性能存储等。完整的 Terraform 模块与运维脚本已在 [GitHub](https://github.com/aws-samples/sample-eks-enterprise-quickstart) 开源。
